@@ -1,0 +1,11 @@
+{
+  "upstream": "cb11586c3e3b8b57a18b58ca54b51e88838762a5",
+  "reviewRequired": [
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/diagnostic_paths.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/network_diagnostics.rs",
+    "src-tauri/src/trusted_time.rs"
+  ]
+}
