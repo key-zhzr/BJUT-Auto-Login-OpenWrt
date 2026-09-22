@@ -1,11 +1,6 @@
 {
   "upstream": "cb11586c3e3b8b57a18b58ca54b51e88838762a5",
-  "reviewRequired": [
-    "src-tauri/Cargo.lock",
-    "src-tauri/Cargo.toml",
-    "src-tauri/src/diagnostic_paths.rs",
-    "src-tauri/src/lib.rs",
-    "src-tauri/src/network_diagnostics.rs",
-    "src-tauri/src/trusted_time.rs"
-  ]
+  "reviewRequired": [],
+  "reviewed": "cb11586c3e3b8b57a18b58ca54b51e88838762a5",
+  "reviewNote": "本轮改动为应用内诊断、配置备份、二维码、界面及站点文档；路由认证协议没有额外变化，路由离线与同步测试已通过。"
 }

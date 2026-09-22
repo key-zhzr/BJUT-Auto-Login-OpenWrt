@@ -27,3 +27,5 @@
 - 自动合并工作流见 `.github/workflows/openwrt-upstream.yml`，合并检查脚本见 `openwrt/scripts/sync_upstream.py`。
 
 自动同步指 Git 历史与可直接合并的源码更新。桌面 Rust 的新认证逻辑不会自动转换成 shell；涉及后端、安全或冲突的修改会进入待审查 PR。合并前需要移植相关逻辑并通过离线测试。
+
+当前完整同步基线：`cb11586c3e3b8b57a18b58ca54b51e88838762a5`。上述应用侧改动已审阅，路由端保持轻量认证职责。
