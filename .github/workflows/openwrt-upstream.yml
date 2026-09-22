@@ -1,0 +1,68 @@
+name: OpenWrt upstream sync
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 22 * * *'
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: openwrt-upstream-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository != 'key-zhzr/BJUT-Auto-Login'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: main
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Fetch upstream
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/key-zhzr/BJUT-Auto-Login.git
+          git fetch upstream main
+      - name: Avoid replacing an existing review branch
+        id: pending
+        run: |
+          branch="codex/upstream-$(git rev-parse --short=12 upstream/main)"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Merge and validate
+        if: steps.pending.outputs.exists != 'true'
+        id: merge
+        run: python3 openwrt/scripts/sync_upstream.py
+      - name: Publish verified merge
+        id: publish
+        if: steps.merge.outputs.state == 'ready'
+        env:
+          SYNC_BRANCH: ${{ steps.merge.outputs.branch }}
+        run: |
+          git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+          git push origin HEAD:refs/heads/main
+      - name: Open review for protocol changes or conflicts
+        if: steps.merge.outputs.state == 'review' || steps.merge.outputs.state == 'conflict' || (failure() && steps.merge.outputs.state == 'ready')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.branch }}
+          SYNC_STATE: ${{ steps.merge.outputs.state }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream }}
+        run: |
+          git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          sha = os.environ['UPSTREAM_SHA']
+          state = os.environ['SYNC_STATE']
+          message = f'上游提交：{sha}\n\n'
+          message += '存在合并冲突，上游尚未合入；参见 openwrt/UPSTREAM-REVIEW.md。' if state == 'conflict' else 'Git 合并与路由端离线测试已通过；认证或安全相关实现有变化，需确认路由端移植后再合并。'
+          Path('/tmp/upstream-pr.md').write_text(message + '\n')
+          PY
+          gh pr create --base main --head "$SYNC_BRANCH" --title '同步主项目更新：需要路由端审查' --body-file /tmp/upstream-pr.md

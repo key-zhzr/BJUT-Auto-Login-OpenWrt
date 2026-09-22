@@ -1,0 +1,14 @@
+{
+	"luci-app-bjut-autologin": {
+		"description": "Grant access to BJUT Auto Login configuration and status",
+		"read": {
+			"file": {
+				"/var/run/bjut-autologin/status.json": [ "read" ]
+			},
+			"uci": [ "bjut-autologin" ]
+		},
+		"write": {
+			"uci": [ "bjut-autologin" ]
+		}
+	}
+}

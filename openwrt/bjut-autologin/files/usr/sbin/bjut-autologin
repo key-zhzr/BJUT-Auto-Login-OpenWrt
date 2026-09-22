@@ -1,0 +1,976 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+
+# The daemon intentionally uses only one sleeping BusyBox ash process while
+# idle. curl and the tiny codec helper are started only for a connectivity
+# check or portal exchange.
+
+VERSION="0.3.0"
+TAG="bjut-autologin"
+
+FUNCTIONS_SH="${BJUT_FUNCTIONS_SH:-/lib/functions.sh}"
+JSHN_SH="${BJUT_JSHN_SH:-/usr/share/libubox/jshn.sh}"
+CURL_BIN="${BJUT_CURL:-/usr/bin/curl}"
+JSONFILTER_BIN="${BJUT_JSONFILTER:-/usr/bin/jsonfilter}"
+UBUS_BIN="${BJUT_UBUS:-/bin/ubus}"
+IWINFO_BIN="${BJUT_IWINFO:-/usr/bin/iwinfo}"
+IP_BIN="${BJUT_IP:-/sbin/ip}"
+CODEC_BIN="${BJUT_CODEC:-/usr/libexec/bjut-codec}"
+LOGGER_BIN="${BJUT_LOGGER:-/usr/bin/logger}"
+SYS_NET="${BJUT_SYS_NET:-/sys/class/net}"
+STATE_DIR="${BJUT_STATE_DIR:-/var/run/bjut-autologin}"
+STATE_FILE="$STATE_DIR/status.json"
+LOCK_DIR="$STATE_DIR/lock"
+
+CONFIG_PACKAGE="${BJUT_CONFIG_PACKAGE:-bjut-autologin}"
+DORM_GATEWAY="10.21.221.98"
+WIFI_GATEWAY="10.21.251.3"
+LGN_GATEWAY_PRIMARY="172.30.201.2"
+LGN_GATEWAY_SECONDARY="172.30.201.10"
+DORM_SPKI_PIN="sha256//9YYIa+Z8Ae4Y8ipQSZXowtxC1CZv/pvXvKuT7eUIXyg="
+MAX_RESPONSE_BYTES=131072
+
+CONFIG_LOADED=0
+MAIN_SECTION=""
+ACCOUNT_SECTIONS=""
+WORK_DIR=""
+LOCK_HELD=0
+SLEEP_PID=""
+EVENT="periodic"
+FORCE=0
+
+DEVICE=""
+LOCAL_IPV4=""
+TRANSPORT="unknown"
+SSID=""
+BSSID=""
+HTTP_CODE="000"
+HTTP_BODY=""
+SELECTED_PROTOCOL=""
+SELECTED_ACCOUNT=""
+TYPE1_TLS_HOST=""
+TYPE1_TLS_PROFILE=""
+OBSERVED_IPV6=""
+
+RUNTIME_FAILURES=0
+RUNTIME_OFFLINE_COUNT=0
+RUNTIME_NEXT_ATTEMPT=0
+
+cleanup_runtime() {
+	if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+		rm -rf -- "$WORK_DIR"
+	fi
+	WORK_DIR=""
+	if [ "$LOCK_HELD" = "1" ] && [ -d "$LOCK_DIR" ]; then
+		rm -rf -- "$LOCK_DIR"
+	fi
+	LOCK_HELD=0
+}
+
+handle_signal() {
+	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
+	cleanup_runtime
+	exit 143
+}
+
+trap cleanup_runtime 0
+trap handle_signal 1 2 15
+umask 077
+set -f
+
+usage() {
+	cat <<'EOF'
+Usage: bjut-autologin COMMAND
+
+Commands:
+  daemon          run the low-overhead periodic service (for procd)
+  once            perform one normal check, respecting cooldowns
+  manual          check/login now, bypassing confirmation and cooldown timers
+  status          print the current runtime status as JSON
+  check-config    validate dependencies and UCI configuration
+  version         print the OpenWrt port version
+EOF
+}
+
+command_exists() {
+	[ -x "$1" ]
+}
+
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+valid_range() {
+	is_uint "$1" && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
+valid_device_name() {
+	case "$1" in
+		''|*[!A-Za-z0-9_.:@-]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+valid_http_url() {
+	case "$1" in
+		http://*|https://*) ;;
+		*) return 1 ;;
+	esac
+	case "$1" in
+		*'"'*|*'\'*|*' '*|*'	'*|*'
+'*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+normalize_bssid() {
+	printf '%s' "$1" | tr 'A-F-' 'a-f:'
+}
+
+valid_bssid() {
+	local value first
+	value="$(normalize_bssid "$1")"
+	case "$value" in
+		[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;;
+		*) return 1 ;;
+	esac
+	[ "$value" != "00:00:00:00:00:00" ] || return 1
+	[ "$value" != "ff:ff:ff:ff:ff:ff" ] || return 1
+	[ "$value" != "02:00:00:00:00:00" ] || return 1
+	first="${value%%:*}"
+	# Multicast BSSIDs have the low bit set. The explicitly enumerated values
+	# keep this test portable without shell hexadecimal arithmetic.
+	case "$first" in
+		01|03|05|07|09|0b|0d|0f|11|13|15|17|19|1b|1d|1f|21|23|25|27|29|2b|2d|2f|31|33|35|37|39|3b|3d|3f|41|43|45|47|49|4b|4d|4f|51|53|55|57|59|5b|5d|5f|61|63|65|67|69|6b|6d|6f|71|73|75|77|79|7b|7d|7f|81|83|85|87|89|8b|8d|8f|91|93|95|97|99|9b|9d|9f|a1|a3|a5|a7|a9|ab|ad|af|b1|b3|b5|b7|b9|bb|bd|bf|c1|c3|c5|c7|c9|cb|cd|cf|d1|d3|d5|d7|d9|db|dd|df|e1|e3|e5|e7|e9|eb|ed|ef|f1|f3|f5|f7|f9|fb|fd|ff) return 1 ;;
+	esac
+	return 0
+}
+
+is_campus_ipv4() {
+	local old_ifs a b c d
+	old_ifs="$IFS"
+	IFS=.
+	set -- $1
+	IFS="$old_ifs"
+	[ "$#" -eq 4 ] || return 1
+	a="$1"; b="$2"; c="$3"; d="$4"
+	for octet in "$a" "$b" "$c" "$d"; do
+		is_uint "$octet" || return 1
+		[ "$octet" -le 255 ] || return 1
+	done
+	case "$a:$b" in
+		10:1[7-9]|10:2[0-7]|10:121|10:126|10:226|172:1[7-9]|172:2[0-7]|172:30) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+normalize_ssid() {
+	printf '%s' "$1" | tr '[:upper:]_' '[:lower:]-' | sed 's/--*/-/g'
+}
+
+valid_ap_id() {
+	[ "${#1}" -eq 4 ] || return 1
+	case "$1" in
+		*[!A-Za-z0-9]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+known_dorm_ssid() {
+	local value prefix suffix stem marker candidate
+	value="$(normalize_ssid "$1")"
+	[ "$value" = "bjut-sushe" ] && return 0
+	case "$value" in
+		cu-bjut-sushe-*-5g)
+			stem="${value%-5g}"; suffix="${stem##*-}"; valid_ap_id "$suffix" && return 0 ;;
+		cu-bjut-sushe-*)
+			suffix="${value##*-}"; valid_ap_id "$suffix" && return 0 ;;
+	esac
+	for prefix in bjut-sushe bjutsushe bj-sushe bjit-sushe bjur-sushe bjut-suahe bjut-sudhe bjut-suhe bjut-sushr bjuy-sushe bnut-sushe; do
+		case "$value" in "$prefix"*) suffix="${value#"$prefix"}" ;; *) continue ;; esac
+		for marker in -2.4g- -5g- 2.4g- 5g- -2.4-; do
+			case "$suffix" in
+				"$marker"*) candidate="${suffix#"$marker"}"; valid_ap_id "$candidate" && return 0 ;;
+			esac
+		done
+	done
+	return 1
+}
+
+known_public_ssid() {
+	[ "$(normalize_ssid "$1")" = "bjut-wifi" ]
+}
+
+mask_username() {
+	local value length prefix suffix
+	value="$1"
+	length="${#value}"
+	if [ "$length" -le 4 ]; then
+		printf '***'
+		return
+	fi
+	prefix="$(printf '%s' "$value" | cut -c1-2)"
+	suffix="$(printf '%s' "$value" | tail -c 2)"
+	printf '%s***%s' "$prefix" "$suffix"
+}
+
+log_message() {
+	local priority="$1" message="$2"
+	case "$CFG_LOG_LEVEL:$priority" in
+		error:debug|error:info|notice:debug|notice:info|info:debug) return 0 ;;
+	esac
+	if command_exists "$LOGGER_BIN"; then
+		"$LOGGER_BIN" -t "$TAG" -p "daemon.$priority" "$message" 2>/dev/null || true
+	else
+		printf '%s: %s\n' "$TAG" "$message" >&2
+	fi
+}
+
+load_main_section() {
+	[ -z "$MAIN_SECTION" ] || return 0
+	MAIN_SECTION="$1"
+	config_get_bool CFG_ENABLED "$1" enabled 0
+	config_get CFG_NETWORK "$1" network "wwan"
+	config_get CFG_DEVICE "$1" device ""
+	config_get CFG_TRANSPORT "$1" transport "auto"
+	config_get CFG_LOGIN_TYPE "$1" login_type "auto"
+	config_get CFG_COMPATIBILITY "$1" compatibility "secure"
+	config_get CFG_INTERVAL "$1" interval "20"
+	config_get CFG_TIMEOUT "$1" timeout "3"
+	config_get CFG_OFFLINE_CONFIRMATIONS "$1" offline_confirmations "2"
+	config_get CFG_MAX_BACKOFF "$1" max_backoff "300"
+	config_get CFG_CREDENTIAL_COOLDOWN "$1" credential_cooldown "600"
+	config_get CFG_POST_LOGIN_DELAY "$1" post_login_delay "2"
+	config_get CFG_ONLINE_URL "$1" online_url "http://connect.rom.miui.com/generate_204"
+	config_get CFG_ONLINE_CODE "$1" online_code "204"
+	config_get_bool CFG_STRICT_NETWORK "$1" strict_network 1
+	config_get CFG_EXPECTED_SSID "$1" expected_ssid ""
+	config_get CFG_EXPECTED_BSSID "$1" expected_bssid ""
+	config_get CFG_LOG_LEVEL "$1" log_level "notice"
+}
+
+collect_account_section() {
+	local enabled
+	config_get_bool enabled "$1" enabled 1
+	[ "$enabled" = "1" ] || return 0
+	ACCOUNT_SECTIONS="${ACCOUNT_SECTIONS}${ACCOUNT_SECTIONS:+ }$1"
+}
+
+load_configuration() {
+	[ "$CONFIG_LOADED" = "1" ] && return 0
+	[ -r "$FUNCTIONS_SH" ] || {
+		printf 'Missing OpenWrt shell library: %s\n' "$FUNCTIONS_SH" >&2
+		return 1
+	}
+	. "$FUNCTIONS_SH"
+	config_load "$CONFIG_PACKAGE" || {
+		printf 'Unable to load /etc/config/%s\n' "$CONFIG_PACKAGE" >&2
+		return 1
+	}
+	config_foreach load_main_section service
+	[ -n "$MAIN_SECTION" ] || {
+		printf 'Missing service section in /etc/config/%s\n' "$CONFIG_PACKAGE" >&2
+		return 1
+	}
+	config_foreach collect_account_section account
+	CONFIG_LOADED=1
+	return 0
+}
+
+validate_configuration() {
+	local section username password protocol usable_accounts=0
+	load_configuration || return 1
+	for dependency in "$CURL_BIN" "$JSONFILTER_BIN" "$UBUS_BIN" "$CODEC_BIN"; do
+		command_exists "$dependency" || {
+			printf 'Required executable is missing: %s\n' "$dependency" >&2
+			return 1
+		}
+	done
+	[ -r "$JSHN_SH" ] || {
+		printf 'Required jshn library is missing: %s\n' "$JSHN_SH" >&2
+		return 1
+	}
+	case "$CFG_TRANSPORT" in auto|wifi|ethernet) ;; *) printf 'Invalid transport: %s\n' "$CFG_TRANSPORT" >&2; return 1 ;; esac
+	case "$CFG_LOGIN_TYPE" in auto|type1|type2|type3) ;; *) printf 'Invalid login_type: %s\n' "$CFG_LOGIN_TYPE" >&2; return 1 ;; esac
+	case "$CFG_COMPATIBILITY" in secure|legacy_http) ;; *) printf 'Invalid compatibility: %s\n' "$CFG_COMPATIBILITY" >&2; return 1 ;; esac
+	case "$CFG_LOG_LEVEL" in debug|info|notice|error) ;; *) printf 'Invalid log_level: %s\n' "$CFG_LOG_LEVEL" >&2; return 1 ;; esac
+	valid_range "$CFG_INTERVAL" 5 3600 || { printf 'interval must be 5..3600 seconds\n' >&2; return 1; }
+	valid_range "$CFG_TIMEOUT" 1 30 || { printf 'timeout must be 1..30 seconds\n' >&2; return 1; }
+	valid_range "$CFG_OFFLINE_CONFIRMATIONS" 1 10 || { printf 'offline_confirmations must be 1..10\n' >&2; return 1; }
+	valid_range "$CFG_MAX_BACKOFF" "$CFG_INTERVAL" 86400 || { printf 'max_backoff must be interval..86400 seconds\n' >&2; return 1; }
+	valid_range "$CFG_CREDENTIAL_COOLDOWN" 30 86400 || { printf 'credential_cooldown must be 30..86400 seconds\n' >&2; return 1; }
+	valid_range "$CFG_POST_LOGIN_DELAY" 0 15 || { printf 'post_login_delay must be 0..15 seconds\n' >&2; return 1; }
+	case "$CFG_ONLINE_CODE" in [1-5][0-9][0-9]) ;; *) printf 'online_code must be a three-digit HTTP status\n' >&2; return 1 ;; esac
+	valid_http_url "$CFG_ONLINE_URL" || { printf 'online_url must be one safe HTTP(S) URL\n' >&2; return 1; }
+	[ -z "$CFG_DEVICE" ] || valid_device_name "$CFG_DEVICE" || { printf 'Invalid device name\n' >&2; return 1; }
+	valid_device_name "$CFG_NETWORK" || { printf 'Invalid network name\n' >&2; return 1; }
+	[ -z "$CFG_EXPECTED_BSSID" ] || valid_bssid "$CFG_EXPECTED_BSSID" || { printf 'Invalid expected_bssid\n' >&2; return 1; }
+	if [ "$CFG_ENABLED" = "1" ]; then
+		[ -n "$CFG_NETWORK" ] || { printf 'network must not be empty\n' >&2; return 1; }
+		for section in $ACCOUNT_SECTIONS; do
+			config_get username "$section" username ""
+			config_get password "$section" password ""
+			config_get protocol "$section" login_type "auto"
+			case "$protocol" in auto|type1|type2|type3) ;; *) printf 'Invalid account login_type in %s\n' "$section" >&2; return 1 ;; esac
+			[ "${#username}" -le 256 ] || { printf 'Account username is too long in %s\n' "$section" >&2; return 1; }
+			[ "${#password}" -le 4096 ] || { printf 'Account password is too long in %s\n' "$section" >&2; return 1; }
+			[ -n "$username" ] && [ -n "$password" ] && usable_accounts=$((usable_accounts + 1))
+			password=""
+		done
+		[ "$usable_accounts" -gt 0 ] || { printf 'At least one enabled account with username and password is required\n' >&2; return 1; }
+	fi
+	return 0
+}
+
+json_file_value() {
+	[ -s "$1" ] || return 0
+	"$JSONFILTER_BIN" -i "$1" -e "$2" 2>/dev/null | head -n 1
+}
+
+load_runtime_state() {
+	local value
+	RUNTIME_FAILURES=0
+	RUNTIME_OFFLINE_COUNT=0
+	RUNTIME_NEXT_ATTEMPT=0
+	[ -s "$STATE_FILE" ] || return 0
+	value="$(json_file_value "$STATE_FILE" '@.failures')"; is_uint "$value" && RUNTIME_FAILURES="$value"
+	value="$(json_file_value "$STATE_FILE" '@.offline_count')"; is_uint "$value" && RUNTIME_OFFLINE_COUNT="$value"
+	value="$(json_file_value "$STATE_FILE" '@.next_attempt')"; is_uint "$value" && RUNTIME_NEXT_ATTEMPT="$value"
+}
+
+write_status() {
+	local state="$1" message="$2" protocol="$3" account="$4" next_attempt="$5" failures="$6" offline_count="$7"
+	local tmp now retry_after="${8:-}"
+	mkdir -p "$STATE_DIR" || return 1
+	chmod 0700 "$STATE_DIR" 2>/dev/null || return 1
+	tmp="$STATE_FILE.$$"
+	now="$(date +%s)"
+	# Start backoff after network work finishes, not before a slow probe.
+	if [ -n "$retry_after" ] && is_uint "$retry_after"; then
+		next_attempt=$((now + retry_after))
+	fi
+	. "$JSHN_SH"
+	json_init
+	json_add_string state "$state"
+	json_add_string message "$message"
+	json_add_int updated_at "$now"
+	json_add_string event "$EVENT"
+	json_add_string network "$CFG_NETWORK"
+	json_add_string device "$DEVICE"
+	json_add_string transport "$TRANSPORT"
+	json_add_string ipv4 "$LOCAL_IPV4"
+	json_add_string ssid "$SSID"
+	json_add_string bssid "$BSSID"
+	json_add_string protocol "$protocol"
+	json_add_string account "$account"
+	json_add_int next_attempt "$next_attempt"
+	json_add_int failures "$failures"
+	json_add_int offline_count "$offline_count"
+	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE"
+}
+
+acquire_lock() {
+	local owner
+	mkdir -p "$STATE_DIR" || return 1
+	chmod 0700 "$STATE_DIR" 2>/dev/null || return 1
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" >"$LOCK_DIR/pid"
+		LOCK_HELD=1
+		return 0
+	fi
+	owner="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if is_uint "$owner" && kill -0 "$owner" 2>/dev/null; then
+		return 1
+	fi
+	if is_uint "$owner"; then
+		rm -rf -- "$STATE_DIR/work.$owner"
+	fi
+	rm -rf -- "$LOCK_DIR"
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" >"$LOCK_DIR/pid"
+		LOCK_HELD=1
+		return 0
+	fi
+	return 1
+}
+
+release_lock() {
+	if [ "$LOCK_HELD" = "1" ]; then
+		rm -rf -- "$LOCK_DIR"
+	fi
+	LOCK_HELD=0
+}
+
+prepare_work_dir() {
+	WORK_DIR="$STATE_DIR/work.$$"
+	rm -rf -- "$WORK_DIR"
+	mkdir -p "$WORK_DIR"
+}
+
+network_json_value() {
+	printf '%s' "$1" | "$JSONFILTER_BIN" -e "$2" 2>/dev/null | head -n 1
+}
+
+read_network_identity() {
+	local status up detected_device info
+	status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK" status 2>/dev/null)" || status=""
+	[ -n "$status" ] || return 1
+	up="$(network_json_value "$status" '@.up')"
+	case "$up" in 1|true) ;; *) return 1 ;; esac
+	detected_device="$(network_json_value "$status" '@.l3_device')"
+	[ -n "$detected_device" ] || detected_device="$(network_json_value "$status" '@.device')"
+	DEVICE="${CFG_DEVICE:-$detected_device}"
+	valid_device_name "$DEVICE" || return 1
+	[ -d "$SYS_NET/$DEVICE" ] || return 1
+	LOCAL_IPV4="$(network_json_value "$status" '@["ipv4-address"][0].address')"
+	if [ -z "$LOCAL_IPV4" ] && command_exists "$IP_BIN"; then
+		LOCAL_IPV4="$("$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk 'NR == 1 { split($4, value, "/"); print value[1] }')"
+	fi
+	is_campus_ipv4 "$LOCAL_IPV4" || return 2
+
+	TRANSPORT="$CFG_TRANSPORT"
+	SSID=""
+	BSSID=""
+	# rpcd-mod-iwinfo works on both classic shell Wi-Fi scripts and newer
+	# wifi-scripts-ucode systems where the standalone iwinfo CLI may be absent.
+	info="$("$UBUS_BIN" -S call iwinfo info "{\"device\":\"$DEVICE\"}" 2>/dev/null)" || info=""
+	if [ -n "$info" ]; then
+		SSID="$(network_json_value "$info" '@.ssid')"
+		BSSID="$(network_json_value "$info" '@.bssid')"
+	fi
+	if [ -z "$SSID" ] && command_exists "$IWINFO_BIN"; then
+		info="$("$IWINFO_BIN" "$DEVICE" info 2>/dev/null)" || info=""
+		SSID="$(printf '%s\n' "$info" | sed -n 's/^.*ESSID: "\(.*\)"/\1/p' | head -n 1)"
+		BSSID="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Access Point: \([0-9A-Fa-f:-]*\).*/\1/p' | head -n 1)"
+	fi
+	BSSID="$(normalize_bssid "$BSSID")"
+	if [ "$TRANSPORT" = "auto" ]; then
+		if [ -n "$SSID" ] || [ -d "$SYS_NET/$DEVICE/wireless" ]; then
+			TRANSPORT="wifi"
+		else
+			TRANSPORT="ethernet"
+		fi
+	fi
+	return 0
+}
+
+validate_network_identity() {
+	local protocol="$1" expected_bssid
+	case "$protocol:$TRANSPORT" in
+		type1:wifi|type1:ethernet|type2:wifi|type3:ethernet) ;;
+		*) return 1 ;;
+	esac
+	# Plain HTTP is never enabled merely because a familiar SSID is visible.
+	# On wireless uplinks it additionally requires an exact configured BSSID,
+	# even when the optional SSID heuristics below have been disabled.
+	if [ "$CFG_COMPATIBILITY" = "legacy_http" ] && [ "$TRANSPORT" = "wifi" ]; then
+		[ -n "$CFG_EXPECTED_BSSID" ] || return 1
+		valid_bssid "$BSSID" || return 1
+		expected_bssid="$(normalize_bssid "$CFG_EXPECTED_BSSID")"
+		[ "$BSSID" = "$expected_bssid" ] || return 1
+	fi
+	[ "$CFG_STRICT_NETWORK" = "1" ] || return 0
+	[ "$TRANSPORT" = "wifi" ] || return 0
+	valid_bssid "$BSSID" || return 1
+	if [ -n "$CFG_EXPECTED_BSSID" ]; then
+		expected_bssid="$(normalize_bssid "$CFG_EXPECTED_BSSID")"
+		[ "$BSSID" = "$expected_bssid" ] || return 1
+	fi
+	if [ -n "$CFG_EXPECTED_SSID" ]; then
+		[ "$SSID" = "$CFG_EXPECTED_SSID" ] || return 1
+	else
+		case "$protocol" in
+			type1) known_dorm_ssid "$SSID" || return 1 ;;
+			type2) known_public_ssid "$SSID" || return 1 ;;
+		esac
+	fi
+	return 0
+}
+
+request_id() {
+	local now
+	now="$(date +%s)"
+	printf '%04d' "$(( (now + $$) % 10000 ))"
+}
+
+urlencode() {
+	printf '%s' "$1" | "$CODEC_BIN" urlencode
+}
+
+eportal_encrypt() {
+	printf '%s' "$1" | "$CODEC_BIN" eportal
+}
+
+base64_value() {
+	printf '%s' "$1" | "$CODEC_BIN" base64
+}
+
+http_request() {
+	local url="$1" referer="$2" resolve="$3" host_header="$4" tls_profile="$5" family="${6:-}"
+	local max_time response_size rc
+	HTTP_BODY="$WORK_DIR/response"
+	: >"$HTTP_BODY"
+	max_time="$CFG_TIMEOUT"
+	set -- --silent --show-error --output "$HTTP_BODY" --write-out '%{http_code}' \
+		--connect-timeout "$CFG_TIMEOUT" --max-time "$max_time" \
+		--max-filesize "$MAX_RESPONSE_BYTES" --interface "$DEVICE" \
+		--noproxy '*' --proxy '' --proto '=http,https' \
+		--header 'Accept: */*' --header 'Cache-Control: no-cache, no-store' \
+		--user-agent "BJUT-Auto-Login-OpenWrt/$VERSION"
+	[ "$family" = "ipv6" ] && set -- "$@" --ipv6
+	[ -n "$referer" ] && set -- "$@" --referer "$referer"
+	[ -n "$resolve" ] && set -- "$@" --resolve "$resolve"
+	[ -n "$host_header" ] && set -- "$@" --header "Host: $host_header"
+	if [ "$tls_profile" = "dorm_pinned" ]; then
+		set -- "$@" --insecure --pinnedpubkey "$DORM_SPKI_PIN"
+	fi
+	HTTP_CODE="$(printf 'url = "%s"\n' "$url" | "$CURL_BIN" "$@" --config - 2>"$WORK_DIR/curl-error")"
+	rc=$?
+	case "$HTTP_CODE" in [0-9][0-9][0-9]) ;; *) HTTP_CODE="000" ;; esac
+	[ "$rc" -eq 0 ] || return 1
+	response_size="$(wc -c <"$HTTP_BODY" 2>/dev/null | tr -d '[:space:]')"
+	is_uint "$response_size" || return 1
+	[ "$response_size" -le "$MAX_RESPONSE_BYTES" ] || return 1
+	return 0
+}
+
+http_success() {
+	case "$HTTP_CODE" in 2[0-9][0-9]) return 0 ;; *) return 1 ;; esac
+}
+
+load_jsonp() {
+	local first last
+	JSONP_PAYLOAD="$(sed -e '1s/^[^(]*(//' -e '$s/)[^)]*$//' "$HTTP_BODY" 2>/dev/null)"
+	first="$(printf '%s' "$JSONP_PAYLOAD" | cut -c1)"
+	last="$(printf '%s' "$JSONP_PAYLOAD" | tail -c 1)"
+	[ "$first" = "{" ] && [ "$last" = "}" ]
+}
+
+jsonp_value() {
+	printf '%s' "$JSONP_PAYLOAD" | "$JSONFILTER_BIN" -e "$1" 2>/dev/null | head -n 1
+}
+
+response_has_result() {
+	local result
+	load_jsonp || return 1
+	result="$(jsonp_value '@.result')"
+	case "$result" in 0|1) return 0 ;; *) return 1 ;; esac
+}
+
+parse_login_response() {
+	local result
+	http_success || return 11
+	load_jsonp || return 11
+	result="$(jsonp_value '@.result')"
+	case "$result" in
+		1) return 0 ;;
+		0) return 10 ;;
+		*) return 11 ;;
+	esac
+}
+
+online_check() {
+	http_request "$CFG_ONLINE_URL" "" "" "" "strict" || return 1
+	[ "$HTTP_CODE" = "$CFG_ONLINE_CODE" ]
+}
+
+type1_probe_url() {
+	local base="$1" encoded_ip
+	encoded_ip="$(base64_value "$LOCAL_IPV4")" || return 1
+	encoded_ip="$(urlencode "$encoded_ip")" || return 1
+	printf '%s?callback=dr1001&program_index=&wlan_vlan_id=0&wlan_user_ip=%s&wlan_user_ipv6=&wlan_user_ssid=&wlan_user_areaid=&wlan_ac_ip=&wlan_ap_mac=000000000000&gw_id=000000000000&jsVersion=4.X&v=%s&lang=zh' \
+		"$base" "$encoded_ip" "$(request_id)"
+}
+
+type1_probe_body_valid() {
+	local code data
+	http_success || return 1
+	load_jsonp || return 1
+	code="$(jsonp_value '@.code')"
+	data="$(jsonp_value '@.data')"
+	[ "$code" = "1" ] && [ -n "$data" ]
+}
+
+probe_type1_secure_host() {
+	local host="$1" profile="$2" base url
+	base="https://$host:802/eportal/portal/page/loadConfig"
+	url="$(type1_probe_url "$base")" || return 1
+	http_request "$url" "https://$DORM_GATEWAY:802/" "$host:802:$DORM_GATEWAY" "$DORM_GATEWAY:802" "$profile" || return 1
+	type1_probe_body_valid || return 1
+	TYPE1_TLS_HOST="$host"
+	TYPE1_TLS_PROFILE="$profile"
+	return 0
+}
+
+probe_type1_http() {
+	local url
+	url="$(type1_probe_url "http://$DORM_GATEWAY:801/eportal/portal/page/loadConfig")" || return 1
+	http_request "$url" "http://$DORM_GATEWAY/" "" "" "http" || return 1
+	type1_probe_body_valid
+}
+
+probe_type1() {
+	local host
+	TYPE1_TLS_HOST=""
+	TYPE1_TLS_PROFILE=""
+	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
+		probe_type1_http
+		return $?
+	fi
+	for host in wlgn.bjut.edu.cn lgn.bjut.edu.cn; do
+		probe_type1_secure_host "$host" strict && return 0
+		probe_type1_secure_host "$host" dorm_pinned && return 0
+	done
+	# A read-only HTTP probe may explain the failure but never authorizes an
+	# HTTPS-configured credential request. Return 2 for "portal only".
+	probe_type1_http && return 2
+	return 1
+}
+
+probe_type2() {
+	local base referer resolve url
+	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
+		base="http://$WIFI_GATEWAY/drcom/chkstatus"
+		referer="http://$WIFI_GATEWAY/"
+		resolve=""
+	else
+		base="https://wlgn.bjut.edu.cn/drcom/chkstatus"
+		referer="https://wlgn.bjut.edu.cn/"
+		resolve="wlgn.bjut.edu.cn:443:$WIFI_GATEWAY"
+	fi
+	url="$base?callback=dr1002&jsVersion=4.1&v=$(request_id)&lang=zh"
+	http_request "$url" "$referer" "$resolve" "" "strict" || return 1
+	http_success && response_has_result
+}
+
+lgn_request() {
+	local url="$1" host="$2" port="$3" referer="$4" gateway
+	if [ "$host" = "lgn6.bjut.edu.cn" ]; then
+		for gateway in '2001:da8:216:30c9::2' '2001:da8:216:30c9::a'; do
+			http_request "$url" "$referer" "$host:$port:[$gateway]" "" "strict" ipv6 && http_success && return 0
+		done
+	else
+		for gateway in "$LGN_GATEWAY_PRIMARY" "$LGN_GATEWAY_SECONDARY"; do
+			if http_request "$url" "$referer" "$host:$port:$gateway" "" "strict" && http_success; then
+				LGN_SELECTED_GATEWAY="$gateway"
+				return 0
+			fi
+		done
+	fi
+	return 1
+}
+
+lgn_user_info_probe() {
+	local url code info
+	url="https://lgn.bjut.edu.cn:802/eportal/portal/page/loadUserInfo?callback=726427262624&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&user_account=&wlan_user_ip=&wlan_user_ipv6=&wlan_user_mac=262626262626262626262626&jsVersion=22384e&encrypt=1&v=$(request_id)&lang=zh"
+	lgn_request "$url" "lgn.bjut.edu.cn" 802 "https://lgn.bjut.edu.cn/" || return 1
+	load_jsonp || return 1
+	code="$(jsonp_value '@.code')"
+	info="$(jsonp_value '@.user_info')"
+	[ -n "$code" ] && [ -n "$info" ]
+}
+
+discover_lgn_ipv6() {
+	local url result address
+	url="https://lgn6.bjut.edu.cn/drcom/getipv6?callback=dr1004&program_index=o4OBee1755497815&page_index=cHAmjX1755497856&jsVersion=4.2.2&v=$(request_id)&lang=zh"
+	lgn_request "$url" "lgn6.bjut.edu.cn" 443 "https://lgn.bjut.edu.cn/" || return 1
+	load_jsonp || return 1
+	result="$(jsonp_value '@.result')"
+	address="$(jsonp_value '@.ip')"
+	[ "$result" = "1" ] || return 1
+	printf '%s' "$address" | "$CODEC_BIN" validate-ipv6 >/dev/null 2>&1 || return 1
+	case "$(printf '%s' "$address" | tr 'A-F' 'a-f')" in 2001:da8:216:*) ;; *) return 1 ;; esac
+	OBSERVED_IPV6="$address"
+	return 0
+}
+
+probe_type3() {
+	# A verified IPv4 portal is enough to authenticate IPv4. Missing IPv6 must
+	# not hide the wired portal or trigger account rotation.
+	lgn_user_info_probe
+}
+
+probe_protocol() {
+	case "$1" in
+		type1) probe_type1 ;;
+		type2) probe_type2 ;;
+		type3) probe_type3 ;;
+		*) return 1 ;;
+	esac
+}
+
+detect_protocol() {
+	local candidates candidate rc portal_only=""
+	if [ "$CFG_LOGIN_TYPE" != "auto" ]; then
+		candidates="$CFG_LOGIN_TYPE"
+	elif [ "$TRANSPORT" = "ethernet" ]; then
+		candidates="type1 type3"
+	elif known_public_ssid "$SSID"; then
+		candidates="type2 type1"
+	else
+		candidates="type1 type2"
+	fi
+	for candidate in $candidates; do
+		probe_protocol "$candidate"
+		rc=$?
+		if [ "$rc" -eq 0 ]; then
+			SELECTED_PROTOCOL="$candidate"
+			return 0
+		fi
+		[ "$rc" -eq 2 ] && [ -z "$portal_only" ] && portal_only="$candidate"
+	done
+	[ -n "$portal_only" ] && return 2
+	return 1
+}
+
+type1_login() {
+	local username="$1" password="$2" account encoded_account encoded_password encoded_ip base referer resolve host_header profile url
+	case "$(printf '%s' "$username" | tr '[:upper:]' '[:lower:]')" in
+		*@campus) account="$username" ;;
+		*) account="$username@campus" ;;
+	esac
+	encoded_account="$(urlencode "$account")" || return 11
+	encoded_password="$(urlencode "$password")" || return 11
+	encoded_ip="$(urlencode "$LOCAL_IPV4")" || return 11
+	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
+		probe_type1_http || return 11
+		base="http://$DORM_GATEWAY:801/eportal/portal/login"
+		referer="http://$DORM_GATEWAY/"
+		resolve=""; host_header=""; profile="http"
+	else
+		# Re-probe immediately before credentials are sent.
+		probe_type1 || return 11
+		[ -n "$TYPE1_TLS_HOST" ] || return 11
+		base="https://$TYPE1_TLS_HOST:802/eportal/portal/login"
+		referer="https://$DORM_GATEWAY:802/"
+		resolve="$TYPE1_TLS_HOST:802:$DORM_GATEWAY"
+		host_header="$DORM_GATEWAY:802"
+		profile="$TYPE1_TLS_PROFILE"
+	fi
+	url="$base?callback=dr1003&login_method=1&user_account=$encoded_account&user_password=$encoded_password&wlan_user_ip=$encoded_ip&wlan_user_ipv6=&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&jsVersion=4.2.1&terminal_type=1&lang=zh-cn&v=$(request_id)&lang=zh"
+	http_request "$url" "$referer" "$resolve" "$host_header" "$profile" || return 11
+	parse_login_response
+}
+
+type2_login() {
+	local username="$1" password="$2" encoded_user encoded_password base referer resolve url
+	encoded_user="$(urlencode "$username")" || return 11
+	encoded_password="$(urlencode "$password")" || return 11
+	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
+		probe_type2 || return 11
+		base="http://$WIFI_GATEWAY/drcom/login"; referer="http://$WIFI_GATEWAY/"; resolve=""
+	else
+		probe_type2 || return 11
+		base="https://wlgn.bjut.edu.cn/drcom/login"; referer="https://wlgn.bjut.edu.cn/"; resolve="wlgn.bjut.edu.cn:443:$WIFI_GATEWAY"
+	fi
+	url="$base?callback=dr1003&DDDDD=$encoded_user&upass=$encoded_password&0MKKey=123456&R1=0&R2=&R3=0&R6=0&para=00&v6ip=&terminal_type=1&lang=zh-cn&jsVersion=4.1&v=$(request_id)&lang=zh"
+	http_request "$url" "$referer" "$resolve" "" "strict" || return 11
+	parse_login_response
+}
+
+type3_login() {
+	local username="$1" password="$2" account enc_account enc_password enc_ipv4 enc_ipv6 url
+	lgn_user_info_probe || return 11
+	OBSERVED_IPV6=""
+	discover_lgn_ipv6 || OBSERVED_IPV6=""
+	case "$username" in ,0,*) account="$username" ;; *) account=",0,$username" ;; esac
+	enc_account="$(eportal_encrypt "$account")" || return 11
+	enc_password="$(eportal_encrypt "$password")" || return 11
+	enc_ipv4="$(eportal_encrypt "$LOCAL_IPV4")" || return 11
+	enc_ipv6="$(eportal_encrypt "$OBSERVED_IPV6")" || return 11
+	url="https://lgn.bjut.edu.cn:802/eportal/portal/login?callback=726427262623&login_method=27&user_account=$enc_account&user_password=$enc_password&wlan_user_ip=$enc_ipv4&wlan_user_ipv6=$enc_ipv6&wlan_user_mac=262626262626262626262626&wlan_vlan_id=26&wlan_ac_ip=&wlan_ac_name=&authex_enable=&jsVersion=2238243824&login_ip_type=26&terminal_type=25&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&encrypt=1&v=$(request_id)&lang=zh"
+	# Never replay credential submission on another gateway after a timeout.
+	http_request "$url" "https://lgn.bjut.edu.cn/" "lgn.bjut.edu.cn:802:$LGN_SELECTED_GATEWAY" "" "strict" || return 11
+	parse_login_response
+}
+
+login_protocol() {
+	case "$1" in
+		type1) type1_login "$2" "$3" ;;
+		type2) type2_login "$2" "$3" ;;
+		type3) type3_login "$2" "$3" ;;
+		*) return 11 ;;
+	esac
+}
+
+try_accounts() {
+	local protocol="$1" section enabled username password account_protocol masked rc attempted=0
+	for section in $ACCOUNT_SECTIONS; do
+		config_get_bool enabled "$section" enabled 1
+		[ "$enabled" = "1" ] || continue
+		config_get username "$section" username ""
+		config_get password "$section" password ""
+		config_get account_protocol "$section" login_type "auto"
+		[ -n "$username" ] && [ -n "$password" ] || continue
+		[ "$account_protocol" = "auto" ] || [ "$account_protocol" = "$protocol" ] || continue
+		attempted=1
+		masked="$(mask_username "$username")"
+		log_message notice "正在通过 $protocol 尝试账号 $masked"
+		login_protocol "$protocol" "$username" "$password"
+		rc=$?
+		password=""
+		case "$rc" in
+			0) SELECTED_ACCOUNT="$masked"; return 0 ;;
+			10) log_message notice "账号 $masked 被认证网关拒绝，尝试下一个账号" ;;
+			*) return 11 ;;
+		esac
+	done
+	[ "$attempted" = "1" ] && return 10
+	return 12
+}
+
+calculate_backoff() {
+	local failures="$1" delay="$CFG_INTERVAL" count=1
+	while [ "$count" -lt "$failures" ] && [ "$delay" -lt "$CFG_MAX_BACKOFF" ]; do
+		delay=$((delay * 2))
+		[ "$delay" -gt "$CFG_MAX_BACKOFF" ] && delay="$CFG_MAX_BACKOFF"
+		count=$((count + 1))
+	done
+	printf '%s' "$delay"
+}
+
+run_once_impl() {
+	local now rc failures delay offline_count
+	read_network_identity
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		if [ "$rc" -eq 2 ]; then
+			write_status "blocked" "上游接口 IPv4 不属于已知校园网网段，未发送凭据" "" "" 0 0 0
+			log_message error "上游接口地址不属于已知校园网网段，登录已阻止"
+		else
+			write_status "waiting_interface" "等待已配置的上游接口及 IPv4 地址" "" "" 0 0 0
+		fi
+		return 1
+	fi
+	load_runtime_state
+	if online_check; then
+		write_status "online" "互联网连接正常" "" "" 0 0 0
+		return 0
+	fi
+	now="$(date +%s)"
+	if [ "$FORCE" != "1" ] && [ "$RUNTIME_NEXT_ATTEMPT" -gt "$now" ]; then
+		write_status "cooldown" "当前仍离线，等待下一次安全重试" "" "" "$RUNTIME_NEXT_ATTEMPT" "$RUNTIME_FAILURES" "$RUNTIME_OFFLINE_COUNT"
+		return 1
+	fi
+	offline_count=$((RUNTIME_OFFLINE_COUNT + 1))
+	if [ "$FORCE" != "1" ] && [ "$offline_count" -lt "$CFG_OFFLINE_CONFIRMATIONS" ]; then
+		write_status "offline_suspected" "首次离线检测，等待复核以避免瞬时误判" "" "" 0 "$RUNTIME_FAILURES" "$offline_count"
+		return 1
+	fi
+
+	SELECTED_PROTOCOL=""
+	detect_protocol
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		failures=$((RUNTIME_FAILURES + 1))
+		delay="$(calculate_backoff "$failures")"
+		if [ "$rc" -eq 2 ]; then
+			write_status "portal_not_ready" "已发现校园网门户，但安全登录条件尚未满足" "" "" 0 "$failures" "$offline_count" "$delay"
+		else
+			write_status "portal_not_found" "未检测到与上游接口匹配的校园网认证门户" "" "" 0 "$failures" "$offline_count" "$delay"
+		fi
+		return 1
+	fi
+	if ! validate_network_identity "$SELECTED_PROTOCOL"; then
+		write_status "blocked" "网络身份校验未通过，未发送凭据；请核对传输类型、SSID/BSSID 与安全模式" "$SELECTED_PROTOCOL" "" 0 0 "$offline_count"
+		log_message error "网络身份校验未通过，已阻止 $SELECTED_PROTOCOL 凭据请求"
+		return 1
+	fi
+
+	try_accounts "$SELECTED_PROTOCOL"
+	rc=$?
+	case "$rc" in
+		0)
+			log_message notice "$SELECTED_PROTOCOL 认证网关已接受账号 $SELECTED_ACCOUNT"
+			if [ "$CFG_POST_LOGIN_DELAY" -gt 0 ]; then sleep "$CFG_POST_LOGIN_DELAY"; fi
+			if online_check; then
+				write_status "online" "认证成功，互联网连接已恢复" "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 0
+			else
+				write_status "login_accepted" "认证网关已接受登录，等待互联网连通性复核" "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 "$offline_count" "$CFG_INTERVAL"
+			fi
+			return 0
+			;;
+		10)
+			write_status "auth_rejected" "所有适用账号均被认证网关明确拒绝；已进入凭据冷却期" "$SELECTED_PROTOCOL" "" 0 1 "$offline_count" "$CFG_CREDENTIAL_COOLDOWN"
+			log_message error "$SELECTED_PROTOCOL 的所有适用账号均被认证网关拒绝"
+			return 1
+			;;
+		12)
+			write_status "no_account" "没有适用于已检测协议的已启用账号" "$SELECTED_PROTOCOL" "" 0 0 "$offline_count"
+			return 1
+			;;
+		*)
+			failures=$((RUNTIME_FAILURES + 1))
+			delay="$(calculate_backoff "$failures")"
+			write_status "request_failed" "认证请求失败或返回结果不明确；为避免重复登录，将稍后重试" "$SELECTED_PROTOCOL" "" 0 "$failures" "$offline_count" "$delay"
+			return 1
+			;;
+	esac
+}
+
+run_once_locked() {
+	local rc
+	acquire_lock || return 75
+	prepare_work_dir || { release_lock; return 1; }
+	run_once_impl
+	rc=$?
+	rm -rf -- "$WORK_DIR"
+	WORK_DIR=""
+	release_lock
+	return "$rc"
+}
+
+run_daemon() {
+	local rc
+	while :; do
+		run_once_locked || rc=$?
+		if [ "${rc:-0}" -ne 0 ] && [ "${rc:-0}" -ne 1 ] && [ "${rc:-0}" -ne 75 ]; then
+			log_message error "检查循环异常退出，代码 ${rc:-1}"
+		fi
+		rc=0
+		sleep "$CFG_INTERVAL" &
+		SLEEP_PID=$!
+		wait "$SLEEP_PID" 2>/dev/null || true
+		SLEEP_PID=""
+	done
+}
+
+print_status() {
+	if [ -s "$STATE_FILE" ]; then
+		cat "$STATE_FILE"
+	else
+		printf '{"state":"stopped","message":"服务尚未生成运行状态"}\n'
+	fi
+}
+
+main() {
+	local command="${1:-}"
+	case "$command" in
+		status) print_status; return 0 ;;
+		version) printf '%s\n' "$VERSION"; return 0 ;;
+		-h|--help|help|'') usage; [ -n "$command" ]; return $? ;;
+		check-config|daemon|once|manual) ;;
+		*) usage >&2; return 2 ;;
+	esac
+	validate_configuration || return 2
+	if [ "$command" = "check-config" ]; then
+		printf 'Configuration is valid (enabled=%s, accounts=%s).\n' "$CFG_ENABLED" "$(printf '%s\n' $ACCOUNT_SECTIONS | sed '/^$/d' | wc -l)"
+		return 0
+	fi
+	[ "$CFG_ENABLED" = "1" ] || {
+		printf 'bjut-autologin is disabled in UCI.\n' >&2
+		return 3
+	}
+	case "$command" in
+		daemon) EVENT="periodic"; run_daemon ;;
+		once) EVENT="${BJUT_EVENT:-manual_once}"; run_once_locked ;;
+		manual) EVENT="manual"; FORCE=1; run_once_locked ;;
+	esac
+}
+
+if [ "${BJUT_SOURCE_ONLY:-0}" != "1" ]; then
+	main "$@"
+fi

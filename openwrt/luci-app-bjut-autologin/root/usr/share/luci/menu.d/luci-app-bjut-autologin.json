@@ -1,0 +1,13 @@
+{
+	"admin/network/bjut-autologin": {
+		"title": "BJUT 自动登录",
+		"order": 75,
+		"action": {
+			"type": "view",
+			"path": "bjut-autologin/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-bjut-autologin" ]
+		}
+	}
+}

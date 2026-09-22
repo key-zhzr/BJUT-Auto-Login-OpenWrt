@@ -1,0 +1,28 @@
+config service 'main'
+	option enabled '0'
+	option network 'wwan'
+	option device ''
+	option transport 'auto'
+	option login_type 'auto'
+	option compatibility 'secure'
+	option interval '20'
+	option timeout '3'
+	option offline_confirmations '2'
+	option max_backoff '300'
+	option credential_cooldown '600'
+	option post_login_delay '2'
+	option online_url 'http://connect.rom.miui.com/generate_204'
+	option online_code '204'
+	option strict_network '1'
+	option expected_ssid ''
+	option expected_bssid ''
+	option log_level 'notice'
+
+# Add one or more account sections. They are tried in file order. Keep this
+# file mode 0600 because UCI stores the password as plain text.
+#
+# config account
+#	option enabled '1'
+#	option username '25000000'
+#	option password 'replace-me'
+#	option login_type 'auto'

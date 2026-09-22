@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$(uci -q get bjut-autologin.main.enabled)" = "1" ] || exit 0
+configured_network="$(uci -q get bjut-autologin.main.network)"
+[ -n "$configured_network" ] || exit 0
+[ "$INTERFACE" = "$configured_network" ] || exit 0
+
+# Do not block netifd's hotplug chain. The daemon's atomic lock prevents this
+# prompt event check from overlapping its periodic request.
+(
+	sleep 2
+	BJUT_EVENT=ifup /usr/sbin/bjut-autologin once >/dev/null 2>&1
+) &
+
+exit 0
