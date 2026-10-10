@@ -119,7 +119,7 @@ bound_curl() {
 	else
 		# The mwan3 socket wrapper supplies both bind() and SO_BINDTODEVICE on
 		# older curl. Without it, fail rather than silently using another WAN.
-		[ -r "$MWAN_WRAPPER" ] || return 98
+		[ "$CFG_MWAN3" = 1 ] && [ -r "$MWAN_WRAPPER" ] || return 98
 		interface="if!$device"
 	fi
 	if [ "$CFG_MWAN3" = "1" ] && [ -r "$MWAN_WRAPPER" ]; then

@@ -204,6 +204,16 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(value['result']['state'],'error')
         self.assertEqual(value['result']['message'],'账号或密码错误')
 
+    def test_billing_old_curl_without_enabled_source_wrapper_sends_no_request(self):
+        env=self.config(); cfg=json.loads(Path(env['MOCK_CONFIG_JSON']).read_text())
+        cfg['main']['mwan3']='0'; Path(env['MOCK_CONFIG_JSON']).write_text(json.dumps(cfg))
+        wrapper=self.temp/'unused-wrapper'; wrapper.write_text('fixture: must not be loaded')
+        env.update(MOCK_CURL_VERSION='8.8.0', BJUT_MWAN_WRAPPER=str(wrapper))
+        ticket,owner=self.billing('billing_success',env)
+        value=self.billing_poll(ticket,owner,env)
+        self.assertEqual(value['result']['state'],'error',value)
+        self.assertNotIn('URL ',self.requests())
+
     def test_billing_captcha_resumes_same_session_and_other_owner_cannot_read_it(self):
         env=self.config();ticket,owner=self.billing('billing_captcha',env)
         value=self.billing_poll(ticket,owner,env)
