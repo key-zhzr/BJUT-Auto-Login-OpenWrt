@@ -44,13 +44,13 @@
 ```sh
 # 使用 opkg 的固件
 opkg update
-opkg install /tmp/openwrt-24.10.8-你的平台-ipk__bjut-autologin_*.ipk
-opkg install /tmp/openwrt-24.10.8-你的平台-ipk__luci-app-bjut-autologin_*.ipk
+opkg install /tmp/openwrt-你的平台-24.10.8-ipk__bjut-autologin_*.ipk
+opkg install /tmp/openwrt-你的平台-24.10.8-ipk__luci-app-bjut-autologin_*.ipk
 
 # 使用 apk 的固件：独立安装包尚未配置软件源签名
 apk update
-apk add --allow-untrusted /tmp/openwrt-25.12.5-你的平台-apk__bjut-autologin-*.apk
-apk add --allow-untrusted /tmp/openwrt-25.12.5-你的平台-apk__luci-app-bjut-autologin-*.apk
+apk add --allow-untrusted /tmp/openwrt-你的平台-25.12.5-apk__bjut-autologin-*.apk
+apk add --allow-untrusted /tmp/openwrt-你的平台-25.12.5-apk__luci-app-bjut-autologin-*.apk
 ```
 
 从 Release 下载时，可先在下载目录执行 `sha256sum -c SHA256SUMS` 核对完整性。安装后配置见 [README.md](README.md)。SDK 编译通过不代表已经完成路由器实机安装和校园网认证测试。
