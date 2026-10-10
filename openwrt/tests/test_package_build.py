@@ -133,6 +133,31 @@ class PackageBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'versions must match'):
             build.package_version(self.root)
 
+    def test_sdk_prepare_and_compile_use_supported_build_macros(self):
+        sdk = self.root / 'sdk'
+        (sdk / 'include').mkdir(parents=True)
+        (sdk / 'rules.mk').write_text(
+            'INCLUDE_DIR=$(TOPDIR)/include\n'
+            'PKG_BUILD_DIR=$(TOPDIR)/build/$(PKG_NAME)\n'
+            'RM:=rm -f\nCP:=cp -fpR\nINSTALL_DIR:=install -d -m0755\nTARGET_CC:=cc\n'
+        )
+        (sdk / 'include/package.mk').write_text('')
+        core = build.ROOT / 'openwrt/bjut-autologin'
+        driver = self.root / 'driver.mk'
+        driver.write_text(
+            f'include {core}/Makefile\n'
+            '.PHONY: check\ncheck:\n\t$(Build/Prepare)\n\t$(Build/Compile)\n'
+        )
+        result = subprocess.run(['make', '-f', str(driver), 'TOPDIR=' + str(sdk), 'check'],
+                                cwd=core, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        directory = sdk / 'build/bjut-autologin'
+        self.assertEqual((directory / 'LICENSE').read_bytes(), (core / 'LICENSE').read_bytes())
+        self.assertEqual((directory / 'bjut-codec.c').read_bytes(), (core / 'src/bjut-codec.c').read_bytes())
+        result = subprocess.run([str(directory / 'bjut-codec'), 'base64'], input=b'test', capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), b'dGVzdA==')
+
 
 if __name__ == '__main__':
     unittest.main()

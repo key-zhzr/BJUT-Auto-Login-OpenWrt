@@ -27,7 +27,7 @@ endef
 
 define Build/Prepare
 	$(RM) -r $(PKG_BUILD_DIR)
-	$(MKDIR) $(PKG_BUILD_DIR)
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)
 	$(CP) ./src/bjut-codec.c $(PKG_BUILD_DIR)/
 	$(CP) ./LICENSE $(PKG_BUILD_DIR)/
 endef
