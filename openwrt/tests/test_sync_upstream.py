@@ -97,7 +97,7 @@ class SyncTests(unittest.TestCase):
 
 
 class ReviewPublicationTests(unittest.TestCase):
-    def publication(self, pr_exit, state):
+    def publication(self, state):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/openwrt-upstream.yml').read_text()
         step = workflow.split('      - name: Preserve review branch and publish review link\n', 1)[1]
         shell = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -105,7 +105,7 @@ class ReviewPublicationTests(unittest.TestCase):
             root = Path(directory)
             for command, body in {
                 'git': '#!/bin/sh\nprintf "%s\\n" "$*" >> "$PUBLISHED"\n',
-                'gh': '#!/bin/sh\nexit "$PR_EXIT"\n',
+                'gh': '#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_CALLED"\nexit 1\n',
             }.items():
                 path = root / command
                 path.write_text(body)
@@ -113,8 +113,9 @@ class ReviewPublicationTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 'PATH': str(root) + os.pathsep + env['PATH'],
-                'RUNNER_TEMP': str(root), 'PR_EXIT': str(pr_exit),
+                'RUNNER_TEMP': str(root),
                 'PUBLISHED': str(root / 'published'),
+                'GH_CALLED': str(root / 'gh-called'),
                 'SYNC_BRANCH': 'codex/upstream-fixture', 'SYNC_STATE': state,
                 'UPSTREAM_SHA': 'a' * 40,
                 'GITHUB_SERVER_URL': 'https://github.com',
@@ -126,21 +127,23 @@ class ReviewPublicationTests(unittest.TestCase):
             published = (root / 'published').read_text()
             self.assertIn('HEAD:refs/heads/codex/upstream-fixture', published)
             self.assertNotIn('refs/heads/main', published)
+            self.assertFalse((root / 'gh-called').exists(), 'Review publication must not call GitHub PR APIs')
             summary = (root / 'summary.md').read_text()
             self.assertIn('compare/main...codex/upstream-fixture?expand=1', summary)
             return summary
 
-    def test_denied_pr_keeps_the_review_branch_and_compare_link(self):
-        summary = self.publication(1, 'conflict')
+    def test_conflict_keeps_the_review_branch_and_compare_link(self):
+        summary = self.publication('conflict')
         self.assertIn('存在合并冲突', summary)
-        self.assertIn('PR 创建未完成', summary)
+        self.assertIn('openwrt/UPSTREAM-REVIEW.md', summary)
 
-    def test_allowed_pr_reports_success_without_publishing_main(self):
-        summary = self.publication(0, 'review')
-        self.assertIn('已创建待审查 PR', summary)
+    def test_sensitive_changes_wait_for_manual_review_without_publishing_main(self):
+        summary = self.publication('review')
+        self.assertIn('认证或安全相关实现有变化', summary)
+        self.assertIn('确认后手动合并', summary)
 
     def test_failed_main_publication_reports_the_repository_rule_failure(self):
-        summary = self.publication(1, 'ready')
+        summary = self.publication('ready')
         self.assertIn('主分支发布未完成', summary)
         self.assertNotIn('认证或安全相关实现有变化', summary)
 

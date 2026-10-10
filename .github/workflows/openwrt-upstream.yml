@@ -5,7 +5,6 @@ on:
     - cron: '17 22 * * *'
 permissions:
   contents: write
-  pull-requests: write
 concurrency:
   group: openwrt-upstream-sync
   cancel-in-progress: false
@@ -50,7 +49,6 @@ jobs:
       - name: Preserve review branch and publish review link
         if: steps.merge.outputs.state == 'review' || steps.merge.outputs.state == 'conflict' || (failure() && steps.merge.outputs.state == 'ready')
         env:
-          GH_TOKEN: ${{ github.token }}
           SYNC_BRANCH: ${{ steps.merge.outputs.branch }}
           SYNC_STATE: ${{ steps.merge.outputs.state }}
           UPSTREAM_SHA: ${{ steps.merge.outputs.upstream }}
@@ -68,19 +66,14 @@ jobs:
               message += 'Git 合并与路由端离线测试已通过，但主分支发布未完成；请检查仓库权限与分支规则，再审查并合入保留的分支。'
           else:
               message += 'Git 合并与路由端离线测试已通过；认证或安全相关实现有变化，需确认路由端移植后再合并。'
-          (Path(os.environ['RUNNER_TEMP']) / 'openwrt-upstream-pr.md').write_text(message + '\n')
+          (Path(os.environ['RUNNER_TEMP']) / 'openwrt-upstream-review.md').write_text(message + '\n')
           PY
           compare_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$SYNC_BRANCH?expand=1"
           {
             echo '## 上游更新需要审查'
-            cat "$RUNNER_TEMP/openwrt-upstream-pr.md"
+            cat "$RUNNER_TEMP/openwrt-upstream-review.md"
             echo
             echo "待审查分支：\`$SYNC_BRANCH\`"
-            echo "[查看差异并创建 PR]($compare_url)"
+            echo "[查看差异并手动创建 PR]($compare_url)"
+            echo '请审查待合入的更改，确认后手动合并。'
           } >> "$GITHUB_STEP_SUMMARY"
-          if gh pr create --base main --head "$SYNC_BRANCH" --title '同步主项目更新：需要路由端审查' --body-file "$RUNNER_TEMP/openwrt-upstream-pr.md"; then
-            echo '已创建待审查 PR。' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '::warning::未能创建 PR；待审查分支已保留，请使用任务摘要中的链接继续审查。'
-            echo 'PR 创建未完成；主分支保持原样，待审查分支与差异链接已保留。' >> "$GITHUB_STEP_SUMMARY"
-          fi
