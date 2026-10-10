@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 spec = importlib.util.spec_from_file_location('sync_upstream', Path(__file__).resolve().parents[1] / 'scripts/sync_upstream.py')
@@ -92,6 +94,50 @@ class SyncTests(unittest.TestCase):
 
     def test_no_changes_is_noop(self):
         self.assertEqual(sync.synchronize(self.repo, 'upstream-main', False)['state'], 'unchanged')
+
+
+class ReviewPublicationTests(unittest.TestCase):
+    def publication(self, pr_exit, state):
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/openwrt-upstream.yml').read_text()
+        step = workflow.split('      - name: Preserve review branch and publish review link\n', 1)[1]
+        shell = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory(prefix='bjut-review-publication-') as directory:
+            root = Path(directory)
+            for command, body in {
+                'git': '#!/bin/sh\nprintf "%s\\n" "$*" >> "$PUBLISHED"\n',
+                'gh': '#!/bin/sh\nexit "$PR_EXIT"\n',
+            }.items():
+                path = root / command
+                path.write_text(body)
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                'PATH': str(root) + os.pathsep + env['PATH'],
+                'RUNNER_TEMP': str(root), 'PR_EXIT': str(pr_exit),
+                'PUBLISHED': str(root / 'published'),
+                'SYNC_BRANCH': 'codex/upstream-fixture', 'SYNC_STATE': state,
+                'UPSTREAM_SHA': 'a' * 40,
+                'GITHUB_SERVER_URL': 'https://github.com',
+                'GITHUB_REPOSITORY': 'fixture/router',
+                'GITHUB_STEP_SUMMARY': str(root / 'summary.md'),
+            })
+            result = subprocess.run(['bash', '-c', shell], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            published = (root / 'published').read_text()
+            self.assertIn('HEAD:refs/heads/codex/upstream-fixture', published)
+            self.assertNotIn('refs/heads/main', published)
+            summary = (root / 'summary.md').read_text()
+            self.assertIn('compare/main...codex/upstream-fixture?expand=1', summary)
+            return summary
+
+    def test_denied_pr_keeps_the_review_branch_and_compare_link(self):
+        summary = self.publication(1, 'conflict')
+        self.assertIn('存在合并冲突', summary)
+        self.assertIn('PR 创建未完成', summary)
+
+    def test_allowed_pr_reports_success_without_publishing_main(self):
+        summary = self.publication(0, 'review')
+        self.assertIn('已创建待审查 PR', summary)
 
 
 if __name__ == '__main__':
