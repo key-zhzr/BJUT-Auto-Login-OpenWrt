@@ -1,6 +1,4 @@
 {
-  "upstream": "7e0e7b9bb20c9b59e2cb45988c3a0ffc7bfbe650",
-  "reviewRequired": [],
-  "reviewed": "7e0e7b9bb20c9b59e2cb45988c3a0ffc7bfbe650",
-  "reviewNote": "已审阅计费、验证码、备份、双栈探测及 Windows 修复；门户认证端点、字段编码、TLS 策略未变化。路由端保留独立的轻量运行时，协议及合并回归通过。"
+  "upstream": "927fd3169c04807fff4558b619fa1528165b618c",
+  "reviewRequired": []
 }
