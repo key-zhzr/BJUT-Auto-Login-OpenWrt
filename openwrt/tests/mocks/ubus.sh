@@ -1,5 +1,9 @@
 #!/bin/sh
 
+if [ -n "${MOCK_NETWORK_JSON:-}" ] && [ "$3" != iwinfo ]; then
+ python3 -c 'import json,sys; name=sys.argv[2].removeprefix("network.interface."); print(json.dumps(json.load(open(sys.argv[1])).get(name,{})))' "$MOCK_NETWORK_JSON" "$3"
+ exit 0
+fi
 case "$*" in
 	*'iwinfo info'*)
 		[ "${MOCK_UBUS_IWINFO:-0}" = "1" ] || exit 1

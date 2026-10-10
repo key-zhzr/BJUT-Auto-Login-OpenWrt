@@ -30,7 +30,15 @@ start_service() {
 	procd_close_instance
 }
 
+stop_service() {
+	[ "${BJUT_RELOADING:-0}" = 1 ] || "$PROG" cleanup >/dev/null 2>&1
+}
+
 reload_service() {
+	local enabled
+	config_load bjut-autologin
+	config_get_bool enabled main enabled 0
+	BJUT_RELOADING="$enabled"
 	stop
 	start
 }

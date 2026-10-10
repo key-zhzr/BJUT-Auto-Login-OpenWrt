@@ -2,27 +2,21 @@
 'require view';
 'require form';
 'require fs';
+'require rpc';
+'require poll';
+'require uci';
 'require tools.widgets as widgets';
 
-const STATUS_PATH = '/var/run/bjut-autologin/status.json';
-
-function readStatus() {
-	return L.resolveDefault(fs.read(STATUS_PATH), null).then(function(text) {
-		if (!text)
-			return null;
-		try {
-			return JSON.parse(text);
-		}
-		catch (error) {
-			return null;
-		}
-	});
-}
+const callStatus = rpc.declare({ object: 'bjut-autologin', method: 'status', expect: {} });
+function readStatus() { return L.resolveDefault(callStatus(), null); }
 
 function statusLabel(state) {
 	const labels = {
 		stopped: _('未运行'),
+		busy: _('此出口正在检测'),
 		online: _('互联网已连接'),
+		authenticated_limited: _('认证有效，外网探测受限'),
+		probe_uncertain: _('连通性待确认，保留登录'),
 		offline_suspected: _('正在复核离线状态'),
 		cooldown: _('等待安全重试'),
 		waiting_interface: _('等待上游接口'),
@@ -37,7 +31,15 @@ function statusLabel(state) {
 	return labels[state] || state || _('未知');
 }
 
+function routeLabel(value) {
+	return { managed:_('固定出口'), kernel:_('系统路由'), missing_default:_('缺少默认路由'), failed:_('出口未就绪'), not_configured:_('未取得地址') }[value] || _('待检查');
+}
+function probeLabel(value) {
+	return { reachable:_('通过'), unreachable:_('未通过'), not_configured:_('未取得地址') }[value] || _('待检测');
+}
+
 function statusPanel(status) {
+	if (status && status.uplinks) return E('div', { id: 'bjut-status' }, status.uplinks.map(statusPanel));
 	if (!status) {
 		return E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, _('运行状态')),
@@ -48,7 +50,9 @@ function statusPanel(status) {
 	const rows = [
 		[_('状态'), statusLabel(status.state)],
 		[_('说明'), status.message || '-'],
-		[_('上游'), [status.network, status.device, status.ipv4].filter(Boolean).join(' / ') || '-'],
+		[_('IPv4 上游'), [status.network, status.device, status.ipv4, routeLabel(status.route4)].filter(Boolean).join(' / ') || '-'],
+		[_('IPv6 上游'), [status.network6, status.device6, status.ipv6, routeLabel(status.route6)].filter(Boolean).join(' / ') || '-'],
+		[_('外网探测'), 'IPv4: ' + probeLabel(status.internet4) + ' / IPv6: ' + probeLabel(status.internet6)],
 		[_('网络身份'), [status.transport, status.ssid, status.bssid].filter(Boolean).join(' / ') || '-'],
 		[_('认证协议'), status.protocol || '-'],
 		[_('最近账号'), status.account || '-'],
@@ -69,14 +73,14 @@ function statusPanel(status) {
 
 return view.extend({
 	load: function() {
-		return readStatus();
+		return Promise.all([readStatus(), uci.load('bjut-autologin')]).then(function(data) { return data[0]; });
 	},
 
 	render: function(status) {
 		let m, s, o;
 
 		m = new form.Map('bjut-autologin', _('BJUT 自动登录'),
-			_('面向 OpenWrt/ImmortalWrt 的低占用校园网认证服务。认证请求固定到所选上游接口，并在发送凭据前执行只读协议探测。'));
+			_('自动维护校园网登录，分别管理各条上游与账号。'));
 
 		s = m.section(form.NamedSection, 'main', 'service', _('服务设置'));
 		s.anonymous = true;
@@ -87,7 +91,7 @@ return view.extend({
 		o = s.option(widgets.NetworkSelect, 'network', _('上游逻辑接口'));
 		o.rmempty = false;
 		o.nocreate = true;
-		o.description = _('通常为连接校园网的 wwan 或 wan，而不是 lan。所有请求都会绑定到该接口对应的 Linux 设备。');
+		o.description = _('用于旧版单上游配置；添加下方上游后，此项不再使用。');
 
 		o = s.option(form.Value, 'device', _('Linux 设备覆盖'));
 		o.placeholder = _('自动读取');
@@ -138,7 +142,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'timeout', _('单次连接超时（秒）'));
 		o.datatype = 'range(1,30)';
-		o.default = '5';
+		o.default = '3';
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'offline_confirmations', _('离线确认次数'));
@@ -182,12 +186,40 @@ return view.extend({
 		o.value('error', _('仅错误'));
 		o.default = 'notice';
 
+		o = s.option(form.Flag, 'managed_routes', _('固定上游路由'));
+		o.default = o.enabled; o.rmempty = false;
+		o.description = _('为指定设备的请求使用独立出口，适用于多个上游或关闭了默认路由的接口。');
+
+		o = s.option(form.Flag, 'mwan3', _('兼容 mwan3'));
+		o.default = o.enabled; o.rmempty = false;
+		o.description = _('为所选出口添加专用规则，保留其他流量的分流设置。');
+
+		s = m.section(form.GridSection, 'uplink', _('上游接口'));
+		s.anonymous = false; s.addremove = true; s.sortable = true;
+		s.description = _('每条上游独立检测、认证与重试。IPv6 接口留空时跟随 IPv4 设备。');
+		o = s.option(form.Flag, 'enabled', _('启用')); o.default = o.enabled; o.rmempty = false;
+		o = s.option(widgets.NetworkSelect, 'network', _('IPv4 接口')); o.rmempty = false; o.nocreate = true;
+		o = s.option(widgets.NetworkSelect, 'network6', _('IPv6 接口')); o.nocreate = true; o.optional = true;
+		o = s.option(form.Value, 'device', _('IPv4 设备')); o.placeholder = _('自动'); o.modalonly = true;
+		o = s.option(form.Value, 'device6', _('IPv6 设备')); o.placeholder = _('自动'); o.modalonly = true;
+		o = s.option(form.Value, 'source4', _('IPv4 源地址')); o.datatype = 'ip4addr'; o.modalonly = true;
+		o = s.option(form.Value, 'source6', _('IPv6 源地址')); o.datatype = 'ip6addr'; o.modalonly = true;
+		o = s.option(form.ListValue, 'transport', _('传输类型'));
+		o.value('auto', _('自动')); o.value('ethernet', _('有线')); o.value('wifi', _('Wi-Fi')); o.default = 'auto';
+		o = s.option(form.ListValue, 'login_type', _('认证方式'));
+		o.value('auto', _('自动')); o.value('type1', 'bjut-sushe'); o.value('type2', 'bjut_wifi'); o.value('type3', 'lgn'); o.default = 'auto';
+		o = s.option(form.MultiValue, 'accounts', _('自动登录账号'));
+		uci.sections('bjut-autologin', 'account', function(account) { o.value(account['.name'], account.username || account['.name']); });
+		o.description = _('留空使用所有已启用账号；选定后仅使用这些账号，按账号页顺序尝试。');
+		o = s.option(form.Value, 'expected_ssid', _('SSID')); o.modalonly = true;
+		o = s.option(form.Value, 'expected_bssid', _('BSSID')); o.modalonly = true;
+
 		s = m.section(form.GridSection, 'account', _('账号'));
 		s.anonymous = true;
 		s.addremove = true;
 		s.sortable = true;
 		s.nodescriptions = true;
-		s.description = _('账号按此处顺序尝试。只有网关明确返回拒绝时才会切换下一个账号；超时或响应不明确时不会轮换。密码以明文保存在仅 root 可读的 UCI 文件中。');
+		s.description = _('账号按此处顺序尝试。只有网关明确返回拒绝时才会切换下一个账号；超时或响应不明确时不会轮换。停用账号仍可用于手动登录和计费查询。');
 
 		o = s.option(form.Flag, 'enabled', _('启用'));
 		o.default = o.enabled;
@@ -209,7 +241,9 @@ return view.extend({
 		o.default = 'auto';
 
 		return m.render().then(function(mapNode) {
-			return E([], [statusPanel(status), mapNode]);
+			const panel = E('div', {}, [statusPanel(status)]);
+			poll.add(function() { return readStatus().then(function(next) { panel.replaceChildren(statusPanel(next)); }); }, 5);
+			return E([], [panel, mapNode]);
 		});
 	}
 });

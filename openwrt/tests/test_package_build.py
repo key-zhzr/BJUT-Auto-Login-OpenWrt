@@ -157,6 +157,9 @@ class PackageBuildTests(unittest.TestCase):
         result = subprocess.run([str(directory / 'bjut-codec'), 'base64'], input=b'test', capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b'dGVzdA==')
+        result = subprocess.run([str(directory / 'bjut-html'), 'captcha'], input=b'<div id="randomDiv" class="hide"></div>', capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b'0')
 
 
 if __name__ == '__main__':

@@ -5,7 +5,7 @@
 # idle. curl and the tiny codec helper are started only for a connectivity
 # check or portal exchange.
 
-VERSION="0.3.0"
+VERSION="0.1.6"
 TAG="bjut-autologin"
 
 FUNCTIONS_SH="${BJUT_FUNCTIONS_SH:-/lib/functions.sh}"
@@ -30,12 +30,34 @@ LGN_GATEWAY_SECONDARY="172.30.201.10"
 DORM_SPKI_PIN="sha256//9YYIa+Z8Ae4Y8ipQSZXowtxC1CZv/pvXvKuT7eUIXyg="
 MAX_RESPONSE_BYTES=131072
 
+SELF_BIN="${BJUT_SELF:-$0}"
+UCI_BIN="${BJUT_UCI:-/sbin/uci}"
+MWAN_WRAPPER="${BJUT_MWAN_WRAPPER:-/lib/mwan3/libwrap_mwan3_sockopt.so.1.0}"
+LIB_DIR="${BJUT_LIB_DIR:-/usr/lib/bjut-autologin}"
+CURL_IFHOST=""
+UPLINK_SECTIONS=""
+UPLINK_CONFIGURED=0
+UPLINK_ID=main
+DEVICE6=""
+LOCAL_IPV6=""
+NETWORK_JSON4=""
+NETWORK_JSON6=""
+ROUTE4=unknown
+ROUTE6=unknown
+PROBE4=unknown
+PROBE6=unknown
+SESSION_STATE=unknown
+MANUAL_ACCOUNT=""
 CONFIG_LOADED=0
 MAIN_SECTION=""
 ACCOUNT_SECTIONS=""
 WORK_DIR=""
 LOCK_HELD=0
 SLEEP_PID=""
+CHILD_PIDS=""
+SOURCE_LOCK=""
+SOURCE_STATE=""
+SOURCE_LOCK_HELD=0
 EVENT="periodic"
 FORCE=0
 
@@ -51,12 +73,15 @@ SELECTED_ACCOUNT=""
 TYPE1_TLS_HOST=""
 TYPE1_TLS_PROFILE=""
 OBSERVED_IPV6=""
+OBSERVED_ACCOUNT=""
 
 RUNTIME_FAILURES=0
 RUNTIME_OFFLINE_COUNT=0
 RUNTIME_NEXT_ATTEMPT=0
 
 cleanup_runtime() {
+	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; fi
+	SOURCE_LOCK_HELD=0
 	if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
 		rm -rf -- "$WORK_DIR"
 	fi
@@ -69,6 +94,7 @@ cleanup_runtime() {
 
 handle_signal() {
 	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
+	for child in $CHILD_PIDS; do kill "$child" 2>/dev/null || true; done
 	cleanup_runtime
 	exit 143
 }
@@ -85,7 +111,9 @@ Usage: bjut-autologin COMMAND
 Commands:
   daemon          run the low-overhead periodic service (for procd)
   once            perform one normal check, respecting cooldowns
-  manual          check/login now, bypassing confirmation and cooldown timers
+  manual [uplink] [account]  check/login one uplink now
+  once [uplink]   check one uplink or all configured uplinks
+  status [uplink] print one uplink or the combined runtime status
   status          print the current runtime status as JSON
   check-config    validate dependencies and UCI configuration
   version         print the OpenWrt port version
@@ -235,6 +263,13 @@ load_main_section() {
 	config_get_bool CFG_ENABLED "$1" enabled 0
 	config_get CFG_NETWORK "$1" network "wwan"
 	config_get CFG_DEVICE "$1" device ""
+	config_get CFG_NETWORK6 "$1" network6 ""
+	config_get CFG_DEVICE6 "$1" device6 ""
+	config_get CFG_SOURCE4 "$1" source4 ""
+	config_get CFG_SOURCE6 "$1" source6 ""
+	config_get CFG_ACCOUNT_ORDER "$1" accounts ""
+	config_get_bool CFG_MWAN3 "$1" mwan3 1
+	config_get_bool CFG_MANAGED_ROUTES "$1" managed_routes 1
 	config_get CFG_TRANSPORT "$1" transport "auto"
 	config_get CFG_LOGIN_TYPE "$1" login_type "auto"
 	config_get CFG_COMPATIBILITY "$1" compatibility "secure"
@@ -255,7 +290,6 @@ load_main_section() {
 collect_account_section() {
 	local enabled
 	config_get_bool enabled "$1" enabled 1
-	[ "$enabled" = "1" ] || return 0
 	ACCOUNT_SECTIONS="${ACCOUNT_SECTIONS}${ACCOUNT_SECTIONS:+ }$1"
 }
 
@@ -276,12 +310,14 @@ load_configuration() {
 		return 1
 	}
 	config_foreach collect_account_section account
+	config_foreach collect_uplink_section uplink
+	[ "$UPLINK_CONFIGURED" = 1 ] || UPLINK_SECTIONS=main
 	CONFIG_LOADED=1
 	return 0
 }
 
 validate_configuration() {
-	local section username password protocol usable_accounts=0
+	local section username password protocol enabled usable_accounts=0
 	load_configuration || return 1
 	for dependency in "$CURL_BIN" "$JSONFILTER_BIN" "$UBUS_BIN" "$CODEC_BIN"; do
 		command_exists "$dependency" || {
@@ -331,14 +367,31 @@ json_file_value() {
 }
 
 load_runtime_state() {
-	local value
+	local value previous_file="$STATE_FILE" source_time own_time own_state
+	source_time="$(json_file_value "$SOURCE_STATE" '@.updated_at')"; own_time="$(json_file_value "$STATE_FILE" '@.updated_at')"
+	own_state="$(json_file_value "$STATE_FILE" '@.state')"
+	if [ -n "$SOURCE_STATE" ] && [ -s "$SOURCE_STATE" ] && { [ "$(json_file_value "$previous_file" '@.ipv4')" != "$LOCAL_IPV4" ] || [ "$own_state" = busy ] || { is_uint "$source_time" && is_uint "$own_time" && [ "$source_time" -gt "$own_time" ]; }; }; then
+		if [ "$(json_file_value "$SOURCE_STATE" '@.ipv4')" = "$LOCAL_IPV4" ] && [ "$(json_file_value "$SOURCE_STATE" '@.device')" = "$DEVICE" ]; then previous_file="$SOURCE_STATE"; fi
+	fi
 	RUNTIME_FAILURES=0
 	RUNTIME_OFFLINE_COUNT=0
 	RUNTIME_NEXT_ATTEMPT=0
-	[ -s "$STATE_FILE" ] || return 0
-	value="$(json_file_value "$STATE_FILE" '@.failures')"; is_uint "$value" && RUNTIME_FAILURES="$value"
-	value="$(json_file_value "$STATE_FILE" '@.offline_count')"; is_uint "$value" && RUNTIME_OFFLINE_COUNT="$value"
-	value="$(json_file_value "$STATE_FILE" '@.next_attempt')"; is_uint "$value" && RUNTIME_NEXT_ATTEMPT="$value"
+	RUNTIME_STATE=""
+	RUNTIME_IPV4=""
+	RUNTIME_ACCOUNT=""
+	RUNTIME_PROTOCOL=""
+	[ -s "$previous_file" ] || return 0
+	value="$(json_file_value "$previous_file" '@.failures')"; is_uint "$value" && RUNTIME_FAILURES="$value"
+	value="$(json_file_value "$previous_file" '@.offline_count')"; is_uint "$value" && RUNTIME_OFFLINE_COUNT="$value"
+	value="$(json_file_value "$previous_file" '@.next_attempt')"; is_uint "$value" && RUNTIME_NEXT_ATTEMPT="$value"
+	RUNTIME_STATE="$(json_file_value "$previous_file" '@.state')"
+	RUNTIME_IPV4="$(json_file_value "$previous_file" '@.ipv4')"
+	RUNTIME_ACCOUNT="$(json_file_value "$previous_file" '@.account')"
+	RUNTIME_PROTOCOL="$(json_file_value "$previous_file" '@.protocol')"
+	if [ "$RUNTIME_IPV4" != "$LOCAL_IPV4" ]; then
+		RUNTIME_FAILURES=0; RUNTIME_OFFLINE_COUNT=0; RUNTIME_NEXT_ATTEMPT=0; RUNTIME_STATE=""
+		RUNTIME_ACCOUNT=""; RUNTIME_PROTOCOL=""
+	fi
 }
 
 write_status() {
@@ -354,6 +407,8 @@ write_status() {
 	fi
 	. "$JSHN_SH"
 	json_init
+	json_add_string id "$UPLINK_ID"
+	json_add_string version "$VERSION"
 	json_add_string state "$state"
 	json_add_string message "$message"
 	json_add_int updated_at "$now"
@@ -362,6 +417,14 @@ write_status() {
 	json_add_string device "$DEVICE"
 	json_add_string transport "$TRANSPORT"
 	json_add_string ipv4 "$LOCAL_IPV4"
+	json_add_string network6 "$CFG_NETWORK6"
+	json_add_string device6 "$DEVICE6"
+	json_add_string ipv6 "$LOCAL_IPV6"
+	json_add_string internet4 "$PROBE4"
+	json_add_string internet6 "$PROBE6"
+	json_add_string session "$SESSION_STATE"
+	json_add_string route4 "$ROUTE4"
+	json_add_string route6 "$ROUTE6"
 	json_add_string ssid "$SSID"
 	json_add_string bssid "$BSSID"
 	json_add_string protocol "$protocol"
@@ -370,6 +433,7 @@ write_status() {
 	json_add_int failures "$failures"
 	json_add_int offline_count "$offline_count"
 	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE"
+	if [ "$SOURCE_LOCK_HELD" = 1 ]; then cp "$STATE_FILE" "$SOURCE_STATE.$$" && mv -f "$SOURCE_STATE.$$" "$SOURCE_STATE"; fi
 }
 
 acquire_lock() {
@@ -386,7 +450,7 @@ acquire_lock() {
 		return 1
 	fi
 	if is_uint "$owner"; then
-		rm -rf -- "$STATE_DIR/work.$owner"
+		rm -rf -- "$STATE_DIR/work.$owner" "$STATE_DIR/work.$UPLINK_ID.$owner"
 	fi
 	rm -rf -- "$LOCK_DIR"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -405,7 +469,7 @@ release_lock() {
 }
 
 prepare_work_dir() {
-	WORK_DIR="$STATE_DIR/work.$$"
+	WORK_DIR="$STATE_DIR/work.$UPLINK_ID.$$"
 	rm -rf -- "$WORK_DIR"
 	mkdir -p "$WORK_DIR"
 }
@@ -416,10 +480,13 @@ network_json_value() {
 
 read_network_identity() {
 	local status up detected_device info
+	DEVICE=""; DEVICE6=""; LOCAL_IPV4=""; LOCAL_IPV6=""; TRANSPORT=unknown
+	SSID=""; BSSID=""; NETWORK_JSON4=""; NETWORK_JSON6=""
 	status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK" status 2>/dev/null)" || status=""
 	[ -n "$status" ] || return 1
 	up="$(network_json_value "$status" '@.up')"
 	case "$up" in 1|true) ;; *) return 1 ;; esac
+	NETWORK_JSON4="$status"
 	detected_device="$(network_json_value "$status" '@.l3_device')"
 	[ -n "$detected_device" ] || detected_device="$(network_json_value "$status" '@.device')"
 	DEVICE="${CFG_DEVICE:-$detected_device}"
@@ -429,7 +496,13 @@ read_network_identity() {
 	if [ -z "$LOCAL_IPV4" ] && command_exists "$IP_BIN"; then
 		LOCAL_IPV4="$("$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk 'NR == 1 { split($4, value, "/"); print value[1] }')"
 	fi
+	if [ -n "$CFG_SOURCE4" ]; then
+		LOCAL_IPV4="$("$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null |
+			awk -v wanted="$CFG_SOURCE4" '{split($4,a,"/"); if(a[1] == wanted) print a[1]}')"
+	fi
 	is_campus_ipv4 "$LOCAL_IPV4" || return 2
+	if ! "$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk -v wanted="$LOCAL_IPV4" '{split($4,a,"/"); if(a[1] == wanted) found=1} END{exit !found}'; then return 1; fi
+	read_ipv6_identity
 
 	TRANSPORT="$CFG_TRANSPORT"
 	SSID=""
@@ -516,18 +589,18 @@ http_request() {
 	max_time="$CFG_TIMEOUT"
 	set -- --silent --show-error --output "$HTTP_BODY" --write-out '%{http_code}' \
 		--connect-timeout "$CFG_TIMEOUT" --max-time "$max_time" \
-		--max-filesize "$MAX_RESPONSE_BYTES" --interface "$DEVICE" \
+		--max-filesize "$MAX_RESPONSE_BYTES" --dump-header "$WORK_DIR/headers" \
 		--noproxy '*' --proxy '' --proto '=http,https' \
 		--header 'Accept: */*' --header 'Cache-Control: no-cache, no-store' \
 		--user-agent "BJUT-Auto-Login-OpenWrt/$VERSION"
-	[ "$family" = "ipv6" ] && set -- "$@" --ipv6
+	if [ "$family" = ipv6 ]; then set -- "$@" --ipv6; else family=ipv4; set -- "$@" --ipv4; fi
 	[ -n "$referer" ] && set -- "$@" --referer "$referer"
 	[ -n "$resolve" ] && set -- "$@" --resolve "$resolve"
 	[ -n "$host_header" ] && set -- "$@" --header "Host: $host_header"
 	if [ "$tls_profile" = "dorm_pinned" ]; then
 		set -- "$@" --insecure --pinnedpubkey "$DORM_SPKI_PIN"
 	fi
-	HTTP_CODE="$(printf 'url = "%s"\n' "$url" | "$CURL_BIN" "$@" --config - 2>"$WORK_DIR/curl-error")"
+	HTTP_CODE="$(printf 'url = "%s"\n' "$url" | bound_curl "$family" "$@" --config - 2>"$WORK_DIR/curl-error")"
 	rc=$?
 	case "$HTTP_CODE" in [0-9][0-9][0-9]) ;; *) HTTP_CODE="000" ;; esac
 	[ "$rc" -eq 0 ] || return 1
@@ -561,21 +634,23 @@ response_has_result() {
 }
 
 parse_login_response() {
-	local result
+	local result message
 	http_success || return 11
 	load_jsonp || return 11
 	result="$(jsonp_value '@.result')"
 	case "$result" in
 		1) return 0 ;;
-		0) return 10 ;;
+		0)
+			message="$(jsonp_value '@.msg') $(jsonp_value '@.msga')"
+			case "$message" in
+				*已经在线*|*已在线*|*already*online*) return 13 ;;
+				*密码*错误*|*密码*不正确*|*密码*无效*|*password*error*|*password*wrong*|*incorrect*password*|*invalid*password*|*账号*错误*|*账户*错误*|*账号*不存在*|*用户*不存在*|*欠费*|*余额不足*|*停机*) return 10 ;;
+				*) return 11 ;;
+			esac ;;
 		*) return 11 ;;
 	esac
 }
 
-online_check() {
-	http_request "$CFG_ONLINE_URL" "" "" "" "strict" || return 1
-	[ "$HTTP_CODE" = "$CFG_ONLINE_CODE" ]
-}
 
 type1_probe_url() {
 	local base="$1" encoded_ip
@@ -664,13 +739,14 @@ lgn_request() {
 }
 
 lgn_user_info_probe() {
-	local url code info
+	local url code info labels
 	url="https://lgn.bjut.edu.cn:802/eportal/portal/page/loadUserInfo?callback=726427262624&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&user_account=&wlan_user_ip=&wlan_user_ipv6=&wlan_user_mac=262626262626262626262626&jsVersion=22384e&encrypt=1&v=$(request_id)&lang=zh"
 	lgn_request "$url" "lgn.bjut.edu.cn" 802 "https://lgn.bjut.edu.cn/" || return 1
 	load_jsonp || return 1
 	code="$(jsonp_value '@.code')"
 	info="$(jsonp_value '@.user_info')"
-	[ -n "$code" ] && [ -n "$info" ]
+	labels="$(jsonp_value '@.user_info_lang')"
+	[ -n "$code" ] && { [ -n "$info" ] || [ -n "$labels" ]; }
 }
 
 discover_lgn_ipv6() {
@@ -687,9 +763,32 @@ discover_lgn_ipv6() {
 	return 0
 }
 
+lgn_landing_probe() {
+	local url="https://lgn.bjut.edu.cn/" count=0 location normalized
+	while [ "$count" -lt 4 ]; do
+		if lgn_request "$url" "lgn.bjut.edu.cn" 443 "https://lgn.bjut.edu.cn/"; then
+			normalized="$(tr '[:upper:]' '[:lower:]' <"$HTTP_BODY" | tr -d '[:space:]')"
+			case "$normalized" in *dr.comwebloginid_*authuserfield*|*authuserfield*dr.comwebloginid_*) return 0 ;; esac
+			case "$normalized" in *name=\"v6ip\"*|*name=\'v6ip\'*) return 0 ;; esac
+			return 1
+		fi
+		case "$HTTP_CODE" in 301|302|303) ;; *) return 1 ;; esac
+		location="$(sed -n 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*//p' "$WORK_DIR/headers" | tr -d '\r' | tail -n 1)"
+		case "$location" in
+			/*) case "$location" in //*) return 1 ;; esac; url="https://lgn.bjut.edu.cn$location" ;;
+			https://lgn.bjut.edu.cn/*) url="$location" ;;
+			http://lgn.bjut.edu.cn/*) url="https://lgn.bjut.edu.cn/${location#http://lgn.bjut.edu.cn/}" ;;
+			*) return 1 ;;
+		esac
+		valid_http_url "$url" || return 1
+		count=$((count + 1))
+	done
+	return 1
+}
+
 probe_type3() {
-	# A verified IPv4 portal is enough to authenticate IPv4. Missing IPv6 must
-	# not hide the wired portal or trigger account rotation.
+	# Pre-authentication landing fingerprint; account information is separate.
+	lgn_landing_probe && return 0
 	lgn_user_info_probe
 }
 
@@ -707,7 +806,7 @@ detect_protocol() {
 	if [ "$CFG_LOGIN_TYPE" != "auto" ]; then
 		candidates="$CFG_LOGIN_TYPE"
 	elif [ "$TRANSPORT" = "ethernet" ]; then
-		candidates="type1 type3"
+		case "$LOCAL_IPV4" in 172.26.*) candidates="type3 type1" ;; *) candidates="type1 type3" ;; esac
 	elif known_public_ssid "$SSID"; then
 		candidates="type2 type1"
 	else
@@ -727,7 +826,7 @@ detect_protocol() {
 }
 
 type1_login() {
-	local username="$1" password="$2" account encoded_account encoded_password encoded_ip base referer resolve host_header profile url
+	local username="$1" password="$2" account encoded_ipv6 encoded_account encoded_password encoded_ip base referer resolve host_header profile url
 	case "$(printf '%s' "$username" | tr '[:upper:]' '[:lower:]')" in
 		*@campus) account="$username" ;;
 		*) account="$username@campus" ;;
@@ -750,7 +849,8 @@ type1_login() {
 		host_header="$DORM_GATEWAY:802"
 		profile="$TYPE1_TLS_PROFILE"
 	fi
-	url="$base?callback=dr1003&login_method=1&user_account=$encoded_account&user_password=$encoded_password&wlan_user_ip=$encoded_ip&wlan_user_ipv6=&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&jsVersion=4.2.1&terminal_type=1&lang=zh-cn&v=$(request_id)&lang=zh"
+	encoded_ipv6="$(urlencode "$LOCAL_IPV6")" || return 11
+	url="$base?callback=dr1003&login_method=1&user_account=$encoded_account&user_password=$encoded_password&wlan_user_ip=$encoded_ip&wlan_user_ipv6=$encoded_ipv6&wlan_user_mac=000000000000&wlan_ac_ip=&wlan_ac_name=&jsVersion=4.2.1&terminal_type=1&lang=zh-cn&v=$(request_id)&lang=zh"
 	http_request "$url" "$referer" "$resolve" "$host_header" "$profile" || return 11
 	parse_login_response
 }
@@ -773,7 +873,7 @@ type2_login() {
 
 type3_login() {
 	local username="$1" password="$2" account enc_account enc_password enc_ipv4 enc_ipv6 url
-	lgn_user_info_probe || return 11
+	probe_type3 || return 11
 	OBSERVED_IPV6=""
 	discover_lgn_ipv6 || OBSERVED_IPV6=""
 	case "$username" in ,0,*) account="$username" ;; *) account=",0,$username" ;; esac
@@ -797,10 +897,16 @@ login_protocol() {
 }
 
 try_accounts() {
-	local protocol="$1" section enabled username password account_protocol masked rc attempted=0
-	for section in $ACCOUNT_SECTIONS; do
+	local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed
+	order="$ACCOUNT_SECTIONS"
+	[ -z "$MANUAL_ACCOUNT" ] || order="$MANUAL_ACCOUNT"
+	for section in $order; do
+		case " $ACCOUNT_SECTIONS " in *" $section "*) ;; *) continue ;; esac
+		if [ -z "$MANUAL_ACCOUNT" ] && [ -n "$CFG_ACCOUNT_ORDER" ]; then
+			case " $CFG_ACCOUNT_ORDER " in *" $section "*) ;; *) continue ;; esac
+		fi
 		config_get_bool enabled "$section" enabled 1
-		[ "$enabled" = "1" ] || continue
+		[ "$enabled" = "1" ] || [ "$section" = "$MANUAL_ACCOUNT" ] || continue
 		config_get username "$section" username ""
 		config_get password "$section" password ""
 		config_get account_protocol "$section" login_type "auto"
@@ -815,6 +921,7 @@ try_accounts() {
 		case "$rc" in
 			0) SELECTED_ACCOUNT="$masked"; return 0 ;;
 			10) log_message notice "账号 $masked 被认证网关拒绝，尝试下一个账号" ;;
+			13) return 13 ;;
 			*) return 11 ;;
 		esac
 	done
@@ -833,7 +940,10 @@ calculate_backoff() {
 }
 
 run_once_impl() {
-	local now rc failures delay offline_count
+	local now rc failures delay offline_count internet_ok=0 portal_rc=1 explicit_auth=0
+	SESSION_STATE=unknown; OBSERVED_ACCOUNT=""; OBSERVED_IPV6=""; PROBE4=unknown; PROBE6=unknown
+	ROUTE4=unknown; ROUTE6=unknown
+	[ "$FORCE" != 1 ] || [ -z "$MANUAL_ACCOUNT" ] || explicit_auth=1
 	read_network_identity
 	rc=$?
 	if [ "$rc" -ne 0 ]; then
@@ -845,10 +955,45 @@ run_once_impl() {
 		fi
 		return 1
 	fi
+	if ! acquire_source_lock; then
+		write_status busy "此物理出口正在检测，请稍候" "" "" 0 0 0
+		return 75
+	fi
+	ensure_uplink_routes
+	sync_mwan_rules || log_message error "mwan3 出口规则更新失败，请核对路由设置"
 	load_runtime_state
-	if online_check; then
-		write_status "online" "互联网连接正常" "" "" 0 0 0
+	if ! curl_supports_ifhost && { [ "$CFG_MWAN3" != 1 ] || [ ! -r "$MWAN_WRAPPER" ]; }; then
+		write_status blocked "当前 curl 无法同时指定设备和源地址，请升级 curl 或安装 mwan3" "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+		return 1
+	fi
+	SELECTED_PROTOCOL=""
+	online_check && internet_ok=1
+	# Known dormitory uplinks must consult online_list even when an individual
+	# public target is reachable before authentication.
+	if [ "$explicit_auth" = 1 ] || [ "$internet_ok" = 0 ] || [ "$CFG_LOGIN_TYPE" != auto ] || [ -n "$RUNTIME_PROTOCOL" ] || [ "$TRANSPORT" = ethernet ]; then
+		detect_protocol; portal_rc=$?
+		if [ "$portal_rc" = 0 ]; then read_portal_session "$SELECTED_PROTOCOL"; fi
+	fi
+	if [ "$SESSION_STATE" = online ] && [ "$explicit_auth" = 0 ]; then
+		if [ "$internet_ok" = 1 ]; then
+			write_status online "认证会话有效，互联网连接正常" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+		else
+			write_status authenticated_limited "认证会话有效，外网探测暂未通过；保留当前登录" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+		fi
 		return 0
+	fi
+	if [ "$internet_ok" = 1 ] && [ "$SESSION_STATE" != offline ] && [ "$explicit_auth" = 0 ]; then
+		write_status online "互联网连接正常" "${SELECTED_PROTOCOL:-$RUNTIME_PROTOCOL}" "$RUNTIME_ACCOUNT" 0 0 0
+		return 0
+	fi
+	if [ "$FORCE" != 1 ] && [ "$SESSION_STATE" = unknown ]; then
+		case "$RUNTIME_STATE" in online|authenticated_limited|login_accepted)
+			write_status probe_uncertain "外网探测未通过，认证状态待确认；保留当前登录" "${SELECTED_PROTOCOL:-$RUNTIME_PROTOCOL}" "$RUNTIME_ACCOUNT" 0 0 0
+			return 1 ;;
+		probe_uncertain)
+			write_status probe_uncertain "外网探测未通过，认证状态待确认；保留当前登录" "${SELECTED_PROTOCOL:-$RUNTIME_PROTOCOL}" "$RUNTIME_ACCOUNT" 0 0 0
+			return 1 ;;
+		esac
 	fi
 	now="$(date +%s)"
 	if [ "$FORCE" != "1" ] && [ "$RUNTIME_NEXT_ATTEMPT" -gt "$now" ]; then
@@ -861,9 +1006,7 @@ run_once_impl() {
 		return 1
 	fi
 
-	SELECTED_PROTOCOL=""
-	detect_protocol
-	rc=$?
+	rc="$portal_rc"
 	if [ "$rc" -ne 0 ]; then
 		failures=$((RUNTIME_FAILURES + 1))
 		delay="$(calculate_backoff "$failures")"
@@ -886,13 +1029,19 @@ run_once_impl() {
 		0)
 			log_message notice "$SELECTED_PROTOCOL 认证网关已接受账号 $SELECTED_ACCOUNT"
 			if [ "$CFG_POST_LOGIN_DELAY" -gt 0 ]; then sleep "$CFG_POST_LOGIN_DELAY"; fi
-			if online_check; then
-				write_status "online" "认证成功，互联网连接已恢复" "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 0
+			read_portal_session "$SELECTED_PROTOCOL"
+			if online_check || [ "$SESSION_STATE" = online ]; then
+				write_status "online" "认证成功，互联网连接已恢复" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
 			else
 				write_status "login_accepted" "认证网关已接受登录，等待互联网连通性复核" "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 "$offline_count" "$CFG_INTERVAL"
 			fi
 			return 0
 			;;
+		13)
+			SESSION_STATE=online
+			if online_check; then write_status online "当前出口已有有效登录" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+			else write_status authenticated_limited "当前出口已有登录，外网探测待确认" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0; fi
+			return 0 ;;
 		10)
 			write_status "auth_rejected" "所有适用账号均被认证网关明确拒绝；已进入凭据冷却期" "$SELECTED_PROTOCOL" "" 0 1 "$offline_count" "$CFG_CREDENTIAL_COOLDOWN"
 			log_message error "$SELECTED_PROTOCOL 的所有适用账号均被认证网关拒绝"
@@ -912,13 +1061,20 @@ run_once_impl() {
 }
 
 run_once_locked() {
-	local rc
+	local rc FORCE="$FORCE" MANUAL_ACCOUNT="$MANUAL_ACCOUNT" EVENT="$EVENT"
 	acquire_lock || return 75
+	if [ -f "$STATE_DIR/manual-$UPLINK_ID" ]; then
+		MANUAL_ACCOUNT="$(cat "$STATE_DIR/manual-$UPLINK_ID")"
+		[ -z "$MANUAL_ACCOUNT" ] || valid_section "$MANUAL_ACCOUNT" || { release_lock; return 2; }
+		FORCE=1; EVENT=manual
+		rm -f "$STATE_DIR/manual-$UPLINK_ID"
+	fi
 	prepare_work_dir || { release_lock; return 1; }
 	run_once_impl
 	rc=$?
 	rm -rf -- "$WORK_DIR"
 	WORK_DIR=""
+	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; SOURCE_LOCK_HELD=0; fi
 	release_lock
 	return "$rc"
 }
@@ -926,7 +1082,7 @@ run_once_locked() {
 run_daemon() {
 	local rc
 	while :; do
-		run_once_locked || rc=$?
+		run_all_uplinks || rc=$?
 		if [ "${rc:-0}" -ne 0 ] && [ "${rc:-0}" -ne 1 ] && [ "${rc:-0}" -ne 75 ]; then
 			log_message error "检查循环异常退出，代码 ${rc:-1}"
 		fi
@@ -947,29 +1103,46 @@ print_status() {
 }
 
 main() {
-	local command="${1:-}"
+	local command="${1:-}" section="${2:-}"
+	. "$LIB_DIR/uplinks.sh" || return 2
+	. "$LIB_DIR/mwan.sh" || return 2
+	. "$LIB_DIR/routing.sh" || return 2
 	case "$command" in
-		status) print_status; return 0 ;;
+		status)
+			load_configuration || return 2
+			if [ -n "$section" ]; then select_uplink "$section" || return 2; print_status;
+			elif [ "$UPLINK_CONFIGURED" = 1 ]; then print_all_status; else print_status; fi
+			return 0 ;;
 		version) printf '%s\n' "$VERSION"; return 0 ;;
 		-h|--help|help|'') usage; [ -n "$command" ]; return $? ;;
+		cleanup)
+			CFG_MANAGED_ROUTES=0; CFG_MWAN3=0; UPLINK_SECTIONS=""
+			prune_uplink_routes
+			prune_mwan_rules
+			return $? ;;
 		check-config|daemon|once|manual) ;;
 		*) usage >&2; return 2 ;;
 	esac
 	validate_configuration || return 2
+	if [ -n "$section" ]; then select_uplink "$section" || return 2; fi
+	MANUAL_ACCOUNT="${3:-}"
+	[ -z "$MANUAL_ACCOUNT" ] || { valid_section "$MANUAL_ACCOUNT" && [ "$command" = manual ]; } || return 2
 	if [ "$command" = "check-config" ]; then
 		printf 'Configuration is valid (enabled=%s, accounts=%s).\n' "$CFG_ENABLED" "$(printf '%s\n' $ACCOUNT_SECTIONS | sed '/^$/d' | wc -l)"
 		return 0
 	fi
-	[ "$CFG_ENABLED" = "1" ] || {
+	[ "$CFG_ENABLED" = "1" ] || [ "$command" = manual ] || {
 		printf 'bjut-autologin is disabled in UCI.\n' >&2
 		return 3
 	}
 	case "$command" in
 		daemon) EVENT="periodic"; run_daemon ;;
-		once) EVENT="${BJUT_EVENT:-manual_once}"; run_once_locked ;;
-		manual) EVENT="manual"; FORCE=1; run_once_locked ;;
+		once) EVENT="${BJUT_EVENT:-manual_once}"; if [ -n "$section" ]; then run_once_locked; else run_all_uplinks; fi ;;
+		manual) EVENT="manual"; FORCE=1; FORCE_COMMAND=manual; if [ -n "$section" ]; then run_once_locked; else run_all_uplinks; fi ;;
 	esac
 }
+
+[ ! -r "$LIB_DIR/uplinks.sh" ] || . "$LIB_DIR/uplinks.sh"
 
 if [ "${BJUT_SOURCE_ONLY:-0}" != "1" ]; then
 	main "$@"

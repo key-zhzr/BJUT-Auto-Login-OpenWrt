@@ -70,7 +70,8 @@ class OpenWrtPortTests(unittest.TestCase):
             "BJUT_JSONFILTER": str(MOCKS / "jsonfilter.py"),
             "BJUT_UBUS": str(MOCKS / "ubus.sh"),
             "BJUT_IWINFO": str(MOCKS / "iwinfo.sh"),
-            "BJUT_IP": "/bin/false",
+            "BJUT_IP": str(MOCKS / "ip.sh"),
+            "BJUT_LIB_DIR": str(CORE / "files/usr/lib/bjut-autologin"),
             "BJUT_CODEC": str(self.codec),
             "BJUT_LOGGER": str(MOCKS / "logger.sh"),
             "BJUT_SYS_NET": str(self.sys_net),
@@ -188,7 +189,7 @@ class OpenWrtPortTests(unittest.TestCase):
         log = self.requests()
         self.assertIn("DDDDD=25000001", log)
         self.assertIn("upass=p%20%21%26%25%E4%B8%AD", log)
-        self.assertIn("IFACE wlan0", log)
+        self.assertIn("IFACE ifhost!wlan0!10.21.2.3", log)
         for line in log.splitlines():
             if line.startswith("ARGS "):
                 self.assertNotIn(password, line)

@@ -1,5 +1,7 @@
 #!/bin/sh
 
+if [ "$1" = --version ]; then printf 'curl %s mock\n' "${MOCK_CURL_VERSION:-8.19.0}"; exit 0; fi
+
 state_dir="${MOCK_STATE_DIR:?}"
 mkdir -p "$state_dir"
 config="$(cat)"
@@ -7,12 +9,19 @@ url="$(printf '%s\n' "$config" | sed -n 's/^url = "\(.*\)"$/\1/p')"
 output=""
 pinned=0
 interface=""
+family=ipv4
+headers=""
+cookie_file=""
+data="$(printf '%s\n' "$config" | sed -n 's/^data = "\(.*\)"$/\1/p')"
 previous=""
 for argument in "$@"; do
 	case "$previous" in
 		--output) output="$argument" ;;
 		--interface) interface="$argument" ;;
+		--dump-header) headers="$argument" ;;
+		--cookie-jar) cookie_file="$argument" ;;
 	esac
+	[ "$argument" != "--ipv6" ] || family=ipv6
 	[ "$argument" = "--pinnedpubkey" ] && pinned=1
 	previous="$argument"
 done
@@ -20,17 +29,65 @@ printf 'ARGS %s\n' "$*" >>"$state_dir/requests.log"
 printf 'URL %s\n' "$url" >>"$state_dir/requests.log"
 printf 'IFACE %s\n' "$interface" >>"$state_dir/requests.log"
 
+printf 'BIND family=%s device=%s src=%s mark=%s\n' "${FAMILY:-$family}" "${DEVICE:-$interface}" "${SRCIP:-}" "${FWMARK:-}" >>"$state_dir/requests.log"
+device="${interface#ifhost!}"; device="${device%%!*}"; device="${device#if!}"
+success_marker="$state_dir/login_succeeded"
+[ -z "${MOCK_CONFIG_JSON:-}" ] || success_marker="$success_marker.$device"
+mock_source4="${MOCK_IPV4:-10.21.2.3}"
+case "$interface" in ifhost!*) [ "$family" != ipv4 ] || mock_source4="${interface##*!}" ;; esac
 scenario="${MOCK_SCENARIO:-type2_success}"
+if [ "$scenario" = multi_mapped ]; then scenario=type1_success; fi
 code=404
 body='not found'
 
 case "$url" in
+ https://jfself.bjut.edu.cn/Self/*)
+  fixture_user="$(printf '%s' "$data" | sed -n 's/.*account=\([^&]*\).*/\1/p')"
+  [ -n "$fixture_user" ] || fixture_user="$(cat "$cookie_file" 2>/dev/null)"
+  mime=text/html
+  code=200
+  case "$url" in
+   */Self/login/verify*)
+    if [ "$scenario" = billing_rejected ]; then
+     body="<form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='hide'></div></form>账号或密码出现错误！"
+    elif [ "$scenario" = billing_captcha ] && ! printf '%s' "$data" | grep -q 'code=AB12'; then
+     body="<form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv'></div></form>"
+    else
+     printf '%s' "$fixture_user" >"$cookie_file"
+     code=302; body=''; location='/Self/dashboard'
+    fi ;;
+   */Self/login/randomCode*)
+    mime=image/png; body=fixture-image ;;
+   */Self/login/getBrandInfo*) mime=application/json; body='{}' ;;
+   */Self/dashboard/getOnlineList*)
+    mime=application/json; body='{"rows":[{"sessionId":"fixture-session","ip":"10.126.19.139","ipv6":"2001:db8::1","mac":"aabbccddeeff","useTime":60,"userPassword":"do not expose"}]}'
+    [ "$scenario" != billing_sessions_unavailable ] || body='{"error":"session service unavailable"}' ;;
+   */Self/static/login.js*) body='/* fixture asset */' ;;
+   */Self/dashboard/getLoginHistory*) mime=application/json; body='{"data":[["2026-10-11","2026-10-11","10.126.19.139","","aabbccddeeff",60,42,3,0]]}' ;;
+   *)
+    if [ -n "$fixture_user" ]; then
+     body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});</script><label>状　　态：</label><div><span>正常</span></div>"
+    else
+     body="<script src='/Self/static/login.js'></script><script src='https://other.test/unsafe.js'></script><form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='$( [ "$scenario" = billing_captcha ] || printf hide )'></div></form>"
+    fi ;;
+  esac
+  if [ -n "$headers" ]; then
+   printf 'HTTP/1.1 %s\r\nContent-Type: %s\r\n' "$code" "$mime" >"$headers"
+   [ -z "${location:-}" ] || printf 'Location: %s\r\n' "$location" >>"$headers"
+  fi
+  printf '%s' "$body" >"$output"; printf '%s' "$code"; exit 0
+  ;;
 	http://connect.test/generate_204)
-		if [ "$scenario" = "online" ] || [ -e "$state_dir/login_succeeded" ]; then
+		if [ "$scenario" = "online" ] || [ -e "$success_marker" ]; then
 			code=204; body=''
 		else
 			code=302; body='portal'
+   [ "$scenario" != ipv6_only ] || [ "$family" != ipv6 ] || { code=204; body=''; }
+   [ "$scenario" != preauth_public ] || { code=204; body=''; }
 		fi
+		;;
+	https://www.baidu.com/robots.txt|https://test6.ustc.edu.cn/|https://dns.alidns.com/)
+		if [ "$scenario" = online ] || [ "$scenario" = public_tls ] || [ -e "$success_marker" ]; then code=404; body=public; else exit 7; fi
 		;;
 	*/drcom/chkstatus*)
 		[ -z "${MOCK_PROBE_DELAY:-}" ] || sleep "$MOCK_PROBE_DELAY"
@@ -44,7 +101,7 @@ case "$url" in
 				if [ "$scenario" = "type2_rotate" ] && printf '%s' "$url" | grep -q 'DDDDD=25000001'; then
 					code=200; body='dr1003({"result":0,"msga":"password error"});'
 				else
-					code=200; body='dr1003({"result":1,"msg":"ok"});'; : >"$state_dir/login_succeeded"
+					code=200; body='dr1003({"result":1,"msg":"ok"});'; : >"$success_marker"
 				fi
 				;;
 			auth_rejected) code=200; body='dr1003({"result":0,"msga":"password error"});' ;;
@@ -57,17 +114,29 @@ case "$url" in
 		esac
 		;;
 	*/eportal/portal/page/loadConfig*)
+		[ -z "${MOCK_PROBE_DELAY:-}" ] || sleep "$MOCK_PROBE_DELAY"
 		case "$scenario" in
 			type1_pinned)
 				if [ "$pinned" = "0" ]; then exit 60; fi
 				code=200; body='dr1001({"code":1,"data":{"portal":"eportal"}});'
 				;;
-		type1_success) code=200; body='dr1001({"code":1,"data":{"portal":"eportal"}});' ;;
+		type1_success|type1_already_online|portal_online|portal_unknown|preauth_public) code=200; body='dr1001({"code":1,"data":{"portal":"eportal"}});' ;;
 		esac
+		;;
+	*/eportal/portal/online_list*)
+  case "$scenario" in
+   portal_online) code=200; body="dr1002({\"result\":1,\"total\":1,\"list\":[{\"online_ip\":\"${mock_source4}\"}]});" ;;
+   type1_success|type1_pinned|type1_already_online|preauth_public) code=200; body='dr1002({"result":1,"total":0,"list":[]});'; [ ! -e "$success_marker" ] || body="dr1002({\"result\":1,\"total\":1,\"list\":[{\"online_ip\":\"${mock_source4}\"}]});" ;;
+   portal_unknown) code=200; body='unexpected response' ;;
+  esac
+  ;;
+	https://lgn.bjut.edu.cn/)
+		case "$scenario" in type3_*) code=200; body='<html><input name="v6ip"><script>var Dr.COMWebLoginID_=1; var authUserField="DDDDD";</script></html>' ;; esac
 		;;
 	*/eportal/portal/page/loadUserInfo*)
 		case "$scenario" in
-			type3_success|type3_no_ipv6|type3_secondary|type3_ambiguous|type3_foreign_ipv6) code=200; body='dr1002({"code":1,"user_info":{"account":"fixture"}});' ;;
+			type3_success|type3_no_ipv6|type3_secondary|type3_ambiguous|type3_foreign_ipv6) code=200; body='dr1002({"code":1,"user_info_lang":{"account":"账号"}});'
+				[ ! -e "$success_marker" ] || body="dr1002({\"code\":1,\"user_info\":{\"account\":\"$(cat "$state_dir/login_account.$device" 2>/dev/null)\"}});" ;;
 		esac
 		;;
 	*/drcom/getipv6*)
@@ -80,8 +149,13 @@ case "$url" in
 	*/eportal/portal/login*)
 		case "$scenario" in
 			type3_ambiguous) exit 28 ;;
+			type1_already_online) code=200; body='dr1005({"result":0,"msg":"用户已在线"});' ;;
 			type1_success|type1_pinned|type3_success|type3_secondary|type3_no_ipv6|type3_foreign_ipv6)
-				code=200; body='dr1005({"result":1,"msg":"ok"});'; : >"$state_dir/login_succeeded"
+				code=200; body='dr1005({"result":1,"msg":"ok"});'; : >"$success_marker"
+                fixture_encoded="$(printf '%s' "$url" | sed -n 's/.*user_account=\([^&]*\).*/\1/p')"
+                if printf '%s' "$scenario" | grep -q '^type3_'; then
+                    printf '%s' "$fixture_encoded" | python3 -c 'import sys; s=sys.stdin.read(); print("".join(chr(int(s[i:i+2],16)^0x16) for i in range(0,len(s),2)).removeprefix(",0,"))' >"$state_dir/login_account.$device"
+                fi
 				;;
 		esac
 		;;

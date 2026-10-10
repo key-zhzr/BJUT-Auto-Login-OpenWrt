@@ -1,17 +1,27 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
-
-[ "$ACTION" = "ifup" ] || exit 0
-[ "$(uci -q get bjut-autologin.main.enabled)" = "1" ] || exit 0
-configured_network="$(uci -q get bjut-autologin.main.network)"
-[ -n "$configured_network" ] || exit 0
-[ "$INTERFACE" = "$configured_network" ] || exit 0
-
-# Do not block netifd's hotplug chain. The daemon's atomic lock prevents this
-# prompt event check from overlapping its periodic request.
-(
-	sleep 2
-	BJUT_EVENT=ifup /usr/sbin/bjut-autologin once >/dev/null 2>&1
-) &
-
+case "$ACTION" in ifup|ifupdate|ifdown) ;; *) exit 0 ;; esac
+. /lib/functions.sh
+config_load bjut-autologin
+config_get_bool enabled main enabled 0
+[ "$enabled" = 1 ] || exit 0
+has_uplink=0
+queue_check() {
+ local section="$1" active network network6
+ has_uplink=1
+ config_get_bool active "$section" enabled 1
+ [ "$active" = 1 ] || return
+ config_get network "$section" network
+ config_get network6 "$section" network6
+ [ "$INTERFACE" = "$network" ] || { [ -n "$network6" ] && [ "$INTERFACE" = "$network6" ]; } || return
+ (sleep 1; BJUT_EVENT="$ACTION" /usr/sbin/bjut-autologin once "$section" >/dev/null 2>&1) &
+}
+config_foreach queue_check uplink
+if [ "$has_uplink" = 0 ]; then
+ config_get network main network wwan
+ config_get network6 main network6
+ if [ "$INTERFACE" = "$network" ] || { [ -n "$network6" ] && [ "$INTERFACE" = "$network6" ]; }; then
+  (sleep 1; BJUT_EVENT="$ACTION" /usr/sbin/bjut-autologin once >/dev/null 2>&1) &
+ fi
+fi
 exit 0

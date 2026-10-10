@@ -2,6 +2,7 @@
 """Run all host-side validation available without a live BJUT network or SDK."""
 
 import json
+import os
 import base64
 import hashlib
 from pathlib import Path
@@ -51,16 +52,20 @@ def validate_json():
 
 
 def validate_javascript():
-    source = LUCI / "htdocs/luci-static/resources/view/bjut-autologin/config.js"
+    sources = sorted((LUCI / "htdocs/luci-static/resources/view/bjut-autologin").glob("*.js"))
     # LuCI view modules deliberately use a top-level return. Compiling inside
     # Function matches LuCI's loader while still catching JavaScript syntax errors.
     program = "const fs=require('fs'); new Function(fs.readFileSync(process.argv[1], 'utf8'));"
-    run(["node", "-e", program, source])
+    for source in sources:
+        run(["node", "-e", program, source])
 
 
 def validate_shell():
     paths = [
         CORE / "files/usr/sbin/bjut-autologin",
+        CORE / "files/usr/libexec/bjut-billing",
+        CORE / "files/usr/libexec/rpcd/bjut-autologin",
+        *sorted((CORE / "files/usr/lib/bjut-autologin").glob("*.sh")),
         CORE / "files/etc/init.d/bjut-autologin",
         CORE / "files/etc/hotplug.d/iface/95-bjut-autologin",
         *sorted((OPENWRT / "tests/mocks").glob("*.sh")),
@@ -105,8 +110,29 @@ def validate_c_with_sanitizers():
         shutil.rmtree(temp)
 
 
+def validate_html_with_sanitizers():
+    temp = Path(tempfile.mkdtemp(prefix="bjut-html-sanitizer-"))
+    try:
+        binary = temp / 'bjut-html'
+        run(['cc','-std=c99','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',CORE/'src/bjut-html.c','-o',binary])
+        cases = [
+            ('user-json',b'window.user=function(){})'),
+            ('user-json',b'window.user=(function(x){})({"userName":"fixture","brace":"}\\\""});'),
+            ('input',b'<input name="checkcode" value="1234">'),
+            ('captcha',b'<div id="randomDiv" class="hide"></div>'),
+            ('status','<label>状态</label><div><span>正常</span></div>'.encode()),
+            ('assets',b'<script src="/Self/static/login.js"></script><link href="/Self/static/login.css">'),
+        ]
+        for operation, payload in cases:
+            args=[str(binary),operation] + (['checkcode'] if operation=='input' else [])
+            result=subprocess.run(args,input=payload,capture_output=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'})
+            if b'Sanitizer' in result.stderr or result.returncode not in (0,1): raise RuntimeError('HTML extraction failed sanitizer check')
+    finally: shutil.rmtree(temp)
+
+
 def validate_security_invariants():
     core_text = (CORE / "files/usr/sbin/bjut-autologin").read_text(encoding="utf-8")
+    core_text += (CORE / "files/usr/lib/bjut-autologin/uplinks.sh").read_text(encoding="utf-8")
     if "--interface" not in core_text or "--resolve" not in core_text:
         raise RuntimeError("interface/address pinning was removed")
     if "--pinnedpubkey" not in core_text:
@@ -137,8 +163,10 @@ def main():
     validate_javascript()
     validate_shell()
     validate_c_with_sanitizers()
+    validate_html_with_sanitizers()
     validate_security_invariants()
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
+    run([sys.executable, "openwrt/tests/test_multi_uplink.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

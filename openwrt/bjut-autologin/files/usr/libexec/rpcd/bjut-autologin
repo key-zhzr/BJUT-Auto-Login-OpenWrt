@@ -1,0 +1,202 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# rpcd checks the caller's session/ACL before executing these named methods.
+if [ "$1" = list ]; then
+	printf '%s\n' '{"status":{},"accounts":{},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true}}'
+	exit 0
+fi
+[ "$1" = call ] || exit 2
+BJUT_SOURCE_ONLY=1
+BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
+. "$BJUT_SELF" || exit 1
+. "$LIB_DIR/mwan.sh" || exit 1
+. "$LIB_DIR/billing.sh" || exit 1
+. "$LIB_DIR/routing.sh" || exit 1
+mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR" || exit 1
+REQUEST="$(mktemp "$STATE_DIR/rpc.XXXXXX")" || exit 1
+trap 'rm -f -- "$REQUEST"' 0
+head -c 131073 >"$REQUEST"
+[ "$(wc -c <"$REQUEST" | tr -d '[:space:]')" -le 131072 ] || exit 2
+load_configuration || exit 1
+. "$JSHN_SH"
+
+reply() {
+	json_init
+	json_add_string state "$1"
+	json_add_string message "$2"
+	json_dump
+}
+
+request_value() { json_file_value "$REQUEST" "@.$1"; }
+valid_ticket() { case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = 32 ]; }
+random_ticket() { dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+owner_hash() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+uci_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
+
+accounts_list() {
+	local section user enabled present comma=""
+	printf '{"accounts":['
+	for section in $ACCOUNT_SECTIONS; do
+		config_get user "$section" username ""
+		config_get_bool enabled "$section" enabled 1
+		config_get present "$section" password ""
+		[ -z "$present" ] || present=1
+		json_init; json_add_string id "$section"; json_add_string user "$user"
+		json_add_int enabled "$enabled"; json_add_int hasPassword "${present:-0}"
+		printf '%s' "$comma"; comma=,; json_dump
+	done
+	printf ']}\n'
+}
+
+sync_accounts() {
+	local payload stage index=0 user password enabled section existing original count=0 result=0 is_new seen="" package newfile
+	payload="$STATE_DIR/accounts.$$.json"
+	request_value payload >"$payload"
+	stage="$(mktemp -d "$STATE_DIR/config.XXXXXX")" || return 1
+	original="${BJUT_CONFIG_DIR:-/etc/config}/bjut-autologin"
+	package="bjut_sync_$(random_ticket)"
+	cp "$original" "$stage/$package" || { rm -rf "$stage" "$payload"; return 1; }
+	cp "$original" "$stage/original"
+	while [ "$index" -lt 32 ]; do
+		user="$(json_file_value "$payload" "@.accounts[$index].user")"
+		[ -n "$user" ] || break
+		password="$(json_file_value "$payload" "@.accounts[$index].pass")"
+		enabled="$(json_file_value "$payload" "@.accounts[$index].enabled")"
+		case "$user" in *[!A-Za-z0-9_@.,-]*) result=1; break ;; esac
+		[ "${#user}" -le 256 ] && [ -n "$password" ] && [ "${#password}" -le 4096 ] || { result=1; break; }
+		case "$password" in *'
+'*|*'
+'*) result=1; break ;; esac
+		case "$enabled" in true|1) enabled=1 ;; false|0) enabled=0 ;; *) result=1; break ;; esac
+		case "|$seen|" in *"|$user|"*) result=1; break ;; esac
+		seen="${seen}${seen:+|}$user"
+		section=""; is_new=0
+		for existing in $ACCOUNT_SECTIONS; do
+			config_get existing_user "$existing" username ""
+			[ "$existing_user" != "$user" ] || { section="$existing"; break; }
+		done
+		[ -n "$section" ] || { section="app_$(printf '%s' "$user" | sha256sum | cut -c1-16)"; is_new=1; }
+		{
+			[ "$is_new" != 1 ] || printf 'set %s.%s=account\n' "$package" "$section"
+			printf 'set %s.%s.username=' "$package" "$section"; uci_quote "$user"; printf '\n'
+			printf 'set %s.%s.password=' "$package" "$section"; uci_quote "$password"; printf '\n'
+			printf 'set %s.%s.enabled=%s\n' "$package" "$section" "$enabled"
+			[ "$is_new" != 1 ] || printf 'set %s.%s.login_type=auto\n' "$package" "$section"
+			printf 'commit %s\n' "$package"
+		} | "$UCI_BIN" -q -c "$stage" batch || { result=1; break; }
+		[ "$("$UCI_BIN" -q -c "$stage" get "$package.$section.password")" = "$password" ] || { result=1; break; }
+		password=""; count=$((count + 1)); index=$((index + 1))
+	done
+	[ "$count" -gt 0 ] && [ "$index" -lt 32 ] || result=1
+	if [ "$result" = 0 ] && cmp -s "$stage/original" "$original"; then
+		# Re-read UCI to ensure the staged values were accepted before replacement.
+		"$UCI_BIN" -q -c "$stage" export "$package" >/dev/null &&
+		newfile="$(mktemp "$original.bjut.XXXXXX")" && cp "$stage/$package" "$newfile" &&
+		chmod 0600 "$newfile" && mv -f "$newfile" "$original" || result=1
+	else result=1; fi
+	"$UCI_BIN" -q -c "$stage" revert "$package" >/dev/null 2>&1 || true
+	[ -z "$newfile" ] || rm -f "$newfile"
+	rm -rf -- "$stage" "$payload"
+	if [ "$result" = 0 ]; then
+		# Reload the service without exposing credentials in process arguments.
+		[ ! -x "${BJUT_INIT:-/etc/init.d/bjut-autologin}" ] || "${BJUT_INIT:-/etc/init.d/bjut-autologin}" reload >/dev/null 2>&1
+		reply ready "选定账号已同步，其他账号与上游分配已保留"
+	else reply error "账号未同步；请检查内容，或等待路由配置保存后重试"; fi
+}
+
+launch_billing() {
+	# Detach from rpcd's bounded request lifetime. The polling method only reads
+	# the caller's ticket; it cannot run arbitrary commands or read arbitrary files.
+	/bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" </dev/null >/dev/null 2>&1 &
+}
+
+billing_begin() {
+	local owner uplink account ticket now old
+	owner="$(request_value owner)"
+	valid_ticket "$owner" && [ "$owner" != 00000000000000000000000000000000 ] || { reply error "请重新登录路由管理页面"; return; }
+	uplink="$(request_value uplink)"; account="$(request_value account)"
+	select_uplink "$uplink" || { reply error "所选上游不可用"; return; }
+	case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) reply error "所选账号不存在"; return ;; esac
+	mkdir -p "$STATE_DIR/billing"
+	# Delete expired jobs, cookies and captured login forms from volatile storage.
+	now="$(date +%s)"
+	for old in "$STATE_DIR"/billing/* "$STATE_DIR"/billing-cache/*; do
+		[ -d "$old" ] || continue
+		created="$(cat "$old/created" 2>/dev/null)"
+		is_uint "$created" && [ "$((now - created))" -gt 600 ] && rm -rf -- "$old"
+	done
+	ticket="$(random_ticket)"; valid_ticket "$ticket" || return 1
+	BILLING_JOB="$STATE_DIR/billing/$ticket"; mkdir "$BILLING_JOB" || return 1
+	printf '%s' "$(owner_hash "$owner")" >"$BILLING_JOB/owner"
+	printf '%s' "$now" >"$BILLING_JOB/created"
+	json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action begin
+	json_dump >"$BILLING_JOB/request.json"
+	billing_progress loading 2 "正在准备计费查询"
+	launch_billing
+	json_init; json_add_string state loading; json_add_string ticket "$ticket"; json_dump
+}
+
+ticket_job() {
+	ticket="$(request_value ticket)"; owner="$(request_value owner)"
+	valid_ticket "$ticket" && valid_ticket "$owner" || return 1
+	BILLING_JOB="$STATE_DIR/billing/$ticket"
+	[ "$(cat "$BILLING_JOB/owner" 2>/dev/null)" = "$(owner_hash "$owner")" ] || return 1
+	created="$(cat "$BILLING_JOB/created" 2>/dev/null)"
+	is_uint "$created" && [ "$(($(date +%s) - created))" -le 600 ]
+}
+
+session_rows() {
+	local index=0 comma="" value key row source prefix item
+	source="$BILLING_JOB/online.json"
+	[ -s "$source" ] || { printf '[]'; return; }
+	prefix='@'
+	[ -z "$(json_file_value "$source" '@.rows')" ] || prefix='@.rows'
+	[ -z "$(json_file_value "$source" '@.data')" ] || prefix='@.data'
+	printf '['
+	while [ "$index" -lt 100 ]; do
+		item="$prefix[$index]"
+		[ -n "$(json_file_value "$source" "$item.sessionId")" ] || break
+		json_init
+		for key in loginTime ip ipv6 mac useTime downFlow upFlow; do
+			value="$(json_file_value "$source" "$item.$key")"
+			[ "${#value}" -le 256 ] || value=""
+			json_add_string "$key" "$value"
+		done
+		printf '%s' "$comma"; comma=,; json_dump
+		index=$((index + 1))
+	done
+	printf ']'
+}
+
+case "$2" in
+	status) print_all_status ;;
+	accounts) accounts_list ;;
+	login)
+		uplink="$(request_value uplink)"; account="$(request_value account)"
+		select_uplink "$uplink" || { reply error "所选上游不可用"; exit 0; }
+		case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) [ -z "$account" ] || { reply error "所选账号不存在"; exit 0; } ;; esac
+		printf '%s' "$account" >"$STATE_DIR/manual-$uplink"
+		/bin/sh "$SELF_BIN" manual "$uplink" "$account" </dev/null >/dev/null 2>&1 &
+		reply loading "已开始核对上游与登录状态" ;;
+	sync_accounts) sync_accounts ;;
+	billing_start) billing_begin ;;
+	billing_poll)
+		ticket_job || { reply error "查询已过期，请刷新"; exit 0; }
+		printf '{"result":'; cat "$BILLING_JOB/result.json"
+		printf ',"sessionsAvailable":'; if [ -s "$BILLING_JOB/online.json" ]; then printf true; else printf false; fi
+		printf ',"sessions":'; session_rows; printf '}\n' ;;
+	billing_captcha)
+		ticket_job || { reply error "查询已过期，请刷新"; exit 0; }
+		[ "$(json_file_value "$BILLING_JOB/result.json" '@.state')" = captcha ] || { reply error "请等待当前查询完成"; exit 0; }
+		code="$(request_value code)"; action=captcha
+		if [ "$(request_value refresh)" = true ]; then action=refresh_captcha; else
+			case "$code" in ''|*[!A-Za-z0-9]*) reply error "请填写图片中的验证码"; exit 0 ;; esac
+			[ "${#code}" -le 12 ] || exit 2
+		fi
+		uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"; account="$(json_file_value "$BILLING_JOB/request.json" '@.account')"
+		json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action "$action"; json_add_string code "$code"
+		json_dump >"$BILLING_JOB/request.json"
+		billing_progress loading 40 "正在核对验证码"; launch_billing
+		reply loading "正在继续计费查询" ;;
+	*) exit 2 ;;
+esac

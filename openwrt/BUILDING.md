@@ -54,3 +54,14 @@ apk add --allow-untrusted /tmp/openwrt-你的平台-25.12.5-apk__luci-app-bjut-a
 ```
 
 从 Release 下载时，可先在下载目录执行 `sha256sum -c SHA256SUMS` 核对完整性。安装后配置见 [README.md](README.md)。SDK 编译通过不代表已经完成路由器实机安装和校园网认证测试。
+
+## 0.1.6 的版本迁移
+
+路由端从此前独立编号 0.3.0 改为与 App 同步的 0.1.6。已经安装 0.3.0 IPK 的设备可在核对平台与校验和后，使用以下命令保留配置安装：
+
+```sh
+opkg --force-downgrade install /tmp/openwrt-*__bjut-autologin_0.1.6-*.ipk
+opkg --force-downgrade install /tmp/openwrt-*__luci-app-bjut-autologin_0.1.6-*.ipk
+```
+
+APK 仍使用对应固件的包管理器安装。安装后执行 `bjut-autologin version`，应显示 `0.1.6`；LuCI 包也使用相同版本。

@@ -1,14 +1,34 @@
 {
-	"luci-app-bjut-autologin": {
-		"description": "Grant access to BJUT Auto Login configuration and status",
-		"read": {
-			"file": {
-				"/var/run/bjut-autologin/status.json": [ "read" ]
-			},
-			"uci": [ "bjut-autologin" ]
-		},
-		"write": {
-			"uci": [ "bjut-autologin" ]
-		}
-	}
+  "luci-app-bjut-autologin": {
+    "description": "Grant access to BJUT Auto Login configuration and status",
+    "read": {
+      "file": {
+        "/var/run/bjut-autologin/status.json": [
+          "read"
+        ]
+      },
+      "uci": [
+        "bjut-autologin"
+      ],
+      "ubus": {
+        "bjut-autologin": [
+          "status",
+          "accounts",
+          "billing_poll"
+        ]
+      }
+    },
+    "write": {
+      "uci": [
+        "bjut-autologin"
+      ],
+      "ubus": {
+        "bjut-autologin": [
+          "login",
+          "billing_start",
+          "billing_captcha"
+        ]
+      }
+    }
+  }
 }

@@ -41,11 +41,14 @@ def lookup(value, expression):
             path = path[end + 2:]
         elif path.startswith("["):
             end = path.index("]")
-            tokens.append(int(path[1:end]))
+            tokens.append("*" if path[1:end] == "*" else int(path[1:end]))
             path = path[end + 1:]
         else:
             raise KeyError(path)
-    for token in tokens:
+    for index, token in enumerate(tokens):
+        if token == "*":
+            rest = tokens[index + 1:]
+            return [lookup(v, "@" + "".join("[" + str(k) + "]" if isinstance(k,int) else "." + k for k in rest)) for v in value]
         value = value[token]
     return value
 
@@ -56,7 +59,9 @@ def main():
         value = lookup(json.loads(source), expression)
     except (ValueError, KeyError, IndexError, TypeError):
         return 1
-    if isinstance(value, bool):
+    if expression and "[*]" in expression and isinstance(value,list):
+        print("\n".join(map(str,value)))
+    elif isinstance(value, bool):
         print("true" if value else "false")
     elif isinstance(value, (dict, list)):
         print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))

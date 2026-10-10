@@ -1,13 +1,30 @@
 {
-	"admin/network/bjut-autologin": {
-		"title": "BJUT 自动登录",
-		"order": 75,
-		"action": {
-			"type": "view",
-			"path": "bjut-autologin/config"
-		},
-		"depends": {
-			"acl": [ "luci-app-bjut-autologin" ]
-		}
-	}
+  "admin/network/bjut-autologin": {
+    "title": "BJUT 自动登录",
+    "order": 75,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-bjut-autologin"
+      ]
+    }
+  },
+  "admin/network/bjut-autologin/config": {
+    "title": "状态与设置",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/config"
+    }
+  },
+  "admin/network/bjut-autologin/billing": {
+    "title": "计费系统",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/billing"
+    }
+  }
 }

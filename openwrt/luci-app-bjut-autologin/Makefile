@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=0.3.0
+PKG_VERSION:=0.1.6
 PKG_RELEASE:=1
 LUCI_TITLE:=LuCI support for BJUT Auto Login
 LUCI_URL:=https://github.com/key-zhzr/BJUT-Auto-Login-OpenWrt

@@ -2,6 +2,9 @@ config service 'main'
 	option enabled '0'
 	option network 'wwan'
 	option device ''
+	option network6 ''
+	option mwan3 '1'
+	option managed_routes '1'
 	option transport 'auto'
 	option login_type 'auto'
 	option compatibility 'secure'
@@ -26,3 +29,20 @@ config service 'main'
 #	option username '25000000'
 #	option password 'replace-me'
 #	option login_type 'auto'
+
+# For multiple uplinks, add named uplink sections. When any uplink section
+# exists, the legacy main.network is ignored. IPv6 may use a separate logical
+# interface/device; an empty network6 follows the IPv4 physical device.
+#
+# config uplink 'dorm_a'
+#	option enabled '1'
+#	option network 'wan14'
+#	option network6 'wan16'
+#	option login_type 'type1'
+#	list accounts 'student_a'
+#
+# config uplink 'dorm_b'
+#	option enabled '1'
+#	option network 'wan24'
+#	option network6 'wan26'
+#	list accounts 'student_b'
