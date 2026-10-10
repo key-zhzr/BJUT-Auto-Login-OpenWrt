@@ -10,7 +10,7 @@
 | `bjut_wifi` | Type 2 Dr.COM | HTTPS | 固定 `10.21.251.3`，正常证书验证 |
 | `lgn` 有线 | Type 3 加密 ePortal | HTTPS + IPv4/IPv6 | 从 `lgn6` 获取网关观测到的 IPv6，全部动态字段按原客户端 UTF-16/XOR 规则编码 |
 
-建议使用 OpenWrt 23.05+、24.10+ 或对应 ImmortalWrt 版本。核心包不依赖 LuCI；管理页面是独立的可选包。
+核心包不依赖 LuCI；管理页面是独立的可选包。仓库提供 OpenWrt 24.10 IPK 和 25.12 APK 的编译工作流；其他固件使用对应 SDK 编译。
 
 ## 为什么常驻占用较低
 
@@ -22,11 +22,13 @@
 
 ## 源码目录
 
-- `bjut-autologin/`：核心 IPK，包含认证脚本、微型 UTF-8/UTF-16 编码器、UCI 默认配置、`procd` 服务和 `netifd` hotplug 脚本。
+- `bjut-autologin/`：核心包，包含认证脚本、微型 UTF-8/UTF-16 编码器、UCI 默认配置、`procd` 服务和 `netifd` hotplug 脚本。
 - `luci-app-bjut-autologin/`：可选 LuCI JavaScript 配置页，只授予 UCI 读写和运行状态文件读取权限，不授予任意命令执行权限。
 - `tests/`：离线协议网关、接口、UCI、JSONP、账号轮换和安全失败测试。
 
 ## 使用 SDK 编译
+
+也可在 GitHub Actions 中选择平台，自动生成 IPK/APK，详见 [BUILDING.md](BUILDING.md)。
 
 选择与路由器固件版本、Target 和 Subtarget **完全一致**的 OpenWrt/ImmortalWrt SDK，然后执行：
 
@@ -41,7 +43,7 @@ make package/bjut-autologin/compile V=s
 make package/luci-app-bjut-autologin/compile V=s
 ```
 
-生成的 IPK 位于 SDK 的 `bin/packages/` 或 `bin/targets/` 下。核心包会依赖 `curl`、`ca-bundle`、`rpcd-mod-iwinfo`、`jshn` 和 `jsonfilter`；`rpcd-mod-iwinfo` 同时兼容传统无线脚本和不提供独立 `iwinfo` 命令的新版 `wifi-scripts-ucode`。
+生成的 IPK/APK 位于 SDK 的 `bin/packages/` 或 `bin/targets/` 下。核心包会依赖 `curl`、`ca-bundle`、`rpcd-mod-iwinfo`、`jshn` 和 `jsonfilter`；`rpcd-mod-iwinfo` 同时兼容传统无线脚本和不提供独立 `iwinfo` 命令的新版 `wifi-scripts-ucode`。
 
 安装时先装核心，再按需安装 LuCI：
 

@@ -2,7 +2,7 @@
 """Merge a fetched upstream ref on a new branch; never push or discard local work.
 
 The workflow publishes the resulting branch, and advances main only for a
-review-free, tested merge. Core changes and conflicts always require a PR.
+review-free, tested merge. Core changes and conflicts remain on review branches.
 """
 import argparse
 import json
@@ -48,7 +48,7 @@ def synchronize(repo, ref, run_checks=True):
     if conflicts:
         git(repo, 'merge', '--abort', check=False)
         note = '# Upstream merge requires review\n\nUpstream: `' + upstream + '`\n\nConflicting files:\n\n' + '\n'.join('- `' + path + '`' for path in conflicts)
-        note += '\n\nNo conflict resolution was applied. Merge this upstream commit locally, resolve the files, port relevant changes and run the OpenWrt tests before completing this PR.\n'
+        note += '\n\nNo conflict resolution was applied. Merge this upstream commit locally, resolve the files, port relevant changes and run the OpenWrt tests before merging this review branch.\n'
         (repo / 'openwrt/UPSTREAM-REVIEW.md').write_text(note)
         git(repo, 'add', 'openwrt/UPSTREAM-REVIEW.md')
         git(repo, 'commit', '-m', 'docs(openwrt): record upstream merge conflicts')

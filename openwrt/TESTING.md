@@ -14,6 +14,7 @@
 | 失败语义 | 非校园 IP、SSID/BSSID 不匹配、协议/传输不匹配、无门户、门户未就绪、结果未知、超大响应、并发锁和陈旧锁恢复 |
 | 隐私 | 密码与完整账号不出现在 curl argv、syslog 和 JSON 状态；状态账号脱敏 |
 | 静态检查 | Dash 语法、LuCI JavaScript 编译、菜单/ACL JSON、ACL 无文件执行权限、捕获证书 SPKI 重算、C 编译警告、ASan/UBSan、UTF-8 与尾随空白 |
+| 编译与发布 | 固件版本与 IPK/APK 对应、两个包完整性、架构校验、跨架构文件不互相覆盖、缺失矩阵/校验和不符/混用源码提交时拒绝发布 |
 
 ## 一键运行
 
@@ -33,7 +34,7 @@ python3 -m unittest -v openwrt/tests/test_openwrt_port.py
 
 以下项目必须在用户的实际设备/校园网络执行，当前离线环境无法诚实替代：
 
-1. 用目标固件完全一致的 SDK 交叉编译并安装 IPK/APK。
+1. 将对应 SDK 生成的 IPK/APK 安装到匹配固件的设备；GitHub Actions 的交叉编译不能代替实机安装。
 2. 在 `bjut-sushe`、`bjut_wifi` 和 `lgn` 三种真实网络分别执行一次 `manual`。
 3. 验证目标固件 curl 的 TLS 后端支持 `--pinnedpubkey`；不支持时 Type 1 旧证书路径应安全失败。
 4. 测量目标路由器的实际 RSS、CPU 唤醒和 24 小时重连表现。

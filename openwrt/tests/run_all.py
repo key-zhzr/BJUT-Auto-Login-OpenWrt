@@ -139,6 +139,7 @@ def main():
     validate_c_with_sanitizers()
     validate_security_invariants()
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
+    run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 
 

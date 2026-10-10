@@ -7,13 +7,13 @@
 - lgn 的 IPv4 + IPv6 联动认证，缺少 IPv6 时可先认证 IPv4。
 - 多账号、明确失败后的冷却及网络变化触发。
 
-[安装与配置](openwrt/README.md) · [测试方法](openwrt/TESTING.md) · [变更记录](openwrt/CHANGELOG.md) · [上游同步说明](openwrt/UPSTREAM.md)
+[下载与编译](openwrt/BUILDING.md) · [安装与配置](openwrt/README.md) · [测试方法](openwrt/TESTING.md) · [变更记录](openwrt/CHANGELOG.md) · [上游同步说明](openwrt/UPSTREAM.md)
 
 ## 安装
 
 本仓库提供两个包：`bjut-autologin` 本体，以及依赖本体的 `luci-app-bjut-autologin` 管理界面。本体可单独使用。
 
-使用与你的路由器固件一致的 SDK 编译、安装，具体步骤见[安装与配置](openwrt/README.md)。源码保留主项目历史，`openwrt/` 是路由端的代码和文档入口。
+在 Actions 的 **OpenWrt packages** 中可一键编译主流平台的 IPK/APK；版本标签构建成功后上传至 Releases。请选择与固件版本和架构匹配的包，详见[下载与编译](openwrt/BUILDING.md)。源码保留主项目历史，`openwrt/` 是路由端的代码和文档入口。
 
 ## 与主项目同步
 

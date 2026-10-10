@@ -1,0 +1,140 @@
+name: OpenWrt packages
+
+on:
+  push:
+    tags: ['openwrt-v*']
+  workflow_dispatch:
+    inputs:
+      package_format:
+        description: 安装包格式
+        type: choice
+        default: all
+        options: [all, ipk, apk]
+      platform:
+        description: 目标平台
+        type: choice
+        default: all
+        options:
+          - all
+          - x86/64
+          - mediatek/filogic
+          - rockchip/armv8
+          - bcm27xx/bcm2711
+          - ipq40xx/generic
+          - mvebu/cortexa9
+          - ipq806x/generic
+          - ramips/mt7621
+          - ath79/generic
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-packages-${{ github.ref }}-${{ inputs.package_format || 'all' }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.repository == 'key-zhzr/BJUT-Auto-Login-OpenWrt'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.matrix.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential dash openssl strace
+      - name: Validate port and packaging
+        run: |
+          python3 openwrt/tests/run_all.py
+          python3 openwrt/tests/test_sync_upstream.py
+      - name: Select SDK matrix
+        id: matrix
+        env:
+          PACKAGE_FORMAT: ${{ inputs.package_format || 'all' }}
+          PLATFORM: ${{ inputs.platform || 'all' }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 openwrt/scripts/package_build.py plan --format "$PACKAGE_FORMAT" --platform "$PLATFORM" --tag "$RELEASE_TAG"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: ${{ matrix.target }} · ${{ matrix.version }} · ${{ matrix.format }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Prepare SDK output
+        run: mkdir -p sdk-output
+      - name: Compile core and LuCI with matching official SDK
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
+        env:
+          CONTAINER: ghcr.io/openwrt/sdk
+          ARCH: ${{ matrix.sdk }}
+          FEED_DIR: ${{ github.workspace }}/openwrt
+          FEEDNAME: bjut
+          ARTIFACTS_DIR: ${{ github.workspace }}/sdk-output
+          PACKAGES: bjut-autologin luci-app-bjut-autologin
+          BUILD_LOG: '1'
+          V: s
+      - name: Check and collect both packages
+        env:
+          BUILD_ROW: ${{ toJSON(matrix) }}
+        run: python3 openwrt/scripts/package_build.py collect --input sdk-output/bin --output package-artifacts --row "$BUILD_ROW" --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.id }}-packages
+          path: package-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve SDK logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.id }}-logs
+          path: sdk-output/logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+  release:
+    needs: [plan, build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/openwrt-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: openwrt-*-packages
+          path: release-packages
+          merge-multiple: true
+      - name: Verify complete release matrix and checksums
+        env:
+          BUILD_MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: python3 openwrt/scripts/package_build.py release --directory release-packages --matrix "$BUILD_MATRIX" --commit "$GITHUB_SHA"
+      - name: Publish verified package release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PACKAGE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json"; then
+            python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1]))["isDraft"] else "Release is already published; use a new version tag")' "$RUNNER_TEMP/existing-release.json"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "BJUT Auto Login · OpenWrt $PACKAGE_VERSION" --notes-file openwrt/RELEASE-NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" release-packages/*.ipk release-packages/*.apk release-packages/builds.json release-packages/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

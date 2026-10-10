@@ -1,0 +1,56 @@
+# 下载与编译安装包
+
+在仓库的 **Actions → OpenWrt packages → Run workflow** 中编译：
+
+- `package_format`：选择全部格式，或仅 IPK/APK。
+- `platform`：选择全部平台，或指定一项。
+
+每项构建都生成 `bjut-autologin` 本体和 `luci-app-bjut-autologin` 管理界面。完成后在任务底部下载对应的 `*-packages` 附件，保留 30 天。构建失败时可下载 SDK 日志。
+
+## 默认编译矩阵
+
+使用官方 SDK，固定 OpenWrt **24.10.8 → IPK**、**25.12.5 → APK**；两个格式分别编译，不转换文件后缀。这里的 APK 是 OpenWrt 安装包，与 Android APK 不同。
+
+| 平台 | 包架构 | 常见设备类型 |
+|---|---|---|
+| `x86/64` | `x86_64` | x86 软路由 |
+| `mediatek/filogic` | `aarch64_cortex-a53` | MT7981/MT7986/MT7988 路由器 |
+| `rockchip/armv8` | `aarch64_generic` | Rockchip ARM64 设备 |
+| `bcm27xx/bcm2711` | `aarch64_cortex-a72` | Raspberry Pi 4 |
+| `ipq40xx/generic` | `arm_cortex-a7_neon-vfpv4` | IPQ40xx 路由器 |
+| `mvebu/cortexa9` | `arm_cortex-a9_vfpv3-d16` | Marvell Armada 路由器 |
+| `ipq806x/generic` | `arm_cortex-a15_neon-vfpv4` | IPQ806x 路由器 |
+| `ramips/mt7621` | `mipsel_24kc` | MT7621 路由器 |
+| `ath79/generic` | `mips_24kc` | 常见 Atheros MIPS 路由器 |
+
+配置见 [`build-targets.json`](build-targets.json)。修改 SDK 版本时应核对[官方发布目录](https://downloads.openwrt.org/releases/)中的目标及包架构，再执行完整构建。
+
+安装前在路由器上执行 `ubus call system board`，查看固件版本及 `release.target`；再用 `opkg print-architecture` 或 `apk --print-arch` 核对包架构。选择与固件匹配的版本、平台和格式。ImmortalWrt 或其他定制固件建议使用其对应 SDK 编译，不能仅根据 CPU 名称判断兼容性。
+
+文件名带有 OpenWrt 版本和平台前缀，避免不同构建的 APK 或通用 LuCI 包互相覆盖。包内部名称保持不变。每个附件的 `.build.json` 记录源码提交、SDK、文件大小及 SHA-256。
+
+## 发布版本
+
+更新两个包的 `PKG_VERSION`，保持一致，再推送 `openwrt-v<版本号>` 标签。例如当前版本对应 `openwrt-v0.3.0`。
+
+标签触发全部 18 项编译。仅在离线检查、全部 SDK 编译、两个包的完整性及校验和核对均通过后，才上传安装包并发布 GitHub Release。Release 包含可直接下载的 IPK/APK、`builds.json` 和 `SHA256SUMS`。已经公开发布的版本不会被重复构建覆盖；修改后使用新版本标签。
+
+手动运行仅生成 Actions 附件，不发布版本。工作流默认令牌权限为只读，只有标签发布任务取得 `contents: write`；不需要额外令牌或 PR 权限。
+
+## 安装
+
+先安装本体，再按需安装 LuCI；依赖由固件自己的软件源提供。下载路径替换为实际文件名：
+
+```sh
+# 使用 opkg 的固件
+opkg update
+opkg install /tmp/openwrt-24.10.8-你的平台-ipk__bjut-autologin_*.ipk
+opkg install /tmp/openwrt-24.10.8-你的平台-ipk__luci-app-bjut-autologin_*.ipk
+
+# 使用 apk 的固件：独立安装包尚未配置软件源签名
+apk update
+apk add --allow-untrusted /tmp/openwrt-25.12.5-你的平台-apk__bjut-autologin-*.apk
+apk add --allow-untrusted /tmp/openwrt-25.12.5-你的平台-apk__luci-app-bjut-autologin-*.apk
+```
+
+从 Release 下载时，可先在下载目录执行 `sha256sum -c SHA256SUMS` 核对完整性。安装后配置见 [README.md](README.md)。SDK 编译通过不代表已经完成路由器实机安装和校园网认证测试。
