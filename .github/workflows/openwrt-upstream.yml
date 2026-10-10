@@ -62,7 +62,12 @@ jobs:
           sha = os.environ['UPSTREAM_SHA']
           state = os.environ['SYNC_STATE']
           message = f'上游提交：{sha}\n\n'
-          message += '存在合并冲突，上游尚未合入；参见 openwrt/UPSTREAM-REVIEW.md。' if state == 'conflict' else 'Git 合并与路由端离线测试已通过；认证或安全相关实现有变化，需确认路由端移植后再合并。'
+          if state == 'conflict':
+              message += '存在合并冲突，上游尚未合入；参见 openwrt/UPSTREAM-REVIEW.md。'
+          elif state == 'ready':
+              message += 'Git 合并与路由端离线测试已通过，但主分支发布未完成；请检查仓库权限与分支规则，再审查并合入保留的分支。'
+          else:
+              message += 'Git 合并与路由端离线测试已通过；认证或安全相关实现有变化，需确认路由端移植后再合并。'
           (Path(os.environ['RUNNER_TEMP']) / 'openwrt-upstream-pr.md').write_text(message + '\n')
           PY
           compare_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$SYNC_BRANCH?expand=1"

@@ -139,6 +139,11 @@ class ReviewPublicationTests(unittest.TestCase):
         summary = self.publication(0, 'review')
         self.assertIn('已创建待审查 PR', summary)
 
+    def test_failed_main_publication_reports_the_repository_rule_failure(self):
+        summary = self.publication(1, 'ready')
+        self.assertIn('主分支发布未完成', summary)
+        self.assertNotIn('认证或安全相关实现有变化', summary)
+
 
 if __name__ == '__main__':
     unittest.main()
