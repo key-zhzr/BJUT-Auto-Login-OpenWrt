@@ -31,7 +31,7 @@
 
 ## 发布版本
 
-更新两个包的 `PKG_VERSION`，保持一致，再推送 `openwrt-v<版本号>` 标签。例如当前版本对应 `openwrt-v0.3.0`。
+更新两个包的 `PKG_VERSION`，保持一致，再推送 `openwrt-v<版本号>` 标签。例如当前版本对应 `openwrt-v0.1.6`。
 
 标签触发全部 18 项编译。仅在离线检查、全部 SDK 编译、两个包的完整性及校验和核对均通过后，才上传安装包并发布 GitHub Release。Release 包含可直接下载的 IPK/APK、`builds.json` 和 `SHA256SUMS`。已经公开发布的版本不会被重复构建覆盖；修改后使用新版本标签。
 

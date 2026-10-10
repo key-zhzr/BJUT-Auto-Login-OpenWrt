@@ -148,7 +148,7 @@ App 与路由端均升级到 0.1.6 后，在 App 的“设置 → 路由协作�
 
 连接后可以查看所有上游，按上游、指定账号发起登录，并勾选 App 账号同步到路由器。同步仅新增或更新勾选账号，保留其他账号、排序、协议限制和上游分配；保存失败时保留原配置。路由管理密码和会话令牌只留在 App 内存，不写入日志或设置备份。路由端的账号仍按下方 UCI 安全原则保存。
 
-协作使用已有 uhttpd/rpcd，接口为 `bjut-autologin`、协议 `apiVersion=1`，不新建匿名服务，不提供任意文件或命令接口。LuCI 管理账号需要相应 ACL 权限；若已有权限受限的管理账号，可授予 `bjut-autologin-app` 组。不要为此修改 GitHub Actions 权限。
+协作使用已有 uhttpd/rpcd，接口为 `bjut-autologin`、协议 `apiVersion=1`，不新建匿名服务，不提供任意文件或命令接口。路由器需启用 HTTPS 管理和 `/ubus` 接口；标准 LuCI 通常已安装 `uhttpd-mod-ubus`，仅安装本体的设备需从对应固件的软件源补齐。LuCI 管理账号需要相应 ACL 权限；若已有权限受限的管理账号，可授予 `bjut-autologin-app` 组。不要为此修改 GitHub Actions 权限。
 
 ## 安全说明
 
