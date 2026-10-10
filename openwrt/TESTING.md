@@ -13,7 +13,7 @@
 | 联网状态机 | 已联网快速路径、连续离线确认、登录后复核、指数退避、认证拒绝冷却、手动检查 |
 | 失败语义 | 非校园 IP、SSID/BSSID 不匹配、协议/传输不匹配、无门户、门户未就绪、结果未知、超大响应、并发锁和陈旧锁恢复 |
 | 隐私 | 密码与完整账号不出现在 curl argv、syslog 和 JSON 状态；状态账号脱敏 |
-| 静态检查 | Dash 语法、LuCI JavaScript 编译、菜单/ACL JSON、ACL 无文件执行权限、捕获证书 SPKI 重算、GCC `-fanalyzer`、ASan/UBSan、UTF-8 与尾随空白 |
+| 静态检查 | Dash 语法、LuCI JavaScript 编译、菜单/ACL JSON、ACL 无文件执行权限、捕获证书 SPKI 重算、C 编译警告、ASan/UBSan、UTF-8 与尾随空白 |
 
 ## 一键运行
 
