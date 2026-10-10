@@ -1,3 +1,7 @@
+import { chooseConfigTransfer } from './config-transfer-dialog';
+import { setupPageHeaders } from './page-headers';
+import { loginBillingWebVpn } from './billing-webvpn';
+import { setupImageCaptchas } from './image-captcha';
 import { NetworkProgressView, type NetworkCheckProgress } from './network-progress-view';
 import { AnimatedVisibility } from './animated-visibility';
 import { setupAndroidKeyboard } from './android-keyboard';
@@ -134,8 +138,7 @@ function showResumeMask() {
   }, 260);
 }
 
-function resetSensitivePasswordInput(input: HTMLInputElement) {
-  input.value = '';
+function maskSensitivePasswordInput(input: HTMLInputElement) {
   input.type = 'password';
   if (!input.id) return;
   const button = document.querySelector<HTMLButtonElement>(
@@ -152,13 +155,18 @@ function resetSensitivePasswordInput(input: HTMLInputElement) {
   button.title = `显示${label}`;
 }
 
-function clearTransientWebviewPasswords() {
+function resetSensitivePasswordInput(input: HTMLInputElement) {
+  input.value = '';
+  maskSensitivePasswordInput(input);
+}
+
+function concealTransientWebviewPasswords() {
   document.querySelectorAll<HTMLElement>('.password-text').forEach(element => {
     if (element.textContent !== '*************') element.textContent = '*************';
   });
   document.querySelectorAll('.action-toggle-password').forEach(button => button.classList.add('hide-password'));
   document.querySelectorAll<HTMLInputElement>('[data-sensitive-password]')
-    .forEach(resetSensitivePasswordInput);
+    .forEach(maskSensitivePasswordInput);
 }
 
 async function revealAppWindow() {
@@ -194,7 +202,7 @@ const updateWindowAppearanceState = () => {
   );
 };
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) clearTransientWebviewPasswords();
+  if (document.hidden) concealTransientWebviewPasswords();
   if (documentWasHidden && !document.hidden) {
     showResumeMask();
     scheduleAlipayAutomaticCompletionCheck();
@@ -1050,6 +1058,7 @@ async function initializeRustEvents() {
   // Register every channel independently. One unavailable event must not stop
   // network, countdown, log, or account events from being wired up.
   await Promise.all([
+    settle('图片验证码', setupImageCaptchas()),
     settle('倒计时事件', listen<CountdownPayload>('countdown-tick', event => {
       const data = event.payload;
       const countdownText = document.getElementById('countdown-text');
@@ -1376,46 +1385,6 @@ function customConfirm(
     btnOk.addEventListener('click', onOk);
     btnCancel.addEventListener('click', onCancel);
     modal.classList.remove('hidden');
-  });
-}
-
-function customPasswordPrompt(text: string, title = '配置密码'): Promise<string | null> {
-  return new Promise(resolve => {
-    const modal = document.getElementById('password-prompt-modal');
-    const form = document.getElementById('password-prompt-form') as HTMLFormElement | null;
-    const input = document.getElementById('password-prompt-input') as HTMLInputElement | null;
-    const cancelButton = document.getElementById('btn-password-prompt-cancel');
-    if (!modal || !form || !input || !cancelButton) {
-      resolve(null);
-      return;
-    }
-
-    document.getElementById('password-prompt-title')!.textContent = title;
-    document.getElementById('password-prompt-text')!.textContent = text;
-    resetSensitivePasswordInput(input);
-
-    const cleanup = () => {
-      modal.classList.add('hidden');
-      resetSensitivePasswordInput(input);
-      form.removeEventListener('submit', onSubmit);
-      cancelButton.removeEventListener('click', onCancel);
-    };
-    const onSubmit = (event: Event) => {
-      event.preventDefault();
-      const value = input.value;
-      if (!value) return;
-      cleanup();
-      resolve(value);
-    };
-    const onCancel = () => {
-      cleanup();
-      resolve(null);
-    };
-
-    form.addEventListener('submit', onSubmit);
-    cancelButton.addEventListener('click', onCancel);
-    modal.classList.remove('hidden');
-    requestAnimationFrame(() => input.focus());
   });
 }
 
@@ -1984,6 +1953,7 @@ async function init() {
   }
   
   setupNavigation();
+  setupPageHeaders();
   setupEventListeners();
   setupEventDrivenNetworkDetection();
   renderAccounts();
@@ -2639,10 +2609,14 @@ function activatePage(target: string, navTarget = target) {
 }
 
 function handleAndroidBack() {
-  const visibleModal = document.querySelector<HTMLElement>('.modal-overlay:not(.hidden)');
+  const visibleModal = document.querySelector<HTMLElement>('.image-captcha-overlay:not(.hidden)')
+    || document.querySelector<HTMLElement>('.modal-overlay:not(.hidden)');
   if (visibleModal) {
     const dismiss = visibleModal.querySelector<HTMLElement>([
       '.config-qr-close',
+      '.config-transfer-dialog [data-cancel]',
+      '.image-captcha-overlay:not(.hidden) [data-cancel]',
+      '#billing-webvpn-modal [data-cancel]',
       '#btn-confirm-cancel',
       '#btn-alert-ok',
       '#btn-alipay-payment-close-icon',
@@ -2716,6 +2690,27 @@ function setupEventListeners() {
   btnSwitchAccount.addEventListener('click', () => void manualLogin(true));
   btnLogoutCurrent.addEventListener('click', () => void logoutCurrentCampusSession());
   btnRefreshBillingCenter.addEventListener('click', () => void refreshBillingCenterData());
+  document.getElementById('btn-billing-webvpn')!.addEventListener('click', async () => {
+    if (billingCenterLoading || billingRecordQueryBusy) return;
+    const button = document.getElementById('btn-billing-webvpn') as HTMLButtonElement;
+    button.disabled = true;
+    try {
+      const accounts = availableBillingAccounts().map(account => ({user:account.user,label:account.user}));
+      if (!accounts.length) {
+        await customAlert('请先在账号管理中保存统一认证账号和密码。');
+        return;
+      }
+      const user = await loginBillingWebVpn(accounts, selectedBillingAccountUser());
+      if (!user) return;
+      setBillingWebVpnMode(true, user);
+      await refreshBillingCenterData();
+    } finally { button.disabled = false; }
+  });
+  document.getElementById('btn-billing-direct')!.addEventListener('click', () => {
+    if (billingCenterLoading || billingRecordQueryBusy) return;
+    setBillingWebVpnMode(false);
+    void refreshBillingCenterData();
+  });
   btnOpenBilling.addEventListener('click', () => {
     activatePage('billing-center', 'dashboard');
     document.querySelector<HTMLElement>('main')?.scrollTo({ top: 0, behavior: 'auto' });
@@ -3767,25 +3762,11 @@ function setupEventListeners() {
   const btnExportConfig = document.getElementById('btn-export-config');
   const btnImportConfig = document.getElementById('btn-import-config');
   
-  const backupScope = () => {
-    const scope = { settings: (document.getElementById('config-scope-settings') as HTMLInputElement).checked, accounts: (document.getElementById('config-scope-accounts') as HTMLInputElement).checked };
-    if (!scope.settings && !scope.accounts) throw new Error('请至少选择设置或账号密码。');
-    return scope;
-  };
-  const exportBackup = async (qr: boolean) => {
+  const exportBackup = async () => {
       try {
-        const scope = backupScope();
-        const passphrase = await customPasswordPrompt(
-          '请设置至少 8 位的备份密码，导入时需要使用。',
-          '导出备份',
-        );
-        if (!passphrase) return;
-        const confirmedPassphrase = await customPasswordPrompt('请再输入一次备份密码。', '确认备份密码');
-        if (confirmedPassphrase === null) return;
-        if (confirmedPassphrase !== passphrase) {
-          await customAlert('两次输入的备份密码不一致，未生成导出内容。', '导出已取消');
-          return;
-        }
+        const choice = await chooseConfigTransfer('export');
+        if (!choice) return;
+        const {scope, qr, passphrase} = choice;
         await syncConfigToRust();
         const backup = await invoke<ConfigBackupExport>('export_config_backup', {
           passphrase,
@@ -3806,12 +3787,13 @@ function setupEventListeners() {
         customAlert('导出失败：' + String(e));
       }
   };
-  btnExportConfig?.addEventListener('click', () => void exportBackup(false));
-  document.getElementById('btn-export-config-qr')?.addEventListener('click', () => void exportBackup(true));
+  btnExportConfig?.addEventListener('click', () => void exportBackup());
 
-  const importBackup = async (qr: boolean) => {
+  const importBackup = async () => {
       try {
-        const scope = backupScope();
+        const choice = await chooseConfigTransfer('import');
+        if (!choice) return;
+        const {scope, qr, passphrase} = choice;
         const text = qr ? await scanConfigQr() : await readTextFromClipboard();
         if (qr && !text) return;
 
@@ -3823,10 +3805,9 @@ function setupEventListeners() {
         const confirmResult = await customConfirm(`导入将覆盖当前${selected}，是否继续？`);
         if (!confirmResult) return;
         
-        const passphrase = await customPasswordPrompt('输入导出该配置时设置的密码。', '导入配置');
-        if (!passphrase) return;
-        const envelope = JSON.parse(text.trim()) as { version?: unknown };
-        if (envelope.version === 3) {
+        const compact = text.trim().startsWith('BJUT4:');
+        const envelope = compact ? { version: 4 } : JSON.parse(text.trim()) as { version?: unknown };
+        if (envelope.version === 3 || envelope.version === 4) {
           const imported = await invoke<ConfigBackupImport>('import_config_backup', {
             payload: text.trim(),
             passphrase,
@@ -3929,8 +3910,8 @@ function setupEventListeners() {
         await customAlert('导入失败：' + String(e));
       }
   };
-  btnImportConfig?.addEventListener('click', () => void importBackup(false));
-  document.getElementById('btn-import-config-qr')?.addEventListener('click', () => void importBackup(true));
+  btnImportConfig?.addEventListener('click', () => void importBackup());
+
 
   // Password visibility toggle
   document.querySelectorAll('.toggle-password').forEach(btn => {
@@ -4496,6 +4477,24 @@ function updateOverrideOptions() {
 
 const CURRENT_BILLING_SESSION = '__current_session__';
 let currentBillingSessionUser = '';
+let billingViaWebVpn = false;
+
+function setBillingWebVpnMode(enabled: boolean, account?: string) {
+  billingViaWebVpn = enabled;
+  const button = document.getElementById('btn-billing-webvpn')!;
+  button.textContent = enabled ? '校外 · 重新验证' : '校外访问';
+  button.setAttribute('aria-pressed', String(enabled));
+  document.getElementById('btn-billing-direct')!.hidden = !enabled;
+  if (account) {
+    billingAccountFollowsDefault = false;
+    billingAccountSelect.setValue(account);
+  }
+  updateBillingAccountOptions();
+  billingCenterData = null;
+  currentBillingSessionUser = '';
+  billingRecordQueryStates = {};
+  renderBillingCenter(null);
+}
 
 function availableBillingAccounts() {
   return getAccounts().filter(account => account.user && account.hasPassword);
@@ -4516,7 +4515,11 @@ function selectedBillingAccountUser(): string {
 }
 
 function billingRequestAccount() {
-  return { accountUser: selectedBillingAccountUser() || null, currentSession: billingSelectionKey() === CURRENT_BILLING_SESSION };
+  return {
+    accountUser: selectedBillingAccountUser() || null,
+    currentSession: billingSelectionKey() === CURRENT_BILLING_SESSION,
+    webvpn: billingViaWebVpn,
+  };
 }
 
 function selectedRechargePayerAccount(): string {
@@ -4555,7 +4558,8 @@ function updateBillingAccountOptions() {
     value: account.user,
     text: `${account.user}${account.isDefault ? '（默认）' : ''}${account.isDisabled ? ' · 自动登录已关闭' : ''}`,
   }));
-  const billingOptions = [{ value: CURRENT_BILLING_SESSION, text: '当前登录账号（校园网会话）' }, ...options];
+  const billingOptions = billingViaWebVpn ? options
+    : [{ value: CURRENT_BILLING_SESSION, text: '当前登录账号（校园网会话）' }, ...options];
   const fallback = defaultBillingAccountUser() || CURRENT_BILLING_SESSION;
   const currentBilling = billingAccountFollowsDefault ? fallback
     : billingOptions.some(option => option.value === previousBilling) ? previousBilling : fallback;
@@ -5066,7 +5070,7 @@ function syncBillingRecordControls() {
   billingRecordYearSelect.setValue(state.year);
   billingRecordPageSizeSelect.setValue(String(state.pageSize));
   if (usesDate) {
-    billingRecordRange.textContent = `${state.startDate} 至 ${state.endDate}；日期范围最多 60 天。`;
+    billingRecordRange.textContent = `${state.startDate} 至 ${state.endDate}。`;
   } else if (usesYear) {
     billingRecordRange.textContent = `${state.year} 年历史账单。`;
   } else {
@@ -5091,8 +5095,8 @@ function readBillingRecordQuery(page: number, all = false): BillingRecordQuery |
     const today = new Date();
     today.setHours(23, 59, 59, 999);
     if (!startDate || !endDate || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())
-      || start > end || end > today || end.getTime() - start.getTime() > 60 * 86_400_000) {
-      void customAlert('查询日期必须截至今天，且范围不能超过 60 天。');
+      || start > end || end > today) {
+      void customAlert('请检查起止日期，结束日期不能晚于今天。');
       return null;
     }
     query.startDate = startDate;
@@ -5110,6 +5114,8 @@ function readBillingRecordQuery(page: number, all = false): BillingRecordQuery |
 
 function setBillingRecordQueryBusy(busy: boolean) {
   billingRecordQueryBusy = busy;
+  (document.getElementById('btn-billing-webvpn') as HTMLButtonElement).disabled = busy;
+  (document.getElementById('btn-billing-direct') as HTMLButtonElement).disabled = busy;
   btnQueryBillingRecords.disabled = busy || !billingCenterData;
   btnExportBillingRecords.disabled = busy || !currentBillingRecordSelection()?.table.rows.length;
   btnExportAllBillingRecords.disabled = busy || !currentBillingRecordSelection()?.table.total;

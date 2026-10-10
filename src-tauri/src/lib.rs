@@ -1,13 +1,16 @@
+mod backup_cipher;
 mod billing;
 mod billing_runtime;
 mod campus_dns;
 mod campus_services;
+mod captcha;
 mod config_model;
 mod cookie_jar;
 mod dual_stack;
 mod login_progress;
 #[cfg(any(target_os = "macos", test))]
 mod macos_network;
+mod month_end;
 mod network_inventory;
 mod network_platform;
 mod network_probe;
@@ -24,11 +27,16 @@ mod internet_probe;
 mod network_diagnostics;
 mod network_events;
 mod portal_auth;
+mod probe_transport;
 mod recharge_state;
 mod trusted_time;
 mod update_metadata;
 #[cfg(desktop)]
 mod window_geometry;
+#[cfg(target_os = "windows")]
+mod windows_credentials;
+#[cfg(target_os = "windows")]
+mod windows_startup;
 #[cfg(target_os = "android")]
 use internet_probe::check_internet_from_source;
 
@@ -1617,6 +1625,8 @@ struct AppState {
     update_download: UpdateDownloadControl,
     billing_fetch_lock: tokio::sync::Mutex<()>,
     billing_sessions: Mutex<billing::BillingSessionPool>,
+    billing_webvpn: tokio::sync::Mutex<billing::webvpn::Manager>,
+    image_captcha: Arc<captcha::Control>,
     billing_session_expiry_generation: AtomicU64,
     campus_service_lock: tokio::sync::Mutex<()>,
     campus_recharge_pending: tokio::sync::Mutex<Option<campus_services::PendingRecharge>>,
@@ -2065,18 +2075,24 @@ fn ensure_billing_foreground(state: &AppState) -> Result<(), String> {
     billing_runtime::ensure_foreground(&state.is_in_background)
 }
 
-async fn run_billing_read_while_foreground<T, F>(state: &AppState, future: F) -> Result<T, String>
+fn run_billing_read_while_foreground<'a, T, F>(
+    state: &'a AppState,
+    future: F,
+) -> impl std::future::Future<Output = Result<T, String>> + 'a
 where
-    F: std::future::Future<Output = Result<T, String>>,
+    F: std::future::Future<Output = Result<T, String>> + 'a,
 {
-    billing_runtime::run_read_while_foreground(&state.is_in_background, future).await
+    billing_runtime::run_read_while_foreground(&state.is_in_background, future)
 }
 
-async fn run_billing_mutation_to_completion<T, F>(state: &AppState, future: F) -> Result<T, String>
+fn run_billing_mutation_to_completion<'a, T, F>(
+    state: &'a AppState,
+    future: F,
+) -> impl std::future::Future<Output = Result<T, String>> + 'a
 where
-    F: std::future::Future<Output = Result<T, String>>,
+    F: std::future::Future<Output = Result<T, String>> + 'a,
 {
-    billing_runtime::run_mutation_to_completion(&state.is_in_background, future).await
+    billing_runtime::run_mutation_to_completion(&state.is_in_background, future)
 }
 
 const WLGN_HOST: &str = "wlgn.bjut.edu.cn";
@@ -2175,7 +2191,14 @@ async fn run_headless_network_check(
         });
     }
 
-    if check_internet_from_source(Some(&ip)).await {
+    let authentication_online = if connectivity::requires_physical_probe(&network) {
+        dual_stack::probe_route_with_updates(&network, true, |_| {})
+            .await
+            .online()
+    } else {
+        check_internet_from_source(Some(&ip)).await
+    };
+    if authentication_online {
         headless_log(&mut logs, "网络", "无界面检测完成：互联网已连通", "info");
         return serde_json::json!({
             "status": "online",
@@ -3455,7 +3478,7 @@ const SECURE_CONFIG_SERVICE: &str = "cn.edu.bjut.al";
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 const SECURE_CONFIG_USER: &str = "app-config";
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn load_secure_config(_app: &tauri::AppHandle) -> Result<Option<AppConfig>, String> {
     ensure_persistent_credential_backend()?;
     let entry = keyring::Entry::new(SECURE_CONFIG_SERVICE, SECURE_CONFIG_USER)
@@ -3469,13 +3492,53 @@ fn load_secure_config(_app: &tauri::AppHandle) -> Result<Option<AppConfig>, Stri
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn save_secure_config(_app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     ensure_persistent_credential_backend()?;
     let entry = keyring::Entry::new(SECURE_CONFIG_SERVICE, SECURE_CONFIG_USER)
         .map_err(|e| e.to_string())?;
     let serialized = serde_json::to_string(config).map_err(|e| e.to_string())?;
     entry.set_password(&serialized).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_credential_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("credentials.dpapi"))
+        .map_err(|_| "无法定位 Windows 凭据目录".into())
+}
+
+#[cfg(target_os = "windows")]
+fn load_secure_config(app: &tauri::AppHandle) -> Result<Option<AppConfig>, String> {
+    if let Some(mut bytes) = windows_credentials::read(&windows_credential_path(app)?)? {
+        let result = serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| "Windows 配置内容无法解析".to_string());
+        bytes.fill(0);
+        return result;
+    }
+    // Read the old complete-config entry only when the new file does not exist.
+    // A corrupt/new-user DPAPI file must never silently revert to stale accounts.
+    ensure_persistent_credential_backend()?;
+    let entry = keyring::Entry::new(SECURE_CONFIG_SERVICE, SECURE_CONFIG_USER)
+        .map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(serialized) => serde_json::from_str(&serialized)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn save_secure_config(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
+    let path = windows_credential_path(app)?;
+    let mut bytes = serde_json::to_vec(config).map_err(|e| e.to_string())?;
+    let result = windows_credentials::write(&path, &bytes);
+    bytes.fill(0);
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -3582,7 +3645,14 @@ fn save_secure_config(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), 
 fn save_secure_config_verified(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     save_secure_config(app, config)?;
     match load_secure_config(app)? {
-        Some(persisted) if persisted == *config => Ok(()),
+        Some(persisted) if persisted == *config => {
+            #[cfg(target_os = "windows")]
+            if let Ok(legacy) = keyring::Entry::new(SECURE_CONFIG_SERVICE, SECURE_CONFIG_USER) {
+                // Remove the old entry only after a complete, successful readback.
+                let _ = legacy.delete_credential();
+            }
+            Ok(())
+        }
         Some(_) => Err("安全存储回读内容与待保存配置不一致".to_string()),
         None => Err("安全存储写入后未能回读配置".to_string()),
     }
@@ -3593,8 +3663,12 @@ const CONFIG_BACKUP_ITERATIONS: u32 = 250_000;
 const CONFIG_BACKUP_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 fn validate_config_backup_passphrase(passphrase: &[u8]) -> Result<(), String> {
-    if passphrase.len() < 8 {
-        return Err("配置备份密码至少需要 8 个字节".to_string());
+    if std::str::from_utf8(passphrase)
+        .map(|value| value.trim().chars().count())
+        .unwrap_or(0)
+        < 3
+    {
+        return Err("配置备份密码至少需要 3 个字符".to_string());
     }
     if passphrase.len() > 1024 {
         return Err("配置备份密码过长".to_string());
@@ -3612,88 +3686,23 @@ fn encrypt_config_backup_payload(
     plaintext: &ConfigBackupPlaintext,
     passphrase: &[u8],
 ) -> Result<String, String> {
-    use aes_gcm::{
-        aead::{rand_core::RngCore, Aead, OsRng},
-        Aes256Gcm, KeyInit, Nonce,
-    };
-    use base64::Engine;
-
-    validate_config_backup_passphrase(passphrase)?;
-    let mut salt = [0u8; 16];
-    let mut iv = [0u8; 12];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut iv);
-    let mut key = config_backup_key(passphrase, &salt, CONFIG_BACKUP_ITERATIONS);
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|error| error.to_string())?;
     let mut serialized = serde_json::to_vec(plaintext).map_err(|error| error.to_string())?;
-    if serialized.len() > CONFIG_BACKUP_MAX_BYTES {
-        serialized.fill(0);
-        key.fill(0);
-        return Err("配置备份内容超过安全大小限制".to_string());
-    }
-    let encrypted = cipher
-        .encrypt(Nonce::from_slice(&iv), serialized.as_ref())
-        .map_err(|_| "配置备份加密失败".to_string());
+    let encrypted = backup_cipher::encrypt(&serialized, passphrase);
     serialized.fill(0);
-    key.fill(0);
-    let encrypted = encrypted?;
-    let base64 = base64::engine::general_purpose::STANDARD;
-    serde_json::to_string(&EncryptedConfigBackup {
-        version: CONFIG_BACKUP_VERSION,
-        kdf: "PBKDF2-HMAC-SHA256".to_string(),
-        iterations: CONFIG_BACKUP_ITERATIONS,
-        salt: base64.encode(salt),
-        iv: base64.encode(iv),
-        ciphertext: base64.encode(encrypted),
-    })
-    .map_err(|error| error.to_string())
+    encrypted
 }
 
 fn decrypt_config_backup_payload(
     payload: &str,
     passphrase: &[u8],
 ) -> Result<ConfigBackupPlaintext, String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-    use base64::Engine;
-
-    validate_config_backup_passphrase(passphrase)?;
-    if payload.len() > CONFIG_BACKUP_MAX_BYTES * 2 {
-        return Err("配置备份超过安全大小限制".to_string());
-    }
-    let envelope: EncryptedConfigBackup =
-        serde_json::from_str(payload).map_err(|_| "配置备份外层格式无效".to_string())?;
-    if envelope.version != CONFIG_BACKUP_VERSION
-        || envelope.kdf != "PBKDF2-HMAC-SHA256"
-        || !(100_000..=1_000_000).contains(&envelope.iterations)
-    {
-        return Err("不是受支持的完整配置备份格式".to_string());
-    }
-    let base64 = base64::engine::general_purpose::STANDARD;
-    let salt = base64
-        .decode(envelope.salt)
-        .map_err(|_| "配置备份盐值无效".to_string())?;
-    let iv = base64
-        .decode(envelope.iv)
-        .map_err(|_| "配置备份随机向量无效".to_string())?;
-    let ciphertext = base64
-        .decode(envelope.ciphertext)
-        .map_err(|_| "配置备份密文无效".to_string())?;
-    if salt.len() != 16 || iv.len() != 12 || ciphertext.len() > CONFIG_BACKUP_MAX_BYTES {
-        return Err("配置备份参数长度无效".to_string());
-    }
-    let mut key = config_backup_key(passphrase, &salt, envelope.iterations);
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|error| error.to_string())?;
-    let decrypted = cipher
-        .decrypt(Nonce::from_slice(&iv), ciphertext.as_ref())
-        .map_err(|_| "配置备份密码错误或内容已损坏".to_string());
-    key.fill(0);
-    let mut decrypted = decrypted?;
-    let plaintext = serde_json::from_slice::<ConfigBackupPlaintext>(&decrypted)
+    let mut decoded = backup_cipher::decrypt(payload, passphrase)?;
+    let plaintext = serde_json::from_slice::<ConfigBackupPlaintext>(&decoded)
         .map_err(|_| "配置备份内容无法解析".to_string());
-    decrypted.fill(0);
+    decoded.fill(0);
     let plaintext = plaintext?;
     if plaintext.format != "BJUT-AL-CONFIG" || plaintext.version != CONFIG_BACKUP_VERSION {
-        return Err("配置备份内容版本不匹配".to_string());
+        return Err("配置备份内容版本不匹配".into());
     }
     Ok(plaintext)
 }
@@ -4566,8 +4575,16 @@ async fn trigger_network_check(app: tauri::AppHandle, state: Arc<AppState>, full
             return;
         }
         let system_online = connection.online();
-        let is_online = system_online
-            && (!connection.require_session || connection.session_online == Some(true));
+        let is_online = connection.authenticated_online();
+        if connection.require_physical && system_online && !connection.access_online() {
+            rust_log(
+                &app,
+                &state,
+                "网络",
+                "系统路由可联网，但当前认证网卡直连尚未通过；继续确认校园网认证状态",
+                "info",
+            );
+        }
 
         rust_log(
             &app,
@@ -4597,9 +4614,7 @@ async fn trigger_network_check(app: tauri::AppHandle, state: Arc<AppState>, full
         }
 
         let latest_network = get_network_info(app.clone(), Some(false));
-        if latest_network["interfaceName"] != net_info["interfaceName"]
-            || latest_network["ip"] != net_info["ip"]
-        {
+        if !connectivity::same_network(&latest_network, &net_info) {
             state.is_checking.store(false, Ordering::SeqCst);
             schedule_network_change_readiness(app.clone(), state.clone());
             return;
@@ -5092,7 +5107,7 @@ async fn trigger_network_check(app: tauri::AppHandle, state: Arc<AppState>, full
                                                     );
                                                 }
                                                 PortalLoginFailureDisposition::SessionAlreadyOnline => {
-                                                    let online = connectivity::observe(&app, &state, &net_info).wait(false).await.online();
+                                                    let online = connectivity::observe(&app, &state, &net_info).wait(false).await.access_online();
                                                     if online {
                                                         success = true;
                                                         login_succeeded = true;
@@ -5496,7 +5511,7 @@ fn credential_backend_name() -> &'static str {
     } else if cfg!(target_os = "macos") {
         "macOS 本地加密文件 (AES-GCM)"
     } else if cfg!(target_os = "windows") {
-        "Windows Credential Manager"
+        "Windows 本机加密存储 (DPAPI)"
     } else if cfg!(target_os = "linux") {
         "Linux Secret Service"
     } else {
@@ -6318,7 +6333,7 @@ async fn verify_login_network(
     let connection = connectivity::observe(app, state, network)
         .wait_for_login()
         .await;
-    let online = connection.online();
+    let online = connection.access_online();
     let health = if connection.cancelled {
         dual_stack::unavailable("探测期间网络或认证状态改变，请重新检测")
     } else {
@@ -6827,7 +6842,10 @@ async fn manual_login_inner(
 fn first_decimal(value: &str) -> Option<f64> {
     let number = value
         .chars()
-        .filter(|character| character.is_ascii_digit() || *character == '.')
+        .skip_while(|character| {
+            !character.is_ascii_digit() && *character != '-' && *character != '+'
+        })
+        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | '-' | '+'))
         .collect::<String>();
     number.parse::<f64>().ok()
 }
@@ -6873,10 +6891,10 @@ fn evaluate_usage_alerts(app: &tauri::AppHandle, state: &AppState, info: &UserIn
     for (kind, message) in alerts {
         let should_notify = {
             let mut history = state.usage_alert_history.lock().unwrap();
-            if history.get(kind) == Some(&today) {
+            if history.get(&format!("{kind}:{}", info.account)) == Some(&today) {
                 false
             } else {
-                history.insert(kind.to_string(), today.clone());
+                history.insert(format!("{kind}:{}", info.account), today.clone());
                 true
             }
         };
@@ -6889,6 +6907,224 @@ fn evaluate_usage_alerts(app: &tauri::AppHandle, state: &AppState, info: &UserIn
             );
         }
     }
+}
+
+fn schedule_month_end_check(app: &tauri::AppHandle, state: &Arc<AppState>, current_account: &str) {
+    let now = chrono::Utc::now();
+    let today = now
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).expect("Beijing offset"))
+        .date_naive();
+    if !month_end::in_check_window(today) {
+        return;
+    }
+    let (account, compatibility) = {
+        let config = state.config.read().unwrap();
+        if !config.usage_alerts {
+            return;
+        }
+        let Some(account) = config
+            .accounts
+            .iter()
+            .find(|account| account.user == current_account && !account.pass.is_empty())
+        else {
+            return;
+        };
+        (account.clone(), effective_vpn_compatibility(&config))
+    };
+    let attempt_key = format!("renewal-attempt:{}", account.user);
+    let done_key = format!("renewal-checked:{}", account.user);
+    let day = today.to_string();
+    let stamp_path = app.path().app_data_dir().ok().map(|directory| {
+        use sha2::Digest;
+        directory.join("month-end-checks").join(format!(
+            "{:x}.json",
+            sha2::Sha256::digest(account.user.as_bytes())
+        ))
+    });
+    {
+        let mut history = state.usage_alert_history.lock().unwrap();
+        if !history.contains_key(&attempt_key) {
+            if let Some(stamp) = stamp_path.as_deref().and_then(month_end::read_stamp) {
+                if stamp.attempted_at <= now.timestamp() {
+                    history.insert(attempt_key.clone(), stamp.attempted_at.to_string());
+                    history.insert(done_key.clone(), stamp.checked_day);
+                }
+            }
+        }
+        if history.get(&done_key) == Some(&day)
+            || history
+                .get(&attempt_key)
+                .and_then(|value| value.parse::<i64>().ok())
+                .is_some_and(|last| now.timestamp() - last < 6 * 3600)
+        {
+            return;
+        }
+        history.insert(attempt_key.clone(), now.timestamp().to_string());
+    }
+    let app = app.clone();
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        // Manual billing/payment operations take precedence over this extra read.
+        let Ok(billing_guard) = state.billing_fetch_lock.try_lock() else {
+            state
+                .usage_alert_history
+                .lock()
+                .unwrap()
+                .remove(&attempt_key);
+            return;
+        };
+        if let Some(path) = &stamp_path {
+            month_end::save_stamp(
+                path,
+                month_end::CheckStamp {
+                    attempted_at: now.timestamp(),
+                    checked_day: String::new(),
+                },
+            );
+        }
+        let generation = state.network_change_generation.load(Ordering::SeqCst);
+        let access = billing::BillingAccess::saved(account.user.clone(), account.pass.clone());
+        let plan = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            billing::renewal_plan(&access, compatibility, &state.billing_sessions),
+        )
+        .await;
+        drop(billing_guard);
+        let (package, detail) = match plan {
+            Ok(Ok(Some(plan))) => plan,
+            Ok(Ok(None)) => {
+                if let Some(path) = &stamp_path {
+                    month_end::save_stamp(
+                        path,
+                        month_end::CheckStamp {
+                            attempted_at: now.timestamp(),
+                            checked_day: day.clone(),
+                        },
+                    );
+                }
+                state
+                    .usage_alert_history
+                    .lock()
+                    .unwrap()
+                    .insert(done_key, day);
+                return;
+            }
+            _ => {
+                rust_log(
+                    &app,
+                    &state,
+                    "用量提醒",
+                    "月末检查暂未取得下月套餐，将稍后再试",
+                    "debug",
+                );
+                return;
+            }
+        };
+        let Ok(_campus_guard) = state.campus_service_lock.try_lock() else {
+            let retry = now.timestamp() - 6 * 3600 + 15 * 60;
+            state
+                .usage_alert_history
+                .lock()
+                .unwrap()
+                .insert(attempt_key, retry.to_string());
+            if let Some(path) = &stamp_path {
+                month_end::save_stamp(
+                    path,
+                    month_end::CheckStamp {
+                        attempted_at: retry,
+                        checked_day: String::new(),
+                    },
+                );
+            }
+            return;
+        };
+        let seed = campus_service_session_seed(&state, &account.user);
+        let balances = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            campus_services::query_recharge_balances(
+                &account.user,
+                &account.pass,
+                &account.user,
+                seed,
+            ),
+        )
+        .await;
+        let (balances, session) = match balances {
+            Ok(Ok(result)) => result,
+            _ => {
+                rust_log(
+                    &app,
+                    &state,
+                    "用量提醒",
+                    "月末网费余额查询暂未完成，将稍后再试",
+                    "debug",
+                );
+                return;
+            }
+        };
+        persist_campus_service_session(&app, &state, session);
+        if generation != state.network_change_generation.load(Ordering::SeqCst)
+            || !state.config.read().unwrap().usage_alerts
+        {
+            return;
+        }
+        if let Some(path) = &stamp_path {
+            month_end::save_stamp(
+                path,
+                month_end::CheckStamp {
+                    attempted_at: now.timestamp(),
+                    checked_day: day.clone(),
+                },
+            );
+        }
+        state
+            .usage_alert_history
+            .lock()
+            .unwrap()
+            .insert(done_key, day);
+        if let Some((balance, fee)) =
+            month_end::insufficient(&balances.target_balance, &package, &detail)
+        {
+            let tail = account
+                .user
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            let message = format!(
+                "尾号 {tail} 的网费余额为 {:.2} 元，按下月套餐估算需 {:.2} 元，请及时充值",
+                balance as f64 / 10_000.0,
+                fee as f64 / 10_000.0
+            );
+            rust_log(&app, &state, "用量提醒", &message, "error");
+            let _ = show_native_notification(&app, "下月网费余额提醒", &message);
+            let _ = app.emit(
+                "usage-alert",
+                serde_json::json!({"kind":"renewal","message":message}),
+            );
+        } else if month_end::monthly_fee(&package, &detail).is_none()
+            || month_end::money(&balances.target_balance).is_none()
+        {
+            rust_log(
+                &app,
+                &state,
+                "用量提醒",
+                "已额外核对移动门户网费余额，但尚未确认下月费用，请在计费中心核对套餐",
+                "info",
+            );
+        } else {
+            rust_log(
+                &app,
+                &state,
+                "用量提醒",
+                "月末检查完成：移动门户网费余额足够支付下月套餐估算费用",
+                "success",
+            );
+        }
+    });
 }
 
 fn preferred_billing_account(config: &AppConfig) -> Option<Account> {
@@ -7135,6 +7371,7 @@ async fn get_user_info(
         fetch_portal_user_info(effective_ip, compatibility, portal_route_context.as_ref()).await;
     if let Some(info) = info.as_ref() {
         evaluate_usage_alerts(&app, &state, info);
+        schedule_month_end_check(&app, state.inner(), &info.account);
     }
     Ok(info)
 }
@@ -7175,6 +7412,7 @@ async fn get_billing_center(
     state: tauri::State<'_, Arc<AppState>>,
     account_user: Option<String>,
     current_session: Option<bool>,
+    webvpn: Option<bool>,
 ) -> Result<billing::BillingCenterData, String> {
     emit_billing_center_progress(&app, &state, "准备读取计费中心完整数据", 2);
     let _fetch_guard = match state.billing_fetch_lock.try_lock() {
@@ -7202,6 +7440,7 @@ async fn get_billing_center(
         account_user.as_deref(),
         current_session.unwrap_or(false),
         true,
+        webvpn.unwrap_or(false),
     )
     .await?;
     let progress_app = app.clone();
@@ -7227,17 +7466,18 @@ async fn get_billing_center(
     };
     ensure_billing_foreground(&state)?;
     let result = run_billing_read_while_foreground(&state, async {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(75),
-            billing::fetch_center(
-                &access,
-                compatibility,
-                &state.billing_sessions,
-                emit_progress,
-                publish_module,
-            ),
-        )
-        .await
+        match access
+            .with_timeout(
+                std::time::Duration::from_secs(75),
+                billing::fetch_center(
+                    &access,
+                    compatibility,
+                    &state.billing_sessions,
+                    emit_progress,
+                    publish_module,
+                ),
+            )
+            .await
         {
             Ok(result) => result.map_err(|error| error.user_message()),
             Err(_) => {
@@ -7269,6 +7509,7 @@ async fn query_billing_records(
     query: billing::BillingRecordQuery,
     account_user: Option<String>,
     current_session: Option<bool>,
+    webvpn: Option<bool>,
 ) -> Result<billing::BillingRecordResult, String> {
     let kind = query.kind.clone();
     let page = query.page;
@@ -7280,6 +7521,7 @@ async fn query_billing_records(
         account_user.as_deref(),
         current_session.unwrap_or(false),
         false,
+        webvpn.unwrap_or(false),
     )
     .await?;
     ensure_billing_foreground(&state)?;
@@ -7314,6 +7556,7 @@ async fn perform_billing_action(
     request: billing::BillingActionRequest,
     account_user: Option<String>,
     current_session: Option<bool>,
+    webvpn: Option<bool>,
 ) -> Result<billing::BillingActionResult, String> {
     let action = request.action.clone();
     let _billing_guard = if action == "changePassword" {
@@ -7334,6 +7577,7 @@ async fn perform_billing_action(
             account_user.as_deref(),
             current_session.unwrap_or(false),
             false,
+            webvpn.unwrap_or(false),
         )
         .await?;
         let account = Account {
@@ -8376,19 +8620,115 @@ async fn cancel_wechat_card_recharge(
     Ok(())
 }
 
+fn billing_credential_stamp(state: &AppState) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let config = state.config.read().unwrap();
+    let mut accounts: Vec<_> = config.accounts.iter().collect();
+    accounts.sort_by(|left, right| left.user.cmp(&right.user));
+    let mut hash = Sha256::new();
+    for account in accounts {
+        hash.update((account.user.len() as u64).to_le_bytes());
+        hash.update(account.user.as_bytes());
+        hash.update((account.pass.len() as u64).to_le_bytes());
+        hash.update(account.pass.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+fn image_captcha_handler(app: &tauri::AppHandle, state: &AppState) -> captcha::Handler {
+    let app = app.clone();
+    captcha::Handler::new(state.image_captcha.clone(), move |name, payload| {
+        let _ = app.emit(name, payload);
+    })
+}
+
+#[tauri::command]
+fn answer_image_captcha(
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+    text: Option<String>,
+    refresh: Option<bool>,
+) -> Result<(), String> {
+    state
+        .image_captcha
+        .answer(&id, text, refresh.unwrap_or(false))
+}
+
+#[tauri::command]
+async fn begin_billing_webvpn(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    account_user: String,
+) -> Result<billing::webvpn::LoginStatus, String> {
+    let (account, _) = billing_action_target(&state, Some(&account_user))?;
+    let mut manager = state.billing_webvpn.lock().await;
+    manager.bind_credentials(billing_credential_stamp(&state));
+    let captcha = image_captcha_handler(&app, &state);
+    captcha
+        .with_timeout(
+            std::time::Duration::from_secs(75),
+            manager.begin(&account.user, &account.pass, Some(&captcha)),
+        )
+        .await
+        .map_err(|_| "校外登录超时，请重试".to_string())?
+}
+
+#[tauri::command]
+async fn verify_billing_webvpn(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    challenge_id: String,
+    token: String,
+    resend: Option<bool>,
+) -> Result<billing::webvpn::LoginStatus, String> {
+    ensure_billing_foreground(&state)?;
+    let mut manager = state.billing_webvpn.lock().await;
+    manager.bind_credentials(billing_credential_stamp(&state));
+    let captcha = image_captcha_handler(&app, &state);
+    captcha
+        .with_timeout(
+            std::time::Duration::from_secs(75),
+            manager.verify(
+                &challenge_id,
+                &token,
+                resend.unwrap_or(false),
+                Some(&captcha),
+            ),
+        )
+        .await
+        .map_err(|_| "校外验证超时，请重新登录".to_string())?
+}
+
+#[tauri::command]
+async fn cancel_billing_webvpn(
+    state: tauri::State<'_, Arc<AppState>>,
+    challenge_id: String,
+) -> Result<(), String> {
+    state.billing_webvpn.lock().await.cancel(&challenge_id);
+    Ok(())
+}
+
 async fn resolve_billing_access(
     app: &tauri::AppHandle,
     state: &AppState,
     account_user: Option<&str>,
     current_session: bool,
     allow_discovery: bool,
+    webvpn: bool,
 ) -> Result<(billing::BillingAccess, VpnCompatibility), String> {
     if !current_session {
         let (account, compatibility) = billing_action_target(state, account_user)?;
-        return Ok((
-            billing::BillingAccess::saved(account.user, account.pass),
-            compatibility,
-        ));
+        let mut access = billing::BillingAccess::saved(account.user, account.pass)
+            .with_captcha(image_captcha_handler(app, state));
+        if webvpn {
+            let mut manager = state.billing_webvpn.lock().await;
+            manager.bind_credentials(billing_credential_stamp(state));
+            access = access.via_webvpn(manager.session()?);
+        }
+        return Ok((access, compatibility));
+    }
+    if webvpn {
+        return Err("校外访问请先选择已保存的计费账号".into());
     }
     ensure_billing_foreground(state)?;
     let expected_account = account_user
@@ -8450,6 +8790,7 @@ fn billing_action_target(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Keep the existing named Tauri IPC fields compatible.
 async fn disconnect_billing_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -8458,6 +8799,7 @@ async fn disconnect_billing_session(
     mac: String,
     account_user: Option<String>,
     current_session: Option<bool>,
+    webvpn: Option<bool>,
 ) -> Result<String, String> {
     let _fetch_guard = state.billing_fetch_lock.lock().await;
     let (access, compatibility) = resolve_billing_access(
@@ -8466,6 +8808,7 @@ async fn disconnect_billing_session(
         account_user.as_deref(),
         current_session.unwrap_or(false),
         false,
+        webvpn.unwrap_or(false),
     )
     .await?;
     ensure_billing_foreground(&state)?;
@@ -8500,6 +8843,7 @@ async fn set_billing_mauth(
     enabled: bool,
     account_user: Option<String>,
     current_session: Option<bool>,
+    webvpn: Option<bool>,
 ) -> Result<String, String> {
     let _fetch_guard = state.billing_fetch_lock.lock().await;
     let (access, compatibility) = resolve_billing_access(
@@ -8508,6 +8852,7 @@ async fn set_billing_mauth(
         account_user.as_deref(),
         current_session.unwrap_or(false),
         false,
+        webvpn.unwrap_or(false),
     )
     .await?;
     ensure_billing_foreground(&state)?;
@@ -8717,6 +9062,7 @@ fn update_billing_background_lifecycle(
                 == generation
         {
             let removed = state.billing_sessions.lock().unwrap().clear();
+            state.billing_webvpn.lock().await.clear();
             if removed > 0 {
                 rust_log(
                     &app,
@@ -9063,7 +9409,28 @@ async fn tray_manual_login(app: tauri::AppHandle, state: Arc<AppState>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().setup(|_app| {
+    #[cfg(target_os = "windows")]
+    let startup_gate = windows_startup::StartupGate::acquire("Local\\cn.edu.bjut.al.startup")
+        .expect("failed to acquire application startup guard");
+    let builder = tauri::Builder::default();
+    // Register first: a second Windows process must exit before creating a
+    // WebView, tray icon, credential store or background authentication loop.
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window("main") {
+                if window.is_minimized().unwrap_or(false) {
+                    let _ = window.unminimize();
+                }
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            // During a simultaneous cold start, frontend_ready will reveal the
+            // first window once it exists and its saved geometry is restored.
+        });
+    }));
+    let builder = builder.setup(|_app| {
         #[cfg(target_os = "android")]
         _app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
         #[cfg(desktop)]
@@ -9162,6 +9529,8 @@ pub fn run() {
             update_download: UpdateDownloadControl::default(),
             billing_fetch_lock: tokio::sync::Mutex::new(()),
             billing_sessions: Mutex::new(billing::BillingSessionPool::default()),
+            billing_webvpn: tokio::sync::Mutex::new(billing::webvpn::Manager::default()),
+            image_captcha: Arc::new(captcha::Control::default()),
             billing_session_expiry_generation: AtomicU64::new(0),
             campus_service_lock: tokio::sync::Mutex::new(()),
             campus_recharge_pending: tokio::sync::Mutex::new(None),
@@ -9608,6 +9977,10 @@ pub fn run() {
             accept_discovered_campus_account,
             reject_discovered_campus_account,
             get_billing_center,
+            begin_billing_webvpn,
+            answer_image_captcha,
+            verify_billing_webvpn,
+            cancel_billing_webvpn,
             query_billing_records,
             perform_billing_action,
             prepare_network_recharge,
@@ -9641,6 +10014,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
+    // The plugin's notification window now exists. A concurrent cold start
+    // can safely find it and exit before initializing a second application.
+    #[cfg(target_os = "windows")]
+    drop(startup_gate);
+
     app.run(|app_handle, event| {
         #[cfg(target_os = "macos")]
         {
@@ -9660,6 +10038,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn billing_command_future_fits_stack_budget() {
+        fn future_size<A, B, C, D, E, F: std::future::Future>(
+            _command: impl Fn(A, B, C, D, E) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+        let size = future_size(get_billing_center);
+        println!("get_billing_center future: {size} bytes");
+        assert!(
+            size <= 16 * 1024,
+            "billing command future occupies {size} bytes"
+        );
+    }
 
     #[test]
     fn update_download_control_releases_exclusive_state_on_drop() {

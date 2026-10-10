@@ -1,6 +1,29 @@
 {
-  "upstream": "cb11586c3e3b8b57a18b58ca54b51e88838762a5",
-  "reviewRequired": [],
-  "reviewed": "cb11586c3e3b8b57a18b58ca54b51e88838762a5",
-  "reviewNote": "本轮改动为应用内诊断、配置备份、二维码、界面及站点文档；路由认证协议没有额外变化，路由离线与同步测试已通过。"
+  "upstream": "7e0e7b9bb20c9b59e2cb45988c3a0ffc7bfbe650",
+  "reviewRequired": [
+    ".github/workflows/ci.yml",
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/backup_cipher.rs",
+    "src-tauri/src/billing.rs",
+    "src-tauri/src/billing/records.rs",
+    "src-tauri/src/billing/transport.rs",
+    "src-tauri/src/billing/types.rs",
+    "src-tauri/src/billing/webvpn.rs",
+    "src-tauri/src/billing_runtime.rs",
+    "src-tauri/src/campus_services.rs",
+    "src-tauri/src/campus_services/yd_codec.rs",
+    "src-tauri/src/captcha.rs",
+    "src-tauri/src/connectivity.rs",
+    "src-tauri/src/diagnostic_paths.rs",
+    "src-tauri/src/dual_stack.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/month_end.rs",
+    "src-tauri/src/network_diagnostics.rs",
+    "src-tauri/src/network_inventory.rs",
+    "src-tauri/src/network_inventory/windows_inventory.rs",
+    "src-tauri/src/probe_transport.rs",
+    "src-tauri/src/windows_credentials.rs",
+    "src-tauri/src/windows_startup.rs"
+  ]
 }

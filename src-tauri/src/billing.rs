@@ -15,8 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::cookie_jar::CookieJar;
 use crate::portal_auth::PortalRouteContext;
 
+mod records;
 mod transport;
 mod types;
+pub(crate) mod webvpn;
 use transport::BillingClient;
 pub(crate) use types::*;
 
@@ -74,6 +76,8 @@ pub(crate) struct BillingAccess {
     pub account: String,
     password: Option<String>,
     current_session: Option<BillingSession>,
+    webvpn: Option<webvpn::Session>,
+    captcha: Option<crate::captcha::Handler>,
 }
 
 impl BillingAccess {
@@ -82,6 +86,32 @@ impl BillingAccess {
             account,
             password: Some(password),
             current_session: None,
+            webvpn: None,
+            captcha: None,
+        }
+    }
+
+    pub(crate) fn via_webvpn(mut self, session: webvpn::Session) -> Self {
+        self.webvpn = Some(session);
+        self
+    }
+
+    pub(crate) fn with_captcha(mut self, handler: crate::captcha::Handler) -> Self {
+        self.captcha = Some(handler);
+        self
+    }
+
+    pub(crate) fn with_timeout<'a, F: std::future::Future + 'a>(
+        &'a self,
+        budget: Duration,
+        future: F,
+    ) -> impl std::future::Future<Output = Result<F::Output, ()>> + 'a {
+        let future = Box::pin(future);
+        async move {
+            match &self.captcha {
+                Some(handler) => handler.with_timeout(budget, future).await,
+                None => tokio::time::timeout(budget, future).await.map_err(|_| ()),
+            }
         }
     }
 
@@ -92,10 +122,26 @@ impl BillingAccess {
         if let Some(session) = &self.current_session {
             return Ok(session.clone());
         }
-        authenticate(
+        if let Some(session) = &self.webvpn {
+            return authenticate_with_client(
+                &self.account,
+                self.password.as_deref().unwrap_or_default(),
+                BillingClient {
+                    client: session.client.clone(),
+                    compatibility,
+                    webvpn: Some(session.id.clone()),
+                },
+                session.cookies.clone(),
+                self.captcha.as_ref(),
+            )
+            .await;
+        }
+        authenticate_with_client(
             &self.account,
             self.password.as_deref().unwrap_or_default(),
-            compatibility,
+            build_client(compatibility).await?,
+            SessionCookies::default(),
+            self.captcha.as_ref(),
         )
         .await
     }
@@ -143,6 +189,8 @@ pub(crate) async fn current_session_access(
         account,
         password: None,
         current_session: Some(session),
+        webvpn: None,
+        captcha: None,
     })
 }
 
@@ -299,15 +347,21 @@ async fn acquire_billing_session(
     let account = &access.account;
     let password = access.password.as_deref().unwrap_or_default();
     let cached = pool.lock().unwrap().take(account, password, compatibility);
-    if let Some(mut session) = cached {
+    if let Some(mut session) = cached.filter(|session| {
+        session.client.webvpn.as_deref() == access.webvpn.as_ref().map(|vpn| vpn.id.as_str())
+    }) {
         if let Ok(dashboard_html) = get_page_text(&mut session, BILLING_DASHBOARD_PATH).await {
-            if embedded_user_json(&dashboard_html).is_some() {
+            if embedded_user_json(&dashboard_html).is_some()
+                && (session.client.webvpn.is_none()
+                    || dashboard_account_matches(&dashboard_html, account))
+            {
                 session.dashboard_html = dashboard_html;
                 return Ok((session, true));
             }
         }
     }
-    authenticate(account, password, compatibility)
+    access
+        .authenticate(compatibility)
         .await
         .map(|session| (session, false))
 }
@@ -475,6 +529,81 @@ where
     result
 }
 
+/// Read only the current/next package and stop status needed for a renewal
+/// reminder. This must never submit a reservation or a recharge request.
+pub(crate) async fn renewal_plan(
+    access: &BillingAccess,
+    compatibility: VpnCompatibility,
+    pool: &std::sync::Mutex<BillingSessionPool>,
+) -> Result<Option<(String, String)>, BillingError> {
+    let (mut session, _) = acquire_billing_session(pool, access, compatibility).await?;
+    let result = async {
+        let user = dashboard_user(&session.dashboard_html);
+        if dashboard_account_status(&session.dashboard_html)
+            .map_or(user.use_flag != Some(1), |status| status != "正常")
+        {
+            return Ok(None);
+        }
+        let stop = get_page_text(&mut session, "/Self/service/goStop").await?;
+        if has_scheduled_stop(&stop) {
+            return Ok(None);
+        }
+        let package = get_page_text(&mut session, "/Self/service/package").await?;
+        let reservation = fetch_active_package_reservation(&mut session).await?;
+        let service = parse_service_state(
+            &session.dashboard_html,
+            &stop,
+            "",
+            &package,
+            "",
+            reservation.as_ref(),
+        );
+        renewal_package(service).map(Some)
+    }
+    .await;
+    if result.is_ok() {
+        pool.lock().unwrap().put(
+            &access.account,
+            access.password.as_deref().unwrap_or_default(),
+            compatibility,
+            session,
+        );
+    } else {
+        pool.lock().unwrap().remove(&access.account);
+    }
+    result
+}
+
+fn has_scheduled_stop(html: &str) -> bool {
+    tags(html, "a")
+        .into_iter()
+        .chain(tags(html, "button"))
+        .any(|tag| {
+            attribute(tag, "data-toggle").as_deref() == Some("undoPreStop")
+                && attribute(tag, "disabled").is_none()
+        })
+}
+
+fn renewal_package(service: BillingServiceState) -> Result<(String, String), BillingError> {
+    if service.package_scheduled {
+        let Some(name) = service.scheduled_package else {
+            return Err(BillingError::Protocol("尚未确认下月预约套餐".into()));
+        };
+        let detail = service
+            .package_options
+            .iter()
+            .find(|option| normalize_text(&option.name) == normalize_text(&name))
+            .map(|option| option.description.clone())
+            .unwrap_or_default();
+        Ok((name, detail))
+    } else {
+        Ok((
+            service.current_package.unwrap_or_default(),
+            service.package_detail.unwrap_or_default(),
+        ))
+    }
+}
+
 pub(crate) async fn query_records(
     access: &BillingAccess,
     compatibility: VpnCompatibility,
@@ -490,7 +619,9 @@ pub(crate) async fn query_records(
         // Load the corresponding module before its AJAX endpoint so the
         // session has the page-local CSRF state expected by jfself.
         let _ = get_page_text(&mut session, spec.referer_path).await?;
-        let table = if query.all {
+        let table = if spec.date_filter {
+            records::query(&mut session, &query, &spec).await?
+        } else if query.all {
             fetch_all_record_pages(&mut session, &query, &spec).await?
         } else {
             fetch_record_page(&mut session, &query, &spec, query.page, query.page_size).await?
@@ -562,9 +693,9 @@ fn validate_record_query(
             .map_err(|_| BillingError::InvalidRequest("查询开始日期格式无效".to_string()))?;
         let end = chrono::NaiveDate::parse_from_str(end_raw, "%Y-%m-%d")
             .map_err(|_| BillingError::InvalidRequest("查询结束日期格式无效".to_string()))?;
-        if start > end || end > today || (end - start).num_days() > 60 {
+        if start > end || end > today {
             return Err(BillingError::InvalidRequest(
-                "查询日期必须截至今天，且范围不能超过 60 天".to_string(),
+                "请检查起止日期，结束日期不能晚于今天".to_string(),
             ));
         }
         (Some(start_raw.to_string()), Some(end_raw.to_string()))
@@ -1403,110 +1534,232 @@ async fn authenticate(
     password: &str,
     compatibility: VpnCompatibility,
 ) -> Result<BillingSession, BillingError> {
+    authenticate_with_client(
+        account,
+        password,
+        build_client(compatibility).await?,
+        SessionCookies::default(),
+        None,
+    )
+    .await
+}
+
+async fn authenticate_with_client(
+    account: &str,
+    password: &str,
+    client: BillingClient,
+    mut cookies: SessionCookies,
+    captcha: Option<&crate::captcha::Handler>,
+) -> Result<BillingSession, BillingError> {
     if account.trim().is_empty() || password.is_empty() {
         return Err(BillingError::InvalidRequest(
             "首选账号缺少已保存的账号或密码".to_string(),
         ));
     }
 
-    let client = build_client(compatibility).await?;
-    let mut cookies = SessionCookies::default();
+    let compatibility = client.compatibility;
     let login_url = Url::parse(BILLING_LOGIN_URL)
         .map_err(|_| BillingError::Protocol("登录地址无效".to_string()))?;
-    let (login_effective_url, login_response) = get_follow(
+    let (mut login_effective_url, login_response) = get_follow(
         &client,
-        login_url,
+        login_url.clone(),
         &mut cookies,
         None,
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "document",
     )
     .await?;
-    let login_html = login_response.text().await.map_err(network_error)?;
-
-    let checkcode = input_value(&login_html, "checkcode")
-        .ok_or_else(|| BillingError::Protocol("登录页缺少 checkcode".to_string()))?;
-    if checkcode.is_empty()
-        || checkcode.len() > 4
-        || !checkcode.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(BillingError::Protocol(
-            "登录页 checkcode 格式不受支持".to_string(),
-        ));
-    }
-    if captcha_required(&login_html)? {
-        return Err(BillingError::CaptchaRequired);
-    }
-    let verify_url = login_action_for(&login_html, &login_effective_url, compatibility)?;
-
-    // The service enables its normal login path only after the browser has
-    // loaded the page resources and requested randomCode. These requests are
-    // session-local, read-only, and bounded to the same HTTPS origin.
-    replay_login_assets(&client, &mut cookies, &login_html, &login_effective_url).await;
-
-    let cache_buster = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let random_code_url = same_origin_url(&format!(
-        "{BILLING_ORIGIN}/Self/login/randomCode?t=0.{cache_buster}"
-    ))?;
-    let (_, random_code_response) = get_follow(
-        &client,
-        random_code_url,
-        &mut cookies,
-        Some(&login_effective_url),
-        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "image",
-    )
-    .await?;
-    let _ = random_code_response.bytes().await.map_err(network_error)?;
-
-    let brand_url = same_origin_url(&format!(
-        "{BILLING_ORIGIN}/Self/login/getBrandInfo?t=0.{cache_buster}"
-    ))?;
-    if let Ok((_, response)) = get_follow(
-        &client,
-        brand_url,
-        &mut cookies,
-        Some(&login_effective_url),
-        "*/*",
-        "empty",
-    )
-    .await
-    {
-        let _ = response.bytes().await;
+    let mut login_html = login_response.text().await.map_err(network_error)?;
+    // WebVPN retains the upstream jfself cookie on its server. A different
+    // saved billing account can therefore replace that upstream session even
+    // though our local cookie jar is unchanged. All callers serialize access;
+    // verify the dashboard identity before using it or signing into another.
+    if client.webvpn.is_some() && embedded_user_json(&login_html).is_some() {
+        let mut session = BillingSession {
+            client: client.clone(),
+            cookies,
+            dashboard_url: login_effective_url.clone(),
+            dashboard_html: login_html.clone(),
+            ajax_csrf_token: None,
+        };
+        if dashboard_account_matches(&login_html, account) {
+            session.ajax_csrf_token = fetch_page_csrf_token(
+                &client,
+                &mut session.cookies,
+                &login_html,
+                &login_effective_url,
+            )
+            .await;
+            return Ok(session);
+        }
+        logout(&mut session).await;
+        cookies = session.cookies;
+        let (url, response) = get_follow(
+            &client,
+            login_url,
+            &mut cookies,
+            None,
+            "text/html",
+            "document",
+        )
+        .await?;
+        login_effective_url = url;
+        login_html = response.text().await.map_err(network_error)?;
     }
 
-    let (dashboard_url, dashboard_html) = post_login(
-        &client,
-        verify_url,
-        &login_effective_url,
-        &mut cookies,
-        &checkcode,
-        account,
-        password,
-    )
-    .await?;
+    for attempt in 0..3 {
+        let checkcode = input_value(&login_html, "checkcode")
+            .ok_or_else(|| BillingError::Protocol("登录页缺少 checkcode".to_string()))?;
+        if checkcode.is_empty()
+            || checkcode.len() > 4
+            || !checkcode.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(BillingError::Protocol(
+                "登录页 checkcode 格式不受支持".to_string(),
+            ));
+        }
+        let needs_captcha = captcha_required(&login_html)?;
+        if needs_captcha && captcha.is_none() {
+            return Err(BillingError::CaptchaRequired);
+        }
+        let verify_url = login_action_for(&login_html, &login_effective_url, compatibility)?;
 
-    if login_action_for(&dashboard_html, &dashboard_url, compatibility).is_ok() {
-        return Err(login_rejection(&dashboard_html));
+        // The service enables its normal login path only after the browser has
+        // loaded the page resources and requested randomCode. These requests are
+        // session-local, read-only, and bounded to the same HTTPS origin.
+        replay_login_assets(&client, &mut cookies, &login_html, &login_effective_url).await;
+
+        let cache_buster = cache_buster();
+        let random_code_url = same_origin_url(&format!(
+            "{BILLING_ORIGIN}/Self/login/randomCode?t=0.{cache_buster}"
+        ))?;
+        let (_, random_code_response) = get_follow(
+            &client,
+            random_code_url,
+            &mut cookies,
+            Some(&login_effective_url),
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "image",
+        )
+        .await?;
+        let mut code = String::new();
+        if needs_captcha {
+            let mut image = crate::captcha::image(random_code_response)
+                .await
+                .map_err(BillingError::Protocol)?;
+            loop {
+                match captcha
+                    .unwrap()
+                    .prompt(
+                        if attempt == 0 {
+                            "计费系统验证码"
+                        } else {
+                            "登录未通过，请重新填写验证码"
+                        },
+                        image,
+                    )
+                    .await
+                    .map_err(BillingError::ActionRejected)?
+                {
+                    crate::captcha::Answer::Submit(value) => {
+                        code = value;
+                        break;
+                    }
+                    crate::captcha::Answer::Refresh => {
+                        let url = same_origin_url(&format!(
+                            "{BILLING_ORIGIN}/Self/login/randomCode?t={}",
+                            self::cache_buster()
+                        ))?;
+                        let (_, response) = get_follow(
+                            &client,
+                            url,
+                            &mut cookies,
+                            Some(&login_effective_url),
+                            "image/*",
+                            "image",
+                        )
+                        .await?;
+                        image = crate::captcha::image(response)
+                            .await
+                            .map_err(BillingError::Protocol)?;
+                    }
+                    crate::captcha::Answer::Cancel => unreachable!(),
+                }
+            }
+        } else {
+            let _ = random_code_response.bytes().await.map_err(network_error)?;
+        }
+
+        let brand_url = same_origin_url(&format!(
+            "{BILLING_ORIGIN}/Self/login/getBrandInfo?t=0.{cache_buster}"
+        ))?;
+        if let Ok((_, response)) = get_follow(
+            &client,
+            brand_url,
+            &mut cookies,
+            Some(&login_effective_url),
+            "*/*",
+            "empty",
+        )
+        .await
+        {
+            let _ = response.bytes().await;
+        }
+
+        let (dashboard_url, dashboard_html) = post_login(
+            &client,
+            verify_url,
+            &login_effective_url,
+            &mut cookies,
+            LoginSubmission {
+                checkcode: &checkcode,
+                account,
+                password,
+                code: &code,
+            },
+        )
+        .await?;
+
+        if login_action_for(&dashboard_html, &dashboard_url, compatibility).is_ok() {
+            if captcha.is_some()
+                && captcha_required(&dashboard_html).unwrap_or(false)
+                && attempt < 2
+            {
+                login_effective_url = dashboard_url;
+                login_html = dashboard_html;
+                continue;
+            }
+            return Err(login_rejection(&dashboard_html));
+        }
+        if !dashboard_url.path().starts_with("/Self/dashboard")
+            && !dashboard_html.contains("账户余额")
+        {
+            return Err(BillingError::Protocol("登录后未进入计费控制台".to_string()));
+        }
+        if client.webvpn.is_some() && !dashboard_account_matches(&dashboard_html, account) {
+            return Err(BillingError::ActionRejected(
+                "计费页面的账号与所选账号不一致，请重新登录".into(),
+            ));
+        }
+
+        let ajax_csrf_token =
+            fetch_page_csrf_token(&client, &mut cookies, &dashboard_html, &dashboard_url).await;
+
+        return Ok(BillingSession {
+            client,
+            cookies,
+            dashboard_url,
+            dashboard_html,
+            ajax_csrf_token,
+        });
     }
-    if !dashboard_url.path().starts_with("/Self/dashboard") && !dashboard_html.contains("账户余额")
-    {
-        return Err(BillingError::Protocol("登录后未进入计费控制台".to_string()));
-    }
+    Err(BillingError::CaptchaRequired)
+}
 
-    let ajax_csrf_token =
-        fetch_page_csrf_token(&client, &mut cookies, &dashboard_html, &dashboard_url).await;
-
-    Ok(BillingSession {
-        client,
-        cookies,
-        dashboard_url,
-        dashboard_html,
-        ajax_csrf_token,
-    })
+fn dashboard_account_matches(html: &str, expected: &str) -> bool {
+    embedded_user_json(html)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .is_some_and(|value| value["userName"].as_str() == Some(expected))
 }
 
 async fn replay_login_assets(
@@ -1875,11 +2128,13 @@ async fn post_form_action(
         .header("Sec-Fetch-Mode", "cors")
         .header("Sec-Fetch-Site", "same-origin")
         .form(&fields);
-    if let Some(value) = session.cookies.header(&url) {
+    if let Some(value) = session.cookies.header(&session.client.cookie_url(&url)) {
         request = request.header(COOKIE, value);
     }
     let response = request.send().await.map_err(network_error)?;
-    session.cookies.absorb(&url, response.headers());
+    session
+        .cookies
+        .absorb(&session.client.cookie_url(&url), response.headers());
     if response.status().is_redirection() {
         if matches!(response.status().as_u16(), 307 | 308) {
             return Err(BillingError::Protocol(
@@ -2278,6 +2533,7 @@ async fn build_client(compatibility: VpnCompatibility) -> Result<BillingClient, 
         .map(|client| BillingClient {
             client,
             compatibility,
+            webvpn: None,
         })
         .map_err(network_error)
 }
@@ -2349,6 +2605,7 @@ async fn build_account_discovery_client(
         .map(|client| BillingClient {
             client,
             compatibility,
+            webvpn: None,
         })
         .map_err(network_error)
 }
@@ -2499,14 +2756,14 @@ async fn account_discovery_get_follow(
                     "none"
                 },
             );
-        if let Some(value) = cookies.header(&url) {
+        if let Some(value) = cookies.header(&client.cookie_url(&url)) {
             request = request.header(COOKIE, value);
         }
         if let Some(value) = current_referer.as_ref() {
             request = request.header(REFERER, client.referer(value));
         }
         let response = request.send().await.map_err(network_error)?;
-        cookies.absorb(&url, response.headers());
+        cookies.absorb(&client.cookie_url(&url), response.headers());
         if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -2692,14 +2949,14 @@ async fn get_follow(
         if destination == "empty" {
             request = request.header("X-Requested-With", "XMLHttpRequest");
         }
-        if let Some(value) = cookies.header(&url) {
+        if let Some(value) = cookies.header(&client.cookie_url(&url)) {
             request = request.header(COOKIE, value);
         }
         if let Some(value) = current_referer.as_ref() {
             request = request.header(REFERER, client.referer(value));
         }
         let response = request.send().await.map_err(network_error)?;
-        cookies.absorb(&url, response.headers());
+        cookies.absorb(&client.cookie_url(&url), response.headers());
         if response.status().is_redirection() {
             let next = redirect_target(client, &url, &response)?;
             current_referer = Some(url.clone());
@@ -2717,21 +2974,26 @@ async fn get_follow(
     Err(BillingError::Protocol("重定向次数过多".to_string()))
 }
 
+struct LoginSubmission<'a> {
+    checkcode: &'a str,
+    account: &'a str,
+    password: &'a str,
+    code: &'a str,
+}
+
 async fn post_login(
     client: &BillingClient,
     verify_url: Url,
     referer: &Url,
     cookies: &mut SessionCookies,
-    checkcode: &str,
-    account: &str,
-    password: &str,
+    submission: LoginSubmission<'_>,
 ) -> Result<(Url, String), BillingError> {
     validate_login_action(&verify_url)?;
     let form = [
-        ("checkcode", checkcode),
-        ("account", account),
-        ("password", password),
-        ("code", ""),
+        ("checkcode", submission.checkcode),
+        ("account", submission.account),
+        ("password", submission.password),
+        ("code", submission.code),
     ];
     let mut request = client
         .post(verify_url.clone())
@@ -2745,11 +3007,11 @@ async fn post_login(
         .header("Sec-Fetch-Mode", "navigate")
         .header("Sec-Fetch-Site", "same-origin")
         .form(&form);
-    if let Some(value) = cookies.header(&verify_url) {
+    if let Some(value) = cookies.header(&client.cookie_url(&verify_url)) {
         request = request.header(COOKIE, value);
     }
     let response = request.send().await.map_err(network_error)?;
-    cookies.absorb(&verify_url, response.headers());
+    cookies.absorb(&client.cookie_url(&verify_url), response.headers());
     if response.status().is_redirection() {
         if matches!(response.status().as_u16(), 307 | 308) {
             return Err(BillingError::Protocol(
@@ -2793,10 +3055,16 @@ fn redirect_target(
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| BillingError::Protocol("重定向缺少 Location".to_string()))?;
-    let next = current
+    let next = client
+        .cookie_url(current)
         .join(location)
         .map_err(|_| BillingError::Protocol("重定向地址无效".to_string()))?;
     let next = client.canonical(next);
+    if client.webvpn.is_some() && next.host_str() == Some(webvpn::HOST) {
+        return Err(BillingError::ActionRejected(
+            "校外登录已过期，请重新验证 WebVPN".into(),
+        ));
+    }
     validate_same_origin(&next)?;
     Ok(next)
 }
@@ -4176,11 +4444,95 @@ fn decode_html_entities(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn billing_operation_future_stack_budget() {
+        // Construct the real center request without polling it or sending data.
+        let access = BillingAccess::saved("fixture".into(), "fixture".into()).with_captcha(
+            crate::captcha::Handler::new(std::sync::Arc::default(), |_, _| {}),
+        );
+        let pool = std::sync::Mutex::default();
+        let background = std::sync::atomic::AtomicBool::new(false);
+        let timeout = access.with_timeout(
+            Duration::from_secs(75),
+            fetch_center(&access, VpnCompatibility::High, &pool, |_, _| {}, |_| {}),
+        );
+        let timeout_size = std::mem::size_of_val(&timeout);
+        assert!(
+            timeout_size <= 4096,
+            "billing timeout occupies {timeout_size} bytes"
+        );
+        let foreground = crate::billing_runtime::run_read_while_foreground(&background, async {
+            timeout
+                .await
+                .map_err(|_| "timeout".to_string())?
+                .map_err(|error| error.user_message())
+        });
+        let foreground_size = std::mem::size_of_val(&foreground);
+        assert!(
+            foreground_size <= 4096,
+            "billing foreground guard occupies {foreground_size} bytes"
+        );
+    }
+
+    #[test]
+    fn billing_center_entry_survives_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                use std::sync::{atomic::Ordering, Arc};
+                use tauri::ipc::private::ResultFutureKind;
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let access = BillingAccess::saved("fixture".into(), String::new()).with_captcha(
+                    crate::captcha::Handler::new(std::sync::Arc::default(), |_, _| {}),
+                );
+                let pool = std::sync::Mutex::default();
+                let background = std::sync::atomic::AtomicBool::new(false);
+                let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let progress = started.clone();
+                // Empty credentials fail before the first HTTP request, after
+                // preparing the real Rustls client. Exercise Tauri's response
+                // adapter as well as the cancellation and captcha wrappers.
+                let command = async {
+                    crate::billing_runtime::run_read_while_foreground(&background, async {
+                        access
+                            .with_timeout(
+                                Duration::from_secs(75),
+                                fetch_center(
+                                    &access,
+                                    VpnCompatibility::Minimum,
+                                    &pool,
+                                    move |_, percent| {
+                                        if percent == 5 {
+                                            progress.store(true, Ordering::SeqCst);
+                                        }
+                                    },
+                                    |_| {},
+                                ),
+                            )
+                            .await
+                            .map_err(|_| "timeout".to_string())?
+                            .map_err(|error| error.user_message())
+                    })
+                    .await
+                };
+                let result = runtime.block_on(command.async_kind().future(command));
+                assert!(format!("{:?}", result.unwrap_err()).contains("首选账号缺少"));
+                assert!(started.load(Ordering::SeqCst));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     fn synthetic_billing_session() -> BillingSession {
         BillingSession {
             client: BillingClient {
                 client: Client::builder().build().unwrap(),
                 compatibility: VpnCompatibility::High,
+                webvpn: None,
             },
             cookies: SessionCookies::default(),
             dashboard_url: Url::parse("https://jfself.bjut.edu.cn/Self/dashboard").unwrap(),
@@ -4703,6 +5055,32 @@ mod tests {
         assert_eq!(state.scheduled_package_id.as_deref(), Some("6"));
         assert_eq!(state.scheduled_package.as_deref(), Some("本科生默认套餐"));
         assert!(state.package_options.iter().any(|option| option.id == "7"));
+        let (name, detail) = renewal_package(state).unwrap();
+        assert_eq!(name, "本科生默认套餐");
+        assert_ne!(detail, "当前套餐", "预约套餐不能借用旧套餐费用");
+        let current = renewal_package(parse_service_state(
+            dashboard,
+            "",
+            "",
+            package_html,
+            "",
+            None,
+        ))
+        .unwrap();
+        assert_eq!(current, ("本科生10元套餐".into(), "当前套餐".into()));
+    }
+
+    #[test]
+    fn renewal_skips_a_real_stop_reservation_not_its_javascript_selector() {
+        assert!(!has_scheduled_stop(
+            r#"<script> $('[data-toggle="undoPreStop"]') </script>"#
+        ));
+        assert!(has_scheduled_stop(
+            r#"<a data-toggle="undoPreStop">取消预约停机</a>"#
+        ));
+        assert!(!has_scheduled_stop(
+            r#"<button data-toggle="undoPreStop" disabled>取消预约停机</button>"#
+        ));
     }
 
     #[test]
@@ -4730,7 +5108,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_record_queries_without_accepting_urls_or_unbounded_dates() {
+    fn validates_record_queries_without_accepting_urls_or_future_dates() {
         let today = chrono::Local::now().date_naive();
         let mut query = BillingRecordQuery {
             kind: "usage".to_string(),
@@ -4745,7 +5123,9 @@ mod tests {
         assert_eq!(validated.kind, BillingRecordKind::Usage);
         assert_eq!(validated.page_size, 10);
 
-        query.start_date = Some((today - chrono::Duration::days(61)).to_string());
+        query.start_date = Some((today - chrono::Duration::days(366)).to_string());
+        assert!(validate_record_query(&query).is_ok());
+        query.end_date = Some((today + chrono::Duration::days(1)).to_string());
         assert!(validate_record_query(&query).is_err());
         query.kind = "https://example.com/collect".to_string();
         assert!(validate_record_query(&query).is_err());

@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/src/themes.css" />
     <link rel="stylesheet" href="/src/theme-apple.css" />
     <link rel="stylesheet" href="/src/theme-winui.css" />
+    <link rel="stylesheet" href="/src/page-layout.css" />
   </head>
   <body>
     <div id="app-loading-mask" class="app-loading-mask is-visible" role="status" aria-live="polite">
@@ -238,9 +239,11 @@
                   <div class="custom-select-options"></div>
                 </div>
               </label>
+              <button id="btn-billing-webvpn" class="btn btn-secondary btn-sm" type="button" aria-pressed="false">校外访问</button>
               <button id="btn-refresh-billing-center" class="btn btn-secondary billing-refresh-button" type="button" aria-label="刷新计费中心数据">
                 <i data-lucide="refresh-cw"></i><span id="billing-refresh-label">刷新</span>
               </button>
+              <button id="btn-billing-direct" class="btn btn-secondary btn-sm" type="button" hidden>切回校内</button>
             </div>
           </header>
 
@@ -352,7 +355,7 @@
                   <h2>账单与办理记录</h2>
                   <span id="billing-record-total" class="billing-count-badge">0</span>
                 </div>
-                <p id="billing-record-range">选择记录类型、日期或年份后查询；日期范围最多 60 天。</p>
+                <p id="billing-record-range">选择记录类型、日期或年份后查询。</p>
               </div>
               <div class="billing-export-actions">
                 <button id="btn-export-billing-records" class="btn btn-secondary btn-sm" type="button" disabled>
@@ -1186,7 +1189,7 @@
               <div class="setting-item usage-alert-master-setting">
                 <div class="setting-info">
                   <h4>启用用量提醒</h4>
-                  <p>余额或剩余套餐流量低于提醒线时每天通知一次</p>
+                  <p>余额、流量不足时提醒；月末核对下月套餐费用</p>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="setting-usage-alerts" checked>
@@ -1264,15 +1267,9 @@
                   <p>通过剪贴板或二维码备份、迁移设置和账号。</p>
                 </div>
                 <div>
-                  <div class="config-transfer-options" role="group" aria-label="导入导出内容">
-                    <label><input type="checkbox" id="config-scope-settings" checked> 设置</label>
-                    <label><input type="checkbox" id="config-scope-accounts" checked> 账号密码</label>
-                  </div>
                   <div class="config-transfer-actions">
-                    <button class="btn btn-secondary btn-sm" id="btn-export-config">复制备份</button>
-                    <button class="btn btn-secondary btn-sm" id="btn-import-config">粘贴导入</button>
-                    <button class="btn btn-secondary btn-sm" id="btn-export-config-qr">生成二维码</button>
-                    <button class="btn btn-secondary btn-sm" id="btn-import-config-qr">扫描二维码</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-import-config">导入</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-export-config">导出</button>
                   </div>
                 </div>
               </div>
@@ -1307,6 +1304,7 @@
               </div>
               <p class="settings-about-note">应用只会连接校园网登录、计费、统一认证、校园服务与 GitHub Releases 等明确用途的服务；敏感字段不会写入运行日志。</p>
             </div>
+          </div>
         </section>
       </main>
     </div>

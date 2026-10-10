@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cookie_jar::{CookieJar, StoredCookie};
+mod yd_codec;
 
 const CAS_HOST: &str = "cas.bjut.edu.cn";
 const UC_HOST: &str = "uc.bjut.edu.cn";
@@ -208,7 +209,9 @@ impl CampusSession {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9".parse().unwrap());
         Ok(Self {
-            client: build_client(headers)?,
+            // Use one browser identity throughout ydapp -> itsapp -> CAS and
+            // the return trip. App UA markers can switch CAS to an SMS flow.
+            client: build_client(headers, WECHAT_USER_AGENT)?,
             cookies: restored_campus_cookies(account, persisted),
         })
     }
@@ -928,7 +931,7 @@ async fn authenticate(account: &str, password: &str) -> Result<CampusSession, Ca
     }
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9".parse().unwrap());
-    let client = build_client(headers)?;
+    let client = build_client(headers, REGULAR_USER_AGENT)?;
     let mut session = CampusSession {
         client,
         cookies: CookieJar::default(),
@@ -978,7 +981,10 @@ async fn authenticate(account: &str, password: &str) -> Result<CampusSession, Ca
     Ok(session)
 }
 
-fn build_client(headers: HeaderMap) -> Result<Client, CampusServiceError> {
+fn build_client(
+    headers: HeaderMap,
+    user_agent: &'static str,
+) -> Result<Client, CampusServiceError> {
     Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(12))
@@ -986,7 +992,7 @@ fn build_client(headers: HeaderMap) -> Result<Client, CampusServiceError> {
         .use_native_tls()
         .min_tls_version(reqwest::tls::Version::TLS_1_2)
         .max_tls_version(reqwest::tls::Version::TLS_1_2)
-        .user_agent(REGULAR_USER_AGENT)
+        .user_agent(user_agent)
         .default_headers(headers)
         .build()
         .map_err(|error| CampusServiceError::network("初始化 HTTPS 客户端", error))
@@ -1031,6 +1037,18 @@ async fn enter_recharge(
             ));
         }
         if !response.status().is_redirection() {
+            let html = response
+                .text()
+                .await
+                .map_err(|error| CampusServiceError::network("读取统一认证结果", error))?;
+            if tags(&html, "form")
+                .iter()
+                .any(|form| attribute(form, "id").as_deref() == Some("formToken"))
+            {
+                return Err(CampusServiceError::rejected(
+                    "学校统一认证要求短信验证；本次未重复提交密码，请完成学校验证后重试",
+                ));
+            }
             return Err(CampusServiceError::rejected(
                 "统一认证拒绝登录；为避免触发验证码，本次没有自动重试",
             ));
@@ -1120,12 +1138,20 @@ async fn yd_post(
     .await
 }
 
-async fn yd_get(session: &mut CampusSession, url: Url) -> Result<Value, CampusServiceError> {
+async fn yd_get(session: &mut CampusSession, mut url: Url) -> Result<Value, CampusServiceError> {
     validate_url(&url, &[YD_HOST])?;
+    let parameters: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let wrapped = yd_codec::encode(&json!(parameters))?;
+    url.set_query(None);
+    url.query_pairs_mut()
+        .append_pair("datajson", wrapped["datajson"].as_str().unwrap());
     let mut request = session
         .client
         .get(url.clone())
-        .header(USER_AGENT, REGULAR_USER_AGENT)
+        .header(USER_AGENT, WECHAT_USER_AGENT)
         .header(ACCEPT, "application/json, text/plain, */*")
         .header(ORIGIN, YD_ORIGIN)
         .header(REFERER, "https://ydapp.bjut.edu.cn/")
@@ -1155,6 +1181,7 @@ async fn yd_post_text(
 ) -> Result<String, CampusServiceError> {
     let url = parse_url(&format!("{YD_ORIGIN}{path}"))?;
     validate_url(&url, &[YD_HOST])?;
+    let body = yd_codec::encode(&body)?;
     let mut request = session
         .client
         .post(url.clone())
@@ -1200,6 +1227,17 @@ async fn yd_post_text(
         .map_err(|error| CampusServiceError::network(stage, error))?;
     if text.len() > 128 * 1024 {
         return Err(CampusServiceError::protocol("支付入口响应体过大"));
+    }
+    // Alipay may return a raw form, or the same form inside datajson. Decode
+    // once; malformed replies must never trigger a second order submission.
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        return match yd_codec::decode(value)? {
+            Value::String(html) => Ok(html),
+            value => Err(CampusServiceError::rejected(format!(
+                "支付入口未能打开：{}",
+                response_message(&value)
+            ))),
+        };
     }
     Ok(text)
 }
@@ -1438,7 +1476,6 @@ async fn get_follow_text(
         let mut request = session
             .client
             .get(url.clone())
-            .header(USER_AGENT, request_user_agent(&url))
             .header(
                 ACCEPT,
                 "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1489,14 +1526,6 @@ async fn get_follow_text(
     Err(CampusServiceError::protocol("校园服务重定向次数过多"))
 }
 
-fn request_user_agent(url: &Url) -> &'static str {
-    if url.host_str() == Some(ITS_HOST) {
-        WECHAT_USER_AGENT
-    } else {
-        REGULAR_USER_AGENT
-    }
-}
-
 async fn get_json(
     session: &mut CampusSession,
     url: Url,
@@ -1535,6 +1564,11 @@ async fn post_json(
     yd_headers: bool,
 ) -> Result<Value, CampusServiceError> {
     validate_url(&url, &[url.host_str().unwrap_or_default()])?;
+    let body = if yd_headers {
+        yd_codec::encode(&body)?
+    } else {
+        body
+    };
     let mut request = session
         .client
         .post(url.clone())
@@ -1567,18 +1601,35 @@ async fn post_json(
 
 async fn response_json(response: Response, stage: &str) -> Result<Value, CampusServiceError> {
     let status = response.status();
+    let yd = response.url().host_str() == Some(YD_HOST);
     if !status.is_success() {
+        if yd && matches!(status.as_u16(), 401 | 403) {
+            return Err(CampusServiceError::rejected(format!(
+                "{stage}未通过登录验证（HTTP {}），请重新核对；若已提交付款，请先查询到账记录",
+                status.as_u16()
+            )));
+        }
         return Err(CampusServiceError::protocol(format!(
-            "接口返回 HTTP {}",
+            "{stage}返回 HTTP {}",
             status.as_u16()
         )));
     }
-    match response.json::<Value>().await {
-        Ok(value) => Ok(value),
-        Err(error) if error.is_decode() => {
-            Err(CampusServiceError::protocol("接口没有返回有效 JSON"))
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(part) = stream.next().await {
+        let part = part.map_err(|error| CampusServiceError::network(stage, error))?;
+        if bytes.len() + part.len() > 2 * 1024 * 1024 {
+            return Err(CampusServiceError::protocol(format!("{stage}响应过大")));
         }
-        Err(error) => Err(CampusServiceError::network(stage, error)),
+        bytes.extend_from_slice(&part);
+    }
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|_| CampusServiceError::protocol(format!("{stage}没有返回有效 JSON")))?;
+    if yd {
+        yd_codec::decode(value)
+    } else {
+        Ok(value)
     }
 }
 
@@ -2103,17 +2154,42 @@ fn ensure_success(value: &Value, operation: &str) -> Result<(), CampusServiceErr
 }
 
 fn response_message(value: &Value) -> String {
-    for key in ["message", "msg", "title"] {
-        if let Some(message) = value.get(key).and_then(Value::as_str) {
+    for key in [
+        "/message",
+        "/msg",
+        "/m",
+        "/title",
+        "/errorMsg",
+        "/errmsg",
+        "/error/message",
+        "/data/message",
+        "/resultData/message",
+    ] {
+        if let Some(message) = value.pointer(key).and_then(Value::as_str) {
             if !message.trim().is_empty() {
-                return message.trim().to_string();
+                return message
+                    .trim()
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(240)
+                    .collect();
             }
         }
     }
     value
         .get("code")
+        .or_else(|| value.get("e"))
+        .filter(|code| {
+            code.is_number()
+                || code.as_str().is_some_and(|code| {
+                    code.len() <= 32
+                        && code
+                            .chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+                })
+        })
         .map(|code| format!("服务器返回代码 {code}"))
-        .unwrap_or_else(|| "服务器未提供原因".to_string())
+        .unwrap_or_else(|| "服务未返回可用结果，请稍后重试；若持续出现，请更新应用".to_string())
 }
 
 fn required_json_string(value: Option<&Value>, field: &str) -> Result<String, CampusServiceError> {
@@ -2448,20 +2524,6 @@ mod tests {
             .header(&Url::parse("https://ydapp.bjut.edu.cn/openV8HomePage").unwrap())
             .is_none());
         assert_eq!(persisted_campus_cookies(&jar, "student").cookies.len(), 1);
-    }
-
-    #[test]
-    fn limits_wechat_user_agent_to_itsapp_navigation() {
-        assert_eq!(
-            request_user_agent(
-                &Url::parse("https://itsapp.bjut.edu.cn/uc/api/oauth/index").unwrap()
-            ),
-            WECHAT_USER_AGENT
-        );
-        assert_eq!(
-            request_user_agent(&Url::parse("https://ydapp.bjut.edu.cn/openV8HomePage").unwrap()),
-            REGULAR_USER_AGENT
-        );
     }
 
     #[test]

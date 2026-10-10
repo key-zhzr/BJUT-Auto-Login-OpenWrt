@@ -1,0 +1,108 @@
+/* Keep the original full-page scroll area and room for card shadows. */
+:root[data-theme] #main-content > .page > .page-header {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: .8rem;
+  margin-bottom: .9rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  isolation: isolate;
+  background: transparent;
+}
+:root[data-theme] #main-content > .page > .page-header::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  left: calc(-1 * var(--header-left, 0px));
+  right: calc(-1 * var(--header-right, 0px));
+  top: calc(-1 * var(--header-top, 2rem));
+  bottom: -.6rem;
+  background: var(--theme-body-bg, var(--bg-color));
+}
+:root[data-theme] #main-content > .page > .page-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  line-height: 2.3rem;
+  font-weight: 700;
+}
+:root[data-theme] #btn-open-billing {
+  height: 2.3rem;
+  margin: 0;
+  padding: .3rem .7rem;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Keep account, access mode and refresh on one row at every breakpoint. */
+:root[data-theme] .billing-header-tools {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto auto;
+  align-items:end;
+  gap:.5rem;
+}
+:root[data-theme] .billing-header-tools .billing-account-picker { width:auto; min-width:0; }
+:root[data-theme] .billing-header-tools :is(.custom-select-trigger, .btn) {
+  height:2.6rem;
+  min-height:2.6rem;
+  min-width:0;
+  margin:0;
+  padding:.4rem .7rem;
+  font-size:.85rem;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+:root[data-theme] .billing-header-tools .custom-select-trigger { justify-content:space-between; }
+:root[data-theme] .billing-header-tools .custom-select-trigger span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+:root[data-theme] .billing-header-tools .btn svg { width:1rem; height:1rem; }
+:root[data-theme] #btn-billing-direct { grid-column:2 / -1; justify-self:end; }
+@media(max-width:480px) {
+  :root[data-theme] .billing-header-tools { gap:.35rem; }
+  :root[data-theme] .billing-header-tools :is(.custom-select-trigger,.btn) { padding-inline:.5rem; font-size:.8rem; }
+}
+#main-content::-webkit-scrollbar-track,
+:root[data-theme] .custom-select-options::-webkit-scrollbar-track,
+:root[data-theme] .logs-container::-webkit-scrollbar-track { margin-block: 10px; }
+:root[data-theme] #logs.page.active { overflow: visible; }
+:root[data-theme] #logs .log-filters { flex: 0 0 auto; }
+:root[data-theme] #logs .logs-container { flex: 1 1 auto; min-height: 0; max-height: none; }
+:root[data-theme] #logs .logs-actions { flex-wrap: wrap; overflow: visible; }
+:root[data-theme] .custom-select.open.opens-up .custom-select-options {
+  top: auto;
+  bottom: calc(100% + 5px);
+  transform-origin: bottom center;
+}
+@media(max-width:768px) {
+  :root[data-theme] #main-content > .page > .page-header h1 { font-size: 1.6rem; }
+  :root[data-theme] #main-content > #logs > .page-header { align-items:stretch; }
+  :root[data-theme] #logs .logs-actions { width: 100%; gap: .4rem; }
+  :root[data-theme] #logs .logs-actions .btn { flex: 1 1 calc(50% - .4rem); justify-content: center; margin: 0; }
+  :root[data-theme] #main-content > .page > .page-header { gap: .5rem; }
+}
+.config-transfer-dialog { width:min(100%,480px); max-width:480px; max-height:calc(100dvh - 2rem); overflow:auto; padding:1.5rem; }
+.config-transfer-dialog fieldset { border:0; margin:1rem 0; padding:0; }
+.config-transfer-dialog legend { font-weight:600; margin-bottom:.6rem; }
+.config-transfer-dialog .transfer-choices { display:flex; flex-wrap:wrap; gap:.8rem 1.2rem; }
+.config-transfer-dialog .transfer-choices label { display:flex; align-items:center; gap:.4rem; }
+.config-transfer-dialog .transfer-error { color:var(--error); min-height:1.4em; font-size:.85rem; }
+.config-transfer-dialog .transfer-note { font-size:.8rem; color:var(--text-muted); }
+.config-transfer-dialog .form-group { margin-top:1rem; }
+.config-transfer-dialog .modal-actions { flex-wrap:wrap; }
+.image-captcha-overlay { z-index:1200; }
+.image-captcha-picture { display:flex; align-items:center; flex-wrap:wrap; gap:.75rem; margin-top:1rem; }
+.image-captcha-picture img { display:block; max-width:100%; max-height:140px; border-radius:6px; }
+.image-captcha-overlay input { width:100%; margin-top:.5rem; }
+#billing-webvpn-modal .custom-select { width:100%; }
+#billing-webvpn-modal .custom-select:not(.open) .custom-select-options { max-height:0 !important; overflow:hidden; }
+#billing-webvpn-modal .custom-select-trigger::after {
+  content:''; width:.5rem; height:.5rem; border:solid currentColor;
+  border-width:0 2px 2px 0; transform:rotate(45deg); margin:0 .2rem .2rem .75rem;
+}
+#billing-webvpn-modal [data-send] { margin-top:.65rem; }
+@media(prefers-reduced-motion:reduce) {
+  :root[data-theme] :is(#config-transfer-modal, #billing-webvpn-modal, .image-captcha-overlay),
+  :root[data-theme] :is(#config-transfer-modal, #billing-webvpn-modal, .image-captcha-overlay) .modal-content { transition:none; }
+}

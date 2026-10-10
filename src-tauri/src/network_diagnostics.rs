@@ -285,20 +285,30 @@ pub(super) async fn run_network_diagnostics(
         step
     };
     let internet_probe = async {
-        let connection_probe = async {
-            if wifi_route_failed {
-                connectivity::Snapshot {
-                    cancelled: true,
-                    complete: true,
-                    ..Default::default()
+        let paths = std::sync::Mutex::new(diagnostic_paths::Paths::pending());
+        let connection_probe =
+            connectivity::for_app(&app, &network).wait_with_updates(|snapshot| {
+                let mut paths = paths.lock().unwrap();
+                if let Some(health) = &snapshot.health {
+                    paths.system = health.clone();
                 }
-            } else {
-                connectivity::for_app(&app, &network).wait(true).await
+                if let Some(health) = &snapshot.physical {
+                    paths.direct = health.clone();
+                }
+                emit_step(&app, &run_id, &paths.step());
+            });
+        let direct_probe = async {
+            if !connectivity::requires_physical_probe(&network) {
+                dual_stack::probe_route_with_updates(&network, true, |health| {
+                    let mut paths = paths.lock().unwrap();
+                    paths.direct = health.clone();
+                    emit_step(&app, &run_id, &paths.step());
+                })
+                .await;
             }
         };
-        let paths_probe =
-            diagnostic_paths::probe(&network, |paths| emit_step(&app, &run_id, &paths.step()));
-        let (connection, paths) = futures_util::future::join(connection_probe, paths_probe).await;
+        let (connection, _) = futures_util::future::join(connection_probe, direct_probe).await;
+        let paths = paths.into_inner().unwrap();
         let session_step = connection.require_session.then(|| DiagnosticStep {
             id: "authentication_session".into(),
             label: "认证网卡的校园会话".into(),
@@ -331,14 +341,11 @@ pub(super) async fn run_network_diagnostics(
                 internet_step.status = "success".into();
             }
         }
-        let mut dual_stack = paths.system;
-        // Both read-only runs describe the same captured network. Carry the
-        // current pool's ordering metadata when updating the console view.
-        if let Some(health) = connection.health.as_ref() {
-            dual_stack.generation = health.generation;
-            dual_stack.probe_id = health.probe_id;
-        }
-        dual_stack.checked_at = chrono::Local::now().to_rfc3339();
+        // Preserve the exact system result and ordering emitted to the console.
+        let dual_stack = connection
+            .health
+            .clone()
+            .unwrap_or_else(|| dual_stack::unavailable("检测已取消，请重试"));
         if let Some(step) = &session_step {
             emit_step(&app, &run_id, step);
         }
@@ -348,6 +355,7 @@ pub(super) async fn run_network_diagnostics(
             dual_stack,
             session_step,
             connection.cancelled && !wifi_route_failed,
+            connection.require_physical && !connection.access_online(),
         )
     };
     let gateway_probe = async {
@@ -413,7 +421,14 @@ pub(super) async fn run_network_diagnostics(
     };
     let (
         dns_step,
-        (online, internet_step, mut dual_stack, session_step, probe_cancelled),
+        (
+            online,
+            internet_step,
+            mut dual_stack,
+            session_step,
+            probe_cancelled,
+            physical_unconfirmed,
+        ),
         ((gateway_results, lgn_ipv6_diagnostic), portal_duration_ms),
     ) = run_diagnostic_probes(dns_probe, internet_probe, gateway_probe, |percent| {
         emit_network_diagnostic_progress(
@@ -563,14 +578,22 @@ pub(super) async fn run_network_diagnostics(
                 .state::<Arc<AppState>>()
                 .network_change_generation
                 .load(Ordering::SeqCst)
-        || latest["interfaceName"] != network["interfaceName"]
-        || latest["ip"] != network["ip"];
+        || !connectivity::same_network(&latest, &network);
     if stale {
         dual_stack.invalidate("网络或认证状态已改变，此报告仅保留原检测明细，请重新诊断");
     }
     let adapter_restart = if stale { None } else { adapter_restart };
     let (overall, summary) = if stale {
         ("changed", "检测期间网络或认证状态已改变，请重新诊断")
+    } else if physical_unconfirmed && online {
+        if network["captivePortal"].as_bool().unwrap_or(false) {
+            ("auth_required", "系统路由可联网，但当前 Wi-Fi 仍需完成认证")
+        } else {
+            (
+                "partial",
+                "系统路由可联网，但当前认证网卡直连尚未通过，请核对校园认证状态",
+            )
+        }
     } else if session_unconfirmed && online {
         ("partial", "系统互联网可达，所选认证网卡的校园会话尚未确认")
     } else if online && (ip.is_empty() || transport == "none") {
