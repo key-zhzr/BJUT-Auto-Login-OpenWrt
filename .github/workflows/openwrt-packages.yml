@@ -75,6 +75,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Prepare SDK output
         run: mkdir -p sdk-output
       - name: Compile core and LuCI with matching official SDK
@@ -82,7 +83,9 @@ jobs:
         env:
           CONTAINER: ghcr.io/openwrt/sdk
           ARCH: ${{ matrix.sdk }}
-          FEED_DIR: ${{ github.workspace }}/openwrt
+          # The SDK's package checks run git diff; mount the repository root
+          # so nested package directories retain their Git context.
+          FEED_DIR: ${{ github.workspace }}
           FEEDNAME: bjut
           ARTIFACTS_DIR: ${{ github.workspace }}/sdk-output
           PACKAGES: bjut-autologin luci-app-bjut-autologin
