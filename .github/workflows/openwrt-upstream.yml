@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
-    if: github.repository != 'key-zhzr/BJUT-Auto-Login'
+    if: github.repository == 'key-zhzr/BJUT-Auto-Login-OpenWrt'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

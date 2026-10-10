@@ -14,7 +14,7 @@ define Package/bjut-autologin
   CATEGORY:=Network
   SUBMENU:=Captive Portals
   TITLE:=Low-overhead BJUT campus network auto-login
-  URL:=https://github.com/key-zhzr/BJUT-Auto-Login
+  URL:=https://github.com/key-zhzr/BJUT-Auto-Login-OpenWrt
   DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo
 endef
 
