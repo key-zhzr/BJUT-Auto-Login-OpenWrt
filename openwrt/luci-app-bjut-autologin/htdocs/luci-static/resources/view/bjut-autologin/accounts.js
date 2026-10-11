@@ -21,6 +21,6 @@ return view.extend({
 			}));
 		}
 		draw(data);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('header',{'class':'bj-header'},[E('h2',{},_('账号管理')),E('a',{'class':'btn',href:L.url('admin/network/bjut-autologin/config')},_('编辑账号'))]),message,rows]);
+		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-header'},[E('h2',{},_('账号管理')),E('a',{'class':'btn',href:L.url('admin/network/bjut-autologin/config')},_('编辑账号'))]),message,rows]);
 	}
 });
