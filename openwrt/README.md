@@ -162,6 +162,26 @@ uci commit uhttpd
 
 保留已有的 `cert`、`key` 和 `/ubus` 配置；若未配置，请参考 [OpenWrt 的 uhttpd 默认配置](https://github.com/openwrt/openwrt/blob/master/package/network/services/uhttpd/files/uhttpd.config)，补齐 TLS 支持及 `uhttpd-mod-ubus`。重启后若仍无 HTTPS 监听，检查 `logread -e uhttpd`。此操作只监听所填 LAN 地址，不需要放行 WAN 管理。
 
+若监听配置已保存，但连接仍被拒绝，检查实际证书与生成工具：
+
+```sh
+ls -l /etc/uhttpd.crt /etc/uhttpd.key /lib/libustream-ssl.so /usr/sbin/px5g /usr/bin/openssl
+```
+
+当 TLS 库存在、证书和私钥均缺失、`px5g` 与 `openssl` 也未安装时，uhttpd 无法自动生成证书，会跳过 HTTPS 监听。启动时的 `4+0 records` 只是读取随机字节，不表示生成成功，日志也可能为空。这与 App 的证书信任提示不同，连接尚未进入 TLS 校验。可从对应固件的软件源安装生成工具：
+
+```sh
+if command -v apk >/dev/null 2>&1; then
+  apk update && apk add openssl-util
+else
+  opkg update && opkg install openssl-util
+fi && /etc/init.d/uhttpd restart
+
+ls -l /etc/uhttpd.crt /etc/uhttpd.key
+```
+
+此命令保留现有 uhttpd 配置，由服务自动生成缺失的证书；安装失败时先处理软件源报错。已有证书和私钥时不要删除重建，也无需替换已安装的 TLS 库。启动条件和工具选择见 [ImmortalWrt 的 uhttpd 启动脚本](https://github.com/immortalwrt/immortalwrt/blob/master/package/network/services/uhttpd/files/uhttpd.init)。
+
 使用 `https://192.168.1.1` 重新连接，在 App 内核对并确认指纹即可。证书变化时需要重新核对，不会自动替换已信任证书。系统提示 App 的本地网络权限时应允许访问所连接路由器。
 
 ## 安全说明
