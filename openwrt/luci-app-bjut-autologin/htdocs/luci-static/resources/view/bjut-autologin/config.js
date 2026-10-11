@@ -59,6 +59,7 @@ function statusPanel(status) {
 		[_('更新时间'), status.updated_at ? new Date(status.updated_at * 1000).toLocaleString() : '-'],
 		[_('下次重试'), status.next_attempt ? new Date(status.next_attempt * 1000).toLocaleString() : '-']
 	];
+	if (status.checking) rows.splice(2, 0, [_('当前检测'), status.check_message || _('正在检测…')]);
 
 	return E('div', { 'class': 'cbi-section' }, [
 		E('h3', {}, _('运行状态')),
@@ -242,7 +243,7 @@ return view.extend({
 
 		return m.render().then(function(mapNode) {
 			const panel = E('div', {}, [statusPanel(status)]);
-			poll.add(function() { return readStatus().then(function(next) { panel.replaceChildren(statusPanel(next)); }); }, 5);
+			poll.add(function() { return readStatus().then(function(next) { panel.replaceChildren(statusPanel(next)); }); }, 2);
 			return E([], [panel, mapNode]);
 		});
 	}

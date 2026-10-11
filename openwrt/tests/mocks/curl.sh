@@ -37,6 +37,9 @@ mock_source4="${MOCK_IPV4:-10.21.2.3}"
 case "$interface" in ifhost!*) [ "$family" != ipv4 ] || mock_source4="${interface##*!}" ;; esac
 scenario="${MOCK_SCENARIO:-type2_success}"
 if [ "$scenario" = multi_mapped ]; then scenario=type1_success; fi
+if [ "${MOCK_PUBLIC_FAILURES:-0}" = 1 ]; then
+ case "$url" in http://connect.test/*|https://www.baidu.com/*|https://test6.ustc.edu.cn/*|https://dns.alidns.com/*) exit 7 ;; esac
+fi
 code=404
 body='not found'
 
@@ -47,6 +50,10 @@ case "$url" in
   mime=text/html
   code=200
   case "$url" in
+   */Self/login/eportalLogin*)
+    fixture_user="$(printf '%s' "$url" | sed -n 's/.*account=\([^&]*\).*/\1/p')"
+    printf '%s' "$fixture_user" >"$cookie_file"
+    code=302; body=''; location='/Self/dashboard' ;;
    */Self/login/verify*)
     if [ "$scenario" = billing_rejected ]; then
      body="<form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='hide'></div></form>账号或密码出现错误！"
@@ -77,6 +84,12 @@ case "$url" in
   fi
   printf '%s' "$body" >"$output"; printf '%s' "$code"; exit 0
   ;;
+ */eportal/portal/self*)
+  if [ "$scenario" = billing_sso ] || [ "$scenario" = billing_sso_foreign ]; then
+   code=200; auth_host=jfself.bjut.edu.cn
+   [ "$scenario" != billing_sso_foreign ] || auth_host=foreign.invalid
+   body="dr1004({\"result\":1,\"self_auth_url\":\"https://$auth_host/Self/login/eportalLogin?account=${MOCK_SSO_USER:-25000099}&timestamp=1780981775208&sign=fixture\"})"
+  else code=200; body='dr1004({"result":0})'; fi ;;
 	http://connect.test/generate_204)
 		if [ "$scenario" = "online" ] || [ -e "$success_marker" ]; then
 			code=204; body=''
@@ -92,7 +105,7 @@ case "$url" in
 	*/drcom/chkstatus*)
 		[ -z "${MOCK_PROBE_DELAY:-}" ] || sleep "$MOCK_PROBE_DELAY"
 		case "$scenario" in
-			type2_*|auth_rejected|ambiguous|oversized|unknown_result) code=200; body='dr1002({"result":0,"msg":"not online"});' ;;
+			type2_*|auth_rejected|ambiguous|oversized|unknown_result) code=200; body='dr1002({"result":0,"msg":"not online"});'; [ ! -e "$success_marker" ] || body='dr1002({"result":1})'; ;;
 		esac
 		;;
 	*/drcom/login*)

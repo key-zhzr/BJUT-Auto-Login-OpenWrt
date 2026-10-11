@@ -5,6 +5,8 @@
 - `package_format`：选择全部格式，或仅 IPK/APK。
 - `platform`：选择全部平台，或指定一项。
 
+选择全部格式时，先完成全部 APK，再开始 IPK；仅选一种格式时直接构建该格式。
+
 每项构建都生成 `bjut-autologin` 本体和 `luci-app-bjut-autologin` 管理界面。完成后在任务底部下载对应的 `*-packages` 附件，保留 30 天。构建失败时可下载 SDK 日志。
 
 ## 默认编译矩阵
@@ -65,3 +67,5 @@ opkg --force-downgrade install /tmp/openwrt-*__luci-app-bjut-autologin_0.1.6-*.i
 ```
 
 APK 仍使用对应固件的包管理器安装。安装后执行 `bjut-autologin version`，应显示 `0.1.6`；LuCI 包也使用相同版本。
+
+当前 0.1.6 的修复包修订号为 2（IPK `0.1.6-2`、APK `0.1.6-r2`）。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的锁与路由逻辑。

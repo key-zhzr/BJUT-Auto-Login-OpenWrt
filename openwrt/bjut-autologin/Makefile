@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -15,7 +15,7 @@ define Package/bjut-autologin
   SUBMENU:=Captive Portals
   TITLE:=Low-overhead BJUT campus network auto-login
   URL:=https://github.com/key-zhzr/BJUT-Auto-Login-OpenWrt
-  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full
+  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full +coreutils-sha256sum
 endef
 
 define Package/bjut-autologin/description

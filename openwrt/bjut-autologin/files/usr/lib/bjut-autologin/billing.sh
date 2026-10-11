@@ -115,6 +115,9 @@ billing_publish_overview() {
 	local user actual status balance flow package
 	user="$(billing_extract user-json)" || return 1
 	actual="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.userName' 2>/dev/null)"
+	case "$actual" in ''|*[!A-Za-z0-9_@.,-]*) return 1 ;; esac
+	[ "${#actual}" -le 256 ] || return 1
+	[ "${BILLING_CURRENT:-0}" != 1 ] || BILLING_ACCOUNT="$actual"
 	[ "$actual" = "$BILLING_ACCOUNT" ] || return 1
 	balance="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney' 2>/dev/null)"
 	flow="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow' 2>/dev/null)"
@@ -126,6 +129,7 @@ billing_publish_overview() {
 	json_add_string state ready; json_add_int percent 100
 	json_add_string message "计费数据已更新"
 	json_add_string account "$actual"; json_add_string uplink "$UPLINK_ID"
+	json_add_string access "${BILLING_ACCESS:-已保存账号}"
 	json_add_string balance "$balance"; json_add_string remainingFlow "$flow"
 	json_add_string accountStatus "$status"; json_add_string package "$package"
 	json_add_int updatedAt "$(date +%s)"
@@ -147,8 +151,44 @@ billing_publish_overview() {
 
 }
 
+billing_current_session() {
+	local url auth path query
+	BILLING_SSO_ATTEMPTED=0
+	# No password is sent to the gateway. Each request uses this uplink's own
+	# physical source and the same TLS checks as the App's account discovery.
+	url="https://lgn.bjut.edu.cn:802/eportal/portal/self?callback=726427262622&self_type=27&user_account=&user_password=&wlan_user_mac=&jsVersion=2238243824&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&encrypt=1&v=$(request_id)&lang=zh"
+	lgn_request "$url" lgn.bjut.edu.cn 802 'https://lgn.bjut.edu.cn/' || return 1
+	load_jsonp && [ "$(jsonp_value '@.result')" = 1 ] || return 1
+	auth="$(jsonp_value '@.self_auth_url')"
+	auth="$(billing_normalize_path "$auth")"
+	billing_valid_path "$auth" || return 1
+	case "$auth" in https://jfself.bjut.edu.cn/*) path="${auth#https://jfself.bjut.edu.cn}" ;; *) path="$auth" ;; esac
+	case "$path" in /Self/login/eportalLogin\?*) ;; *) return 1 ;; esac
+	query="${path#*\?}"
+	# Reject unsigned/foreign destinations before sending the session token.
+	for key in account timestamp sign; do
+		case "&$query&" in *"&$key="[!\&]*'&'*) ;; *) return 1 ;; esac
+	done
+	BILLING_SSO_ATTEMPTED=1
+	billing_request "$path" || return 1
+	BILLING_ACCESS="当前认证账号"
+	billing_publish_overview
+}
+
+billing_collect_expired() (
+	local now="$1" old created
+	set +f
+	for old in "$STATE_DIR"/billing/* "$STATE_DIR"/billing-cache/*; do
+		[ -d "$old" ] || continue
+		# Active queries may outlive their creation time; never delete their lock.
+		[ ! -d "$old/lock" ] || continue
+		created="$(cat "$old/created" 2>/dev/null)"
+		is_uint "$created" && [ "$((now - created))" -gt 600 ] && rm -rf -- "$old"
+	done
+)
+
 billing_worker() {
-	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid
+	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid section enabled order saved_account
 	BILLING_JOB="$STATE_DIR/billing/$ticket"
 	[ -s "$BILLING_JOB/request.json" ] || return 1
 	uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"
@@ -156,15 +196,29 @@ billing_worker() {
 	action="$(json_file_value "$BILLING_JOB/request.json" '@.action')"
 	code="$(json_file_value "$BILLING_JOB/request.json" '@.code')"
 	load_configuration && select_uplink "$uplink" || return 1
-	case " $ACCOUNT_SECTIONS " in *" $account_id "*) ;; *) billing_progress error 100 "请先选择已保存的账号"; return 1 ;; esac
-	config_get BILLING_ACCOUNT "$account_id" username ""
-	config_get password "$account_id" password ""
-	[ -n "$BILLING_ACCOUNT" ] && [ -n "$password" ] || { billing_progress error 100 "该账号没有已保存密码"; return 1; }
+	BILLING_CURRENT=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
+	if [ "$account_id" = current ]; then
+		BILLING_CURRENT=1
+		order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
+		for section in $order; do
+			config_get_bool enabled "$section" enabled 1
+			[ "$enabled" = 1 ] || continue
+			config_get BILLING_ACCOUNT "$section" username ""
+			config_get password "$section" password ""
+			[ -z "$BILLING_ACCOUNT" ] || [ -z "$password" ] || break
+		done
+	else
+		case " $ACCOUNT_SECTIONS " in *" $account_id "*) ;; *) billing_progress error 100 "请先选择已保存的账号"; return 1 ;; esac
+		config_get BILLING_ACCOUNT "$account_id" username ""
+		config_get password "$account_id" password ""
+	fi
+	saved_account="$BILLING_ACCOUNT"
 	read_network_identity || { billing_progress error 100 "所选上游尚未取得校园网地址"; return 1; }
 	prepare_work_dir || return 1
 	ensure_uplink_routes
 	sync_mwan_rules || true
-	signature="$(printf '%s\n' "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$BILLING_ACCOUNT" "$password" | sha256sum | awk '{print $1}')"
+	signature="$(printf '%s\n' "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$account_id" "$BILLING_ACCOUNT" "$password" | sha256sum | awk '{print $1}')"
+	[ "${#signature}" = 64 ] || { billing_progress error 100 "请重新安装路由端以补齐所需组件"; return 1; }
 	BILLING_CACHE="$STATE_DIR/billing-cache/$(cat "$BILLING_JOB/owner")-$signature"
 	mkdir -p "$BILLING_CACHE"
 	if ! mkdir "$BILLING_CACHE/lock" 2>/dev/null; then
@@ -189,10 +243,19 @@ billing_worker() {
 	if [ "$action" = captcha ] && [ -s "$BILLING_CACHE/login.html" ]; then
 		cp "$BILLING_CACHE/login.html" "$WORK_DIR/billing-body"
 	else
-		billing_progress loading 10 "正在连接计费系统"
+		billing_progress loading 10 "正在查询当前认证账号"
+		if billing_current_session; then password=""; return 0; fi
+		# A different selected account must never inherit the current account's
+		# cookies. An unavailable discovery must not reuse an old current login.
+		if [ "$account_id" = current ] || [ "$BILLING_SSO_ATTEMPTED" = 1 ]; then rm -f "$BILLING_CACHE/cookies"; fi
+		BILLING_CURRENT=0; BILLING_ACCESS="已保存账号"
+		BILLING_ACCOUNT="$saved_account"
+		[ -n "$BILLING_ACCOUNT" ] && [ -n "$password" ] || { billing_progress error 100 "当前账号暂时无法查询，请选择已保存的账号"; return 1; }
+		billing_progress loading 20 "正在连接计费系统"
 		billing_request '/Self/login/?302=LI' || { billing_progress error 100 "无法通过所选上游访问计费系统"; return 1; }
 		if billing_publish_overview; then return 0; fi
 	fi
+	BILLING_CURRENT=0; BILLING_ACCESS="已保存账号"
 	checkcode="$(billing_extract input checkcode)" || { billing_progress error 100 "计费登录页发生变化，请更新后重试"; return 1; }
 	case "$checkcode" in ''|*[!0-9]*) billing_progress error 100 "计费登录页格式异常"; return 1 ;; esac
 	[ "${#checkcode}" -le 4 ] || return 1

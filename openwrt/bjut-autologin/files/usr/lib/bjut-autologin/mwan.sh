@@ -49,7 +49,8 @@ mwan_finish() {
 
 sync_mwan_rule() {
  local family="$1" source="$2" suffix name owner current existing_id
- suffix="$(printf '%s' "$UPLINK_ID" | cksum | awk '{print $1}')"
+ suffix="$(printf '%s' "$UPLINK_ID" | "$CODEC_BIN" id32)" || return 1
+ is_uint "$suffix" || return 1
  name="bjut_${suffix}_${family}"
  owner="$(mwan_uci get "$MWAN_PACKAGE.$name.bjut_managed")"
  if [ "$(mwan_uci get "$MWAN_PACKAGE.$name")" = rule ] && [ "$owner" != 1 ]; then return 1; fi
@@ -87,7 +88,7 @@ sync_mwan_rules() {
 prune_mwan_rules() {
  local signature previous section owner id keep
  [ -r "${BJUT_MWAN_CONFIG:-/etc/config/mwan3}" ] || return 0
- signature="$CFG_MWAN3:$UPLINK_SECTIONS"
+ signature="id32:$CFG_MWAN3:$UPLINK_SECTIONS"
  previous="$(cat "$STATE_DIR/mwan-config" 2>/dev/null)"
  [ "$signature" != "$previous" ] || return 0
  mwan_begin || return 1
@@ -96,7 +97,12 @@ prune_mwan_rules() {
   [ "$owner" = 1 ] || continue
   id="$(mwan_uci get "$MWAN_PACKAGE.$section.bjut_uplink")"
   keep=0
-  if [ "$CFG_MWAN3" = 1 ]; then case " $UPLINK_SECTIONS " in *" $id "*) [ -z "$id" ] || keep=1 ;; esac; fi
+  if [ "$CFG_MWAN3" = 1 ] && valid_section "$id"; then
+   case " $UPLINK_SECTIONS " in *" $id "*)
+    expected="$(printf '%s' "$id" | "$CODEC_BIN" id32)" || { mwan_finish 1; return 1; }
+    case "$section" in "bjut_${expected}_4"|"bjut_${expected}_6") keep=1 ;; esac ;;
+   esac
+  fi
   [ "$keep" = 1 ] || { mwan_uci delete "$MWAN_PACKAGE.$section"; MWAN_CHANGED=1; }
  done
  mwan_finish || return 1

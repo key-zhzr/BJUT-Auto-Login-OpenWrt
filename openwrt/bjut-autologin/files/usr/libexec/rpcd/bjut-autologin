@@ -116,18 +116,16 @@ billing_begin() {
 	valid_ticket "$owner" && [ "$owner" != 00000000000000000000000000000000 ] || { reply error "请重新登录路由管理页面"; return; }
 	uplink="$(request_value uplink)"; account="$(request_value account)"
 	select_uplink "$uplink" || { reply error "所选上游不可用"; return; }
-	case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) reply error "所选账号不存在"; return ;; esac
+	[ -n "$account" ] || account=current
+	case "$account" in current) ;; *) case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) reply error "所选账号不存在"; return ;; esac ;; esac
 	mkdir -p "$STATE_DIR/billing"
 	# Delete expired jobs, cookies and captured login forms from volatile storage.
 	now="$(date +%s)"
-	for old in "$STATE_DIR"/billing/* "$STATE_DIR"/billing-cache/*; do
-		[ -d "$old" ] || continue
-		created="$(cat "$old/created" 2>/dev/null)"
-		is_uint "$created" && [ "$((now - created))" -gt 600 ] && rm -rf -- "$old"
-	done
+	billing_collect_expired "$now"
 	ticket="$(random_ticket)"; valid_ticket "$ticket" || return 1
 	BILLING_JOB="$STATE_DIR/billing/$ticket"; mkdir "$BILLING_JOB" || return 1
-	printf '%s' "$(owner_hash "$owner")" >"$BILLING_JOB/owner"
+	owner="$(owner_hash "$owner")"; [ "${#owner}" = 64 ] || { rm -rf -- "$BILLING_JOB"; reply error "请重新安装路由端以补齐所需组件"; return; }
+	printf '%s' "$owner" >"$BILLING_JOB/owner"
 	printf '%s' "$now" >"$BILLING_JOB/created"
 	json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action begin
 	json_dump >"$BILLING_JOB/request.json"

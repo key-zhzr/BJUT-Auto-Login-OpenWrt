@@ -80,6 +80,7 @@ RUNTIME_OFFLINE_COUNT=0
 RUNTIME_NEXT_ATTEMPT=0
 
 cleanup_runtime() {
+	[ "$LOCK_HELD" != 1 ] || rm -f -- "$STATE_DIR/phase-$UPLINK_ID"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; fi
 	SOURCE_LOCK_HELD=0
 	if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
@@ -435,6 +436,30 @@ write_status() {
 	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then cp "$STATE_FILE" "$SOURCE_STATE.$$" && mv -f "$SOURCE_STATE.$$" "$SOURCE_STATE"; fi
 }
+
+write_phase() {
+	printf '%s %s\n%s\n' "$$" "$(date +%s)" "$1" >"$STATE_DIR/phase-$UPLINK_ID.$$" &&
+		mv -f "$STATE_DIR/phase-$UPLINK_ID.$$" "$STATE_DIR/phase-$UPLINK_ID"
+}
+
+print_status_file() (
+	local file="$1" section="$2" pid started message="" checking=0
+	. "$JSHN_SH"
+	if [ -s "$file" ]; then json_load "$(cat "$file")" || return 1; else
+		json_init; json_add_string id "$section"; json_add_string state stopped
+		json_add_string message "等待检测"
+	fi
+	if [ -r "$STATE_DIR/phase-$section" ]; then
+		read -r pid started <"$STATE_DIR/phase-$section"
+		if is_uint "$pid" && is_uint "$started" && kill -0 "$pid" 2>/dev/null && [ "$(($(date +%s) - started))" -lt 180 ]; then
+			checking=1; message="$(sed -n '2p' "$STATE_DIR/phase-$section")"
+		fi
+	fi
+	# Keep the last completed result visible while a new check is running.
+	json_add_int checking "$checking"
+	json_add_string check_message "$message"
+	json_dump
+)
 
 acquire_lock() {
 	local owner
@@ -944,6 +969,7 @@ run_once_impl() {
 	SESSION_STATE=unknown; OBSERVED_ACCOUNT=""; OBSERVED_IPV6=""; PROBE4=unknown; PROBE6=unknown
 	ROUTE4=unknown; ROUTE6=unknown
 	[ "$FORCE" != 1 ] || [ -z "$MANUAL_ACCOUNT" ] || explicit_auth=1
+	write_phase "正在核对上游地址"
 	read_network_identity
 	rc=$?
 	if [ "$rc" -ne 0 ]; then
@@ -956,9 +982,10 @@ run_once_impl() {
 		return 1
 	fi
 	if ! acquire_source_lock; then
-		write_status busy "此物理出口正在检测，请稍候" "" "" 0 0 0
+		[ -s "$STATE_FILE" ] || write_status busy "此物理出口正在检测，请稍候" "" "" 0 0 0
 		return 75
 	fi
+	write_phase "正在确认出口路由"
 	ensure_uplink_routes
 	sync_mwan_rules || log_message error "mwan3 出口规则更新失败，请核对路由设置"
 	load_runtime_state
@@ -967,10 +994,12 @@ run_once_impl() {
 		return 1
 	fi
 	SELECTED_PROTOCOL=""
+	write_phase "正在检测 IPv4 / IPv6 连通性"
 	online_check && internet_ok=1
 	# Known dormitory uplinks must consult online_list even when an individual
 	# public target is reachable before authentication.
 	if [ "$explicit_auth" = 1 ] || [ "$internet_ok" = 0 ] || [ "$CFG_LOGIN_TYPE" != auto ] || [ -n "$RUNTIME_PROTOCOL" ] || [ "$TRANSPORT" = ethernet ]; then
+		write_phase "正在确认认证会话"
 		detect_protocol; portal_rc=$?
 		if [ "$portal_rc" = 0 ]; then read_portal_session "$SELECTED_PROTOCOL"; fi
 	fi
@@ -1023,6 +1052,7 @@ run_once_impl() {
 		return 1
 	fi
 
+	write_phase "正在提交认证"
 	try_accounts "$SELECTED_PROTOCOL"
 	rc=$?
 	case "$rc" in
@@ -1030,17 +1060,32 @@ run_once_impl() {
 			log_message notice "$SELECTED_PROTOCOL 认证网关已接受账号 $SELECTED_ACCOUNT"
 			if [ "$CFG_POST_LOGIN_DELAY" -gt 0 ]; then sleep "$CFG_POST_LOGIN_DELAY"; fi
 			read_portal_session "$SELECTED_PROTOCOL"
-			if online_check || [ "$SESSION_STATE" = online ]; then
-				write_status "online" "认证成功，互联网连接已恢复" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
+			if online_check && [ "$SESSION_STATE" != offline ]; then
+				write_status "online" "认证网关已受理登录，外网连接正常" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
+			elif [ "$SESSION_STATE" = online ]; then
+				write_status authenticated_limited "认证会话有效，外网探测暂未通过；保留当前登录" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
 			else
 				write_status "login_accepted" "认证网关已接受登录，等待互联网连通性复核" "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 "$offline_count" "$CFG_INTERVAL"
 			fi
 			return 0
 			;;
 		13)
-			SESSION_STATE=online
-			if online_check; then write_status online "当前出口已有有效登录" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
-			else write_status authenticated_limited "当前出口已有登录，外网探测待确认" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0; fi
+			# An account may be online on another uplink. Confirm this source
+			# independently; never invent a session from the generic message.
+			read_portal_session "$SELECTED_PROTOCOL"
+			online_check; rc=$?
+			if [ "$SESSION_STATE" = offline ]; then
+				failures=$((RUNTIME_FAILURES + 1)); delay="$(calculate_backoff "$failures")"
+				write_status request_failed "网关提示已有登录，当前出口仍待认证；请核对账号分配" "$SELECTED_PROTOCOL" "" 0 "$failures" "$offline_count" "$delay"
+				return 1
+			elif [ "$rc" = 0 ]; then
+				write_status online "当前出口外网连接正常" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$RUNTIME_ACCOUNT}" 0 0 0
+			elif [ "$SESSION_STATE" = online ]; then
+				write_status authenticated_limited "认证会话有效，外网探测暂未通过；保留当前登录" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$RUNTIME_ACCOUNT}" 0 0 0
+			else
+				write_status probe_uncertain "网关提示已有登录，当前出口状态待确认；稍后复核" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+				return 1
+			fi
 			return 0 ;;
 		10)
 			write_status "auth_rejected" "所有适用账号均被认证网关明确拒绝；已进入凭据冷却期" "$SELECTED_PROTOCOL" "" 0 1 "$offline_count" "$CFG_CREDENTIAL_COOLDOWN"
@@ -1072,6 +1117,7 @@ run_once_locked() {
 	prepare_work_dir || { release_lock; return 1; }
 	run_once_impl
 	rc=$?
+	rm -f -- "$STATE_DIR/phase-$UPLINK_ID"
 	rm -rf -- "$WORK_DIR"
 	WORK_DIR=""
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; SOURCE_LOCK_HELD=0; fi
@@ -1095,11 +1141,7 @@ run_daemon() {
 }
 
 print_status() {
-	if [ -s "$STATE_FILE" ]; then
-		cat "$STATE_FILE"
-	else
-		printf '{"state":"stopped","message":"服务尚未生成运行状态"}\n'
-	fi
+	print_status_file "$STATE_FILE" "$UPLINK_ID"
 }
 
 main() {

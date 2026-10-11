@@ -63,12 +63,18 @@ ensure_family_route() {
 	esac
 	connected="$("$IP_BIN" "-$family" route show table all dev "$device" scope link 2>/dev/null |
 		awk '{owned=0; for(i=1;i<NF;i++) if($i=="proto" && $(i+1)=="186") owned=1; if(!owned) print $1}' | sort -u)"
-	connected_hash="$(printf '%s' "$connected" | cksum | awk '{print $1}')"
-	key="$(printf '%s:%s' "$UPLINK_ID" "$family" | cksum | awk '{print $1}')"
+	connected_hash="$(printf '%s' "$connected" | "$CODEC_BIN" id32)" || return 1
+	key="$(printf '%s:%s' "$UPLINK_ID" "$family" | "$CODEC_BIN" id32)" || return 1
+	is_uint "$connected_hash" && is_uint "$key" || return 1
 	table="$(printf '%s' "$key" | awk '{printf "%d",40000 + $1 % 5000}')"
 	if [ -f "$file" ]; then
 		read -r old_family table old_source old_device old_gateway old_owner old_hash <"$file"
-		valid_range "$table" 40000 44999 || return 1
+		if ! valid_range "$table" 40000 44999; then
+			# A previous failed identifier must not poison all future checks.
+			rm -f -- "$file"
+			ensure_family_route "$family" "$device" "$address" "$status"
+			return $?
+		fi
 	else
 		candidate=0
 		while [ "$candidate" -lt 5000 ]; do
@@ -134,12 +140,14 @@ ensure_uplink_routes() {
 	rm -rf -- "$STATE_DIR/route-lock"
 }
 
-prune_uplink_routes() {
+prune_uplink_routes() (
+	set +f
 	local file family table source device gateway owner connected_hash
 	for file in "$STATE_DIR"/routes-*-*; do
 		[ -f "$file" ] || continue
 		read -r family table source device gateway owner connected_hash <"$file" || continue
+		if ! valid_range "$table" 40000 44999; then rm -f -- "$file"; continue; fi
 		if [ "$CFG_MANAGED_ROUTES" = 1 ]; then case " $UPLINK_SECTIONS " in *" $owner "*) continue ;; esac; fi
 		remove_owned_route "$file"
 	done
-}
+)

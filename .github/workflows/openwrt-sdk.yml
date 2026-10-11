@@ -1,0 +1,57 @@
+name: OpenWrt SDK build
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: ${{ matrix.target }} · ${{ matrix.version }} · ${{ matrix.format }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare SDK output
+        run: mkdir -p sdk-output
+      - name: Compile core and LuCI with matching official SDK
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
+        env:
+          CONTAINER: ghcr.io/openwrt/sdk
+          ARCH: ${{ matrix.sdk }}
+          # The SDK's package checks run git diff; mount the repository root
+          # so nested package directories retain their Git context.
+          FEED_DIR: ${{ github.workspace }}
+          FEEDNAME: bjut
+          ARTIFACTS_DIR: ${{ github.workspace }}/sdk-output
+          PACKAGES: bjut-autologin luci-app-bjut-autologin
+          BUILD_LOG: '1'
+          V: s
+      - name: Check and collect both packages
+        env:
+          BUILD_ROW: ${{ toJSON(matrix) }}
+        run: python3 openwrt/scripts/package_build.py collect --input sdk-output/bin --output package-artifacts --row "$BUILD_ROW" --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.id }}-packages
+          path: package-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve SDK logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.id }}-logs
+          path: sdk-output/logs/
+          if-no-files-found: warn
+          retention-days: 7
+

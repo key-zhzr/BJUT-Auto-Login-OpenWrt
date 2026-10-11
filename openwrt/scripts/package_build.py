@@ -151,6 +151,10 @@ def main():
         if destination := os.environ.get('GITHUB_OUTPUT'):
             with open(destination, 'a') as output:
                 output.write(f'matrix={encoded}\nversion={version}\n')
+                for kind in ('apk', 'ipk'):
+                    rows = [row for row in matrix['include'] if row['format'] == kind]
+                    output.write(f'{kind}_matrix=' + json.dumps({'include': rows}, separators=(',', ':')) + '\n')
+                    output.write(f'has_{kind}=' + ('true' if rows else 'false') + '\n')
         print(encoded)
     elif args.command == 'collect':
         data = collect_packages(args.input, args.output, json.loads(args.row), args.commit)

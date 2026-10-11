@@ -218,9 +218,7 @@ print_all_status() {
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"
 		printf '%s' "$comma"; comma=,
-		if [ -s "$item" ]; then cat "$item"; else
-			printf '{"id":"%s","state":"stopped","message":"等待检测"}' "$section"
-		fi
+		print_status_file "$item" "$section"
 	done
 	printf ']}\n'
 }
@@ -234,7 +232,7 @@ run_all_uplinks() {
 		UPLINK_ID=main; run_once_locked; return $?
 	fi
 	for section in $UPLINK_SECTIONS; do
-		(/bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
+		(BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
 		CHILD_PIDS="$pids"
 		batch=$((batch + 1))
 		if [ "$batch" -ge 4 ]; then
@@ -249,7 +247,9 @@ run_all_uplinks() {
 
 acquire_source_lock() {
  local key owner
- key="$(printf '%s:%s' "$DEVICE" "$LOCAL_IPV4" | cksum | awk '{print $1}')"
+ # Validated identity is unique without an optional BusyBox applet or hash.
+ valid_device_name "$DEVICE" && is_campus_ipv4 "$LOCAL_IPV4" || return 1
+ key="$DEVICE-$LOCAL_IPV4"
  SOURCE_LOCK="$STATE_DIR/source-$key.lock"
  SOURCE_STATE="$STATE_DIR/source-$key.json"
  if ! mkdir "$SOURCE_LOCK" 2>/dev/null; then

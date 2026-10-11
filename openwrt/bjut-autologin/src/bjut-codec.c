@@ -3,6 +3,7 @@
 // off argv prevents them from being exposed by `ps` while curl is running.
 
 #include <errno.h>
+#include <inttypes.h>
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -218,7 +219,7 @@ static int validate_ipv6(const unsigned char *data, size_t length)
 
 static void usage(const char *program)
 {
-    fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6} < input\n", program);
+    fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6|id32} < input\n", program);
 }
 
 int main(int argc, char **argv)
@@ -249,6 +250,14 @@ int main(int argc, char **argv)
         result = write_base64(data, length);
     } else if (strcmp(argv[1], "validate-ipv6") == 0) {
         result = validate_ipv6(data, length);
+    } else if (strcmp(argv[1], "id32") == 0) {
+        /* A portable identifier, never a password or authentication hash. */
+        uint32_t value = UINT32_C(2166136261);
+        size_t index;
+        for (index = 0; index < length; index++) {
+            value = (value ^ data[index]) * UINT32_C(16777619);
+        }
+        result = printf("%" PRIu32, value) < 0 ? -1 : 0;
     } else {
         usage(argv[0]);
         free(data);

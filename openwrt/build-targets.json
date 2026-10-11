@@ -1,7 +1,7 @@
 {
   "releases": [
-    { "version": "24.10.8", "format": "ipk" },
-    { "version": "25.12.5", "format": "apk" }
+    { "version": "25.12.5", "format": "apk" },
+    { "version": "24.10.8", "format": "ipk" }
   ],
   "platforms": [
     { "target": "x86/64", "arch": "x86_64" },

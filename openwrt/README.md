@@ -43,7 +43,7 @@ make package/bjut-autologin/compile V=s
 make package/luci-app-bjut-autologin/compile V=s
 ```
 
-生成的 IPK/APK 位于 SDK 的 `bin/packages/` 或 `bin/targets/` 下。核心包会依赖 `curl`、`ca-bundle`、`rpcd-mod-iwinfo`、`rpcd`、`ip-full`、`jshn` 和 `jsonfilter`；`rpcd-mod-iwinfo` 同时兼容传统无线脚本和不提供独立 `iwinfo` 命令的新版 `wifi-scripts-ucode`。
+生成的 IPK/APK 位于 SDK 的 `bin/packages/` 或 `bin/targets/` 下。核心包会依赖 `curl`、`ca-bundle`、`rpcd-mod-iwinfo`、`rpcd`、`ip-full`、`coreutils-sha256sum`、`jshn` 和 `jsonfilter`；`rpcd-mod-iwinfo` 同时兼容传统无线脚本和不提供独立 `iwinfo` 命令的新版 `wifi-scripts-ucode`。
 
 安装时先装核心，再按需安装 LuCI：
 
@@ -108,7 +108,7 @@ config account 'student_a'
 - `accounts` 指定此上游的账号范围，按账号页顺序尝试；留空使用所有已启用账号。停用只影响自动登录，手动登录、计费查询和 App 同步仍可选用。
 - `login_type=auto` 按接口与门户选择协议；`172.26/16` 有线优先确认 lgn，可固定 `type1/type2/type3`。
 - `expected_ssid/expected_bssid` 可限制无线网络。`legacy_http` 无线仍要求精确 BSSID；默认保持安全模式。
-- 默认每 20 秒检查，单次请求超时 3 秒。IPv4/IPv6 同时检测，并用多个证书校验通过的 HTTPS 目标作为补充，固定公网地址避免 DNS 单点问题。
+- 默认每 20 秒检查，单次请求超时 3 秒。LuCI 每 2 秒读取状态，保留最近一次完成的结果，同时显示正在进行的检测步骤。IPv4/IPv6 同时检测，并用多个证书校验通过的 HTTPS 目标作为补充，固定公网地址避免 DNS 单点问题。
 - 宿舍 `online_list` 与 lgn 账号信息用于确认会话。已认证但公网探测失败时保留登录；网络错误、未知响应、已在线结果不会自动轮换账号。明确拒绝才尝试下一账号，各上游独立冷却。
 
 ### mwan3 与出口路由
@@ -142,13 +142,27 @@ logread -e bjut-autologin
 
 ## 计费与 App 协作
 
-LuCI 的“网络 → BJUT 自动登录 → 计费系统”分别选择上游与账号，查询余额、流量、账户状态和在线设备。计费请求固定到 `172.21.0.16`，保持 HTTPS 域名与证书验证；支持在页面中刷新、填写验证码。先显示已读取的概览，再加载在线设备。管理员、上游、账号和源地址隔离会话，刷新时复用当前会话，账号密码或出口变化后重新建立。
+LuCI 的“网络 → BJUT 自动登录 → 计费系统”打开后自动查询各条上游，优先通过 lgn2jfself 免密跳转获取当前认证账号，无法使用时按上游账号分配回退。同一账号通过多条上游查询时，余额合计只统计一次。也可选择单条上游或已保存账号，查询余额、流量、账户状态和在线设备。计费请求固定到 `172.21.0.16`，保持 HTTPS 域名与证书验证；支持在页面中刷新、填写验证码。先显示已读取的概览，再加载在线设备。管理员、上游、账号和源地址隔离会话，刷新时复用当前会话，账号密码或出口变化后重新建立。
 
-App 与路由端均升级到 0.1.6 后，在 App 的“设置 → 路由协作”填写路由器 HTTPS 地址与现有管理账号。自签证书可填写路由器证书文件（通常为 `/etc/uhttpd.crt`）的 PEM 内容；App 只信任填写的具体证书，并验证 TLS 握手签名。两端独立运行，连接管理不会替换 App 的本地网络判断。
+App 与路由端均升级到 0.1.6 后，在 App 的“设置 → 路由协作”填写路由器 HTTPS 地址与现有管理账号。首次遇到自签证书时，App 会读取证书并显示 SHA-256 指纹供确认；确认后只信任这个具体证书，并验证 TLS 握手签名。也可手动粘贴 PEM 证书。两端独立运行，连接管理不会替换 App 的本地网络判断。
 
 连接后可以查看所有上游，按上游、指定账号发起登录，并勾选 App 账号同步到路由器。同步仅新增或更新勾选账号，保留其他账号、排序、协议限制和上游分配；保存失败时保留原配置。路由管理密码和会话令牌只留在 App 内存，不写入日志或设置备份。路由端的账号仍按下方 UCI 安全原则保存。
 
 协作使用已有 uhttpd/rpcd，接口为 `bjut-autologin`、协议 `apiVersion=1`，不新建匿名服务，不提供任意文件或命令接口。路由器需启用 HTTPS 管理和 `/ubus` 接口；标准 LuCI 通常已安装 `uhttpd-mod-ubus`，仅安装本体的设备需从对应固件的软件源补齐。LuCI 管理账号需要相应 ACL 权限；若已有权限受限的管理账号，可授予 `bjut-autologin-app` 组。不要为此修改 GitHub Actions 权限。
+
+### 路由器尚未开启 HTTPS
+
+App 的管理连接需要 HTTPS。若 `uci -q get uhttpd.main.listen_https` 没有输出，可在路由器上启用 LAN 地址的 HTTPS 监听。例如管理地址为 `192.168.1.1`：
+
+```sh
+uci add_list uhttpd.main.listen_https='192.168.1.1:443'
+uci commit uhttpd
+/etc/init.d/uhttpd restart
+```
+
+保留已有的 `cert`、`key` 和 `/ubus` 配置；若未配置，请参考 [OpenWrt 的 uhttpd 默认配置](https://github.com/openwrt/openwrt/blob/master/package/network/services/uhttpd/files/uhttpd.config)，补齐 TLS 支持及 `uhttpd-mod-ubus`。重启后若仍无 HTTPS 监听，检查 `logread -e uhttpd`。此操作只监听所填 LAN 地址，不需要放行 WAN 管理。
+
+使用 `https://192.168.1.1` 重新连接，在 App 内核对并确认指纹即可。证书变化时需要重新核对，不会自动替换已信任证书。系统提示 App 的本地网络权限时应允许访问所连接路由器。
 
 ## 安全说明
 
