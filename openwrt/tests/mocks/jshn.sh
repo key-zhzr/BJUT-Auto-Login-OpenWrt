@@ -8,6 +8,13 @@ json_load() {
 	_MOCK_JSON="$(printf '%s' "$1" | python3 -c 'import json,sys; s=json.dumps(json.load(sys.stdin),ensure_ascii=False,separators=(",",":")); print(s[1:-1])')"
 }
 
+json_get_keys() {
+	local target="$1" _mock_keys
+	_mock_keys="$(printf '{%s}' "$_MOCK_JSON" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin).keys()))')"
+	# The assignment expression is fixed; JSON values are never evaluated as code.
+	eval "$target=\$_mock_keys"
+}
+
 _json_escape() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
 }

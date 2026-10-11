@@ -52,7 +52,7 @@ def validate_json():
 
 
 def validate_javascript():
-    sources = sorted((LUCI / "htdocs/luci-static/resources/view/bjut-autologin").glob("*.js"))
+    sources = sorted((LUCI / "htdocs/luci-static/resources").rglob("*.js"))
     # LuCI view modules deliberately use a top-level return. Compiling inside
     # Function matches LuCI's loader while still catching JavaScript syntax errors.
     program = "const fs=require('fs'); new Function(fs.readFileSync(process.argv[1], 'utf8'));"
@@ -85,6 +85,7 @@ def validate_c_with_sanitizers():
             source, "-o", binary,
         ])
         cases = [
+            ("random16", b"", 0),
             ("urlencode", b"a b&%\xf0\x9f\x99\x82", 0),
             ("eportal", "密码🙂".encode(), 0),
             ("base64", b"10.126.21.113", 0),

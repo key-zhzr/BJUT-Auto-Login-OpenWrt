@@ -23,7 +23,9 @@ mwan_begin() {
  fi
  printf '%s\n' "$$" >"$STATE_DIR/mwan-lock/pid"
  MWAN_STAGE="$(mktemp -d "$STATE_DIR/mwan.XXXXXX")" || { rm -rf "$STATE_DIR/mwan-lock"; return 1; }
- MWAN_PACKAGE="bjut_mwan_$(dd if=/dev/urandom bs=8 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+ # The private staging directory already isolates this transaction. Avoid an
+ # optional BusyBox applet just to name its UCI package.
+ MWAN_PACKAGE="bjut_mwan_$$"
  cp "$MWAN_ORIGINAL" "$MWAN_STAGE/$MWAN_PACKAGE" && cp "$MWAN_ORIGINAL" "$MWAN_STAGE/original" || { rm -rf -- "$MWAN_STAGE" "$STATE_DIR/mwan-lock"; return 1; }
  MWAN_CHANGED=0
 }

@@ -68,6 +68,10 @@ class PackageBuildTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Release tag must match', result.stderr)
         self.assertEqual(output.read_text(), content)
+        result = subprocess.run(command + ['openwrt-v' + build.package_version() + '-r' + build.package_revision()], env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(command + ['openwrt-v' + build.package_version() + '-r999'], env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_collect_preserves_both_package_contents_and_checksums(self):
         source = self.fixture()

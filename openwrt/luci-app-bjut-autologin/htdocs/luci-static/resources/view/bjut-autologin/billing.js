@@ -2,6 +2,7 @@
 'require view';
 'require rpc';
 'require poll';
+'require bjut-autologin.workbench as bjut';
 
 const status = rpc.declare({ object: 'bjut-autologin', method: 'status', expect: {} });
 const accounts = rpc.declare({ object: 'bjut-autologin', method: 'accounts', expect: {} });
@@ -23,8 +24,8 @@ return view.extend({
 			return E('option', { value: item.id }, item.user + (item.enabled ? '' : _('（手动）')));
 		})));
 		const message = E('p');
-		const summary = E('div', { 'class': 'cbi-section', style: 'padding:16px;overflow-wrap:anywhere', hidden: true });
-		const details = E('div');
+		const summary = E('div', { 'class': 'bj-card', hidden: true });
+		const details = E('div', {'class':'bj-billing-grid'});
 		const submit = E('button', { 'class': 'btn cbi-button-action', type: 'button', style: 'min-height:42px', click: refresh }, _('刷新查询'));
 		const selectors = E('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:16px' }, [
 			E('label', { style: 'flex:1;min-width:180px;max-width:100%' }, [E('div', {}, _('上游')), uplink]),
@@ -38,6 +39,7 @@ return view.extend({
 			const balances = items.map(function(item) { return item.balance === '' || item.balance == null ? NaN : Number(item.balance); });
 			const completed = jobs.filter(function(job) { return !job.running && job.started; }).length;
 			busy = jobs.some(function(job) { return job.running || !job.started; }); submit.disabled = busy;
+			uplink.disabled = busy; account.disabled = busy;
 			message.textContent = (busy ? _('正在查询各条上游…') : _('查询已结束')) + ' ' + completed + ' / ' + jobs.length;
 			summary.hidden = !items.length;
 			summary.replaceChildren(E('h3', {}, _('账号汇总')), row(_('已查询账号'), items.length),
@@ -64,12 +66,12 @@ return view.extend({
 			if (!selected.length) { message.textContent = _('请先在校园网设置中添加上游。'); return; }
 			jobs = selected.map(function(item) { return { uplink: item.id, account: account.value || 'current', started: false, running: false, ticket: '', item: null,
 				content: E('div', {}, _('等待查询…')), title: [item.id, item.network, item.device].filter(Boolean).join(' · ') }; });
-			details.replaceChildren.apply(details, jobs.map(function(job) { return E('div', { 'class': 'cbi-section', style: 'padding:16px;min-width:0;overflow-wrap:anywhere' }, [E('h3', {}, job.title), job.content]); }));
+			details.replaceChildren.apply(details, jobs.map(function(job) { return E('div', { 'class': 'bj-card' }, [E('h3', {}, job.title), job.content]); }));
 			updateSummary(); pump();
 		}
 		uplink.addEventListener('change', refresh); account.addEventListener('change', refresh);
 		function overview(item) {
-			return [row(_('账号'), item.account), row(_('登录方式'), item.access), row(_('余额'), item.balance === '' ? '' : item.balance + ' 元'), row(_('剩余流量'), item.remainingFlow === '' ? '' : item.remainingFlow + ' MB'), row(_('状态'), item.accountStatus), row(_('套餐'), item.package)];
+			return [row(_('账号'), item.account), row(_('余额'), item.balance === '' ? '' : Number(item.balance).toFixed(2) + ' 元'), row(_('剩余流量'), item.remainingFlow === '' ? '' : (Number(item.remainingFlow)/1024).toFixed(2) + ' GB'), row(_('状态'), item.accountStatus), row(_('套餐'), item.package)];
 		}
 		function showCaptcha(job, item) {
 			const input = E('input', { type: 'text', maxlength: 12, autocomplete: 'off', placeholder: _('验证码'), 'class': 'cbi-input-text' });
@@ -95,7 +97,8 @@ return view.extend({
 					if (item.state === 'captcha') { job.running = false; showCaptcha(job, item); }
 					else {
 						const cards = item.account ? overview(item) : [];
-						cards.unshift(E('p', {}, item.message + (item.state === 'loading' ? ' · ' + (item.percent || 0) + '%' : '')));
+						cards.unshift(E('p', {}, item.message || _('等待查询')));
+						if (item.state === 'loading') cards.push(E('progress', {max:100,value:item.percent || 2}));
 						if (item.state !== 'loading') job.running = false;
 						if (item.state === 'ready') {
 							cards.push(E('h4', {}, _('在线设备')));
@@ -109,6 +112,6 @@ return view.extend({
 			updateSummary(); pump();
 		}, 2);
 		Promise.resolve().then(refresh);
-		return E('div', { 'class': 'cbi-map' }, [E('h2', {}, _('计费系统')), E('p', {}, _('自动查询各条上游的当前账号，也可选择已保存账号。')), selectors, message, summary, details]);
+		return E('div', { 'class': 'bjut-workbench' }, [bjut.style(),E('h2', {}, _('计费系统')), selectors, message, summary, details]);
 	}
 });

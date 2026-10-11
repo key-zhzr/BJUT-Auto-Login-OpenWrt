@@ -68,6 +68,8 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(self.status()['state'], 'authenticated_limited')
         self.assertEqual(self.status()['session'], 'online')
         self.assertEqual(self.status()['offline_count'], 0)
+        self.assertEqual(self.status()['account'], '25***09')
+        self.assertNotIn('25000009', json.dumps(self.status()))
         self.assertNotIn('/eportal/portal/login?', self.requests())
 
     def test_public_preauth_allowlist_does_not_hide_explicitly_offline_session(self):
@@ -191,6 +193,75 @@ class MultiUplinkTests(unittest.TestCase):
         response = self.rpc('billing_poll', {'ticket':'../passwd','owner':'1'*32}, **env)
         self.assertEqual(json.loads(response.stdout)['state'], 'error')
         self.assertNotIn('root:', response.stdout)
+
+    def test_billing_starts_without_od_or_hexdump(self):
+        env = self.config()
+        tools = self.temp / 'missing-applets'; tools.mkdir()
+        for name in ('od', 'hexdump'):
+            stub = tools / name
+            stub.write_text('#!/bin/sh\necho optional-applet-was-called >&2\nexit 127\n'); stub.chmod(0o755)
+        response = self.rpc('billing_start', {'uplink':'dorm_a','account':'current','owner':'1'*32},
+                            BJUT_BILLING='/nonexistent/worker', PATH=str(tools)+os.pathsep+os.environ['PATH'], **env)
+        self.assertRegex(json.loads(response.stdout)['ticket'], r'^[0-9a-f]{32}$')
+        self.assertNotIn('optional-applet-was-called', response.stderr)
+
+    def test_missing_ticket_generator_returns_useful_error(self):
+        response = self.rpc('billing_start', {'uplink':'dorm_a','account':'current','owner':'1'*32},
+                            BJUT_CODEC='/usr/bin/false', **self.config())
+        self.assertEqual(json.loads(response.stdout)['state'], 'error')
+
+    def test_ports_use_selected_device_counters_and_skip_invalid_paths(self):
+        env = self.config()
+        for device in ('lan3', 'lan4'):
+            target = self.sys_net / device
+            (target/'statistics').mkdir()
+            (target/'carrier').write_text('1\n'); (target/'speed').write_text('2500\n')
+            (target/'statistics/rx_bytes').write_text('9007199254740993\n')
+            (target/'statistics/tx_bytes').write_text('12345\n')
+        response = self.rpc('ports', {}, **env)
+        ports = json.loads(response.stdout)['ports']
+        self.assertEqual([p['device'] for p in ports], ['lan3','lan4'])
+        self.assertTrue(all(p['rxBytes']=='9007199254740993' and p['linkUp']==1 for p in ports))
+        self.assertNotIn('password', response.stdout)
+
+    def test_settings_have_effective_defaults_and_no_saved_passwords(self):
+        response = self.rpc('settings', {}, **self.config())
+        data = json.loads(response.stdout)
+        self.assertEqual(data['service']['managed_routes'], '1')
+        self.assertEqual(data['service']['offline_confirmations'], '2')
+        self.assertNotIn('fixture password', response.stdout)
+        self.assertNotIn('password', response.stdout)
+
+    def test_settings_and_account_toggle_preserve_uplink_assignment_and_credentials(self):
+        env = self.config(); path = Path(env['MOCK_CONFIG_JSON'])
+        original = json.loads(path.read_text())
+        response = self.rpc('save_settings', {'interval':'12','timeout':'2'}, **env)
+        self.assertEqual(json.loads(response.stdout)['state'], 'ready', response.stderr)
+        current = json.loads(path.read_text())
+        self.assertEqual(current['main']['interval'], '12')
+        self.assertEqual(current['dorm_a'], original['dorm_a'])
+        self.assertEqual(current['account1'], original['account1'])
+        response = self.rpc('account_set', {'account':'account1','enabled':'0'}, **env)
+        self.assertEqual(json.loads(response.stdout)['state'], 'ready', response.stderr)
+        current = json.loads(path.read_text())
+        self.assertEqual(current['account1']['enabled'],'0')
+        self.assertEqual(current['account1']['password'],original['account1']['password'])
+        self.assertEqual(current['dorm_a']['accounts'],['account1'])
+
+    def test_invalid_or_unrelated_settings_cannot_modify_configuration(self):
+        env = self.config(); original = Path(env['MOCK_CONFIG_JSON']).read_bytes()
+        for args in ({'interval':'0'}, {'timeout':'999'}, {'interval':'600'}, {'password':'secret'}, {'network':'wan;reboot'}):
+            result = self.rpc('save_settings', args, **env)
+            self.assertEqual(json.loads(result.stdout)['state'],'error',result.stderr)
+            self.assertEqual(Path(env['MOCK_CONFIG_JSON']).read_bytes(),original)
+
+    def test_existing_config_transaction_prevents_overlapping_writes(self):
+        env = self.config(); original = Path(env['MOCK_CONFIG_JSON']).read_bytes()
+        lock = self.state/'config-lock'; lock.mkdir(); (lock/'pid').write_text(str(os.getpid()))
+        result = self.rpc('account_set', {'account':'account1','enabled':'0'}, **env)
+        self.assertEqual(json.loads(result.stdout)['state'],'error')
+        self.assertEqual(Path(env['MOCK_CONFIG_JSON']).read_bytes(),original)
+        self.assertTrue(lock.exists())
 
     def test_mwan_rules_match_only_selected_source_and_preserve_existing_policies(self):
         env = self.config()

@@ -219,7 +219,7 @@ static int validate_ipv6(const unsigned char *data, size_t length)
 
 static void usage(const char *program)
 {
-    fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6|id32} < input\n", program);
+    fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6|id32|random16} < input\n", program);
 }
 
 int main(int argc, char **argv)
@@ -231,6 +231,25 @@ int main(int argc, char **argv)
     if (argc != 2) {
         usage(argv[0]);
         return 2;
+    }
+    if (strcmp(argv[1], "random16") == 0) {
+        unsigned char random[16];
+        FILE *source = fopen("/dev/urandom", "rb");
+        size_t index;
+        if (source == NULL) {
+            return 1;
+        }
+        result = fread(random, 1, sizeof(random), source) == sizeof(random) ? 0 : 1;
+        fclose(source);
+        if (result != 0) {
+            return result;
+        }
+        for (index = 0; index < sizeof(random); index++) {
+            if (printf("%02x", random[index]) < 0) {
+                return 1;
+            }
+        }
+        return putchar('\n') == EOF ? 1 : 0;
     }
     if (read_stdin(&data, &length) != 0) {
         perror("bjut-codec: input");

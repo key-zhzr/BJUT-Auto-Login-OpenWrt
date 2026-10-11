@@ -25,6 +25,19 @@ def package_version(root=ROOT):
     return versions[0]
 
 
+def package_revision(root=ROOT):
+    revisions = []
+    for package in PACKAGES:
+        text = (root / 'openwrt' / package / 'Makefile').read_text()
+        match = re.search(r'^PKG_RELEASE:=(\d+)$', text, re.MULTILINE)
+        if not match:
+            raise ValueError(f'Missing package revision: {package}')
+        revisions.append(match[1])
+    if len(set(revisions)) != 1:
+        raise ValueError('Core and LuCI package revisions must match')
+    return revisions[0]
+
+
 def build_matrix(package_format='all', platform='all'):
     config = json.loads((ROOT / 'openwrt/build-targets.json').read_text())
     if package_format not in ('all', 'ipk', 'apk'):
@@ -144,7 +157,7 @@ def main():
     args = parser.parse_args()
     if args.command == 'plan':
         version = package_version()
-        if args.tag and args.tag != 'openwrt-v' + version:
+        if args.tag and args.tag not in ('openwrt-v' + version, 'openwrt-v' + version + '-r' + package_revision()):
             raise ValueError('Release tag must match core and LuCI package versions')
         matrix = build_matrix(args.format, args.platform)
         encoded = json.dumps(matrix, separators=(',', ':'))

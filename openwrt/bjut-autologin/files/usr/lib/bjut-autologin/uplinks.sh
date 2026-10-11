@@ -168,7 +168,7 @@ online_check() {
 }
 
 read_portal_session() {
-	local protocol="$1" url base resolve profile host total result ips account
+	local protocol="$1" url base resolve profile host total result ips account index row_ip
 	SESSION_STATE=unknown
 	case "$protocol" in
 		type1)
@@ -185,6 +185,21 @@ read_portal_session() {
 			ips="$(printf '%s' "$JSONP_PAYLOAD" | "$JSONFILTER_BIN" -e '@.list[*].online_ip' 2>/dev/null)"
 			if [ "$result" = 1 ] && printf '%s\n' "$ips" | grep -Fxq "$LOCAL_IPV4"; then
 				SESSION_STATE=online
+				# External scripts may have switched this port's account. Report
+				# only the server-confirmed row for this exact physical source.
+				index=0
+				while [ "$index" -lt 64 ]; do
+					row_ip="$(jsonp_value "@.list[$index].online_ip")"
+					[ -n "$row_ip" ] || break
+					if [ "$row_ip" = "$LOCAL_IPV4" ]; then
+						account="$(jsonp_value "@.list[$index].user_account")"
+						case "$account" in ''|*[!A-Za-z0-9_@.,-]*) ;; *)
+							OBSERVED_ACCOUNT="$(mask_username "$account")"; RUNTIME_ACCOUNT="$OBSERVED_ACCOUNT" ;;
+						esac
+						break
+					fi
+					index=$((index + 1))
+				done
 			elif [ "$result" = 1 ] && [ "$total" = 0 ] && [ "$(jsonp_value '@.list' | tr -d '[:space:]')" = '[]' ]; then
 				SESSION_STATE=offline
 			elif [ "$result" = 0 ]; then
@@ -213,7 +228,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
-	printf '{"apiVersion":1,"version":"%s","uplinks":[' "$VERSION"
+	printf '{"apiVersion":1,"version":"%s","capabilities":["ports","billing","logs","settings","account_set"],"uplinks":[' "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"

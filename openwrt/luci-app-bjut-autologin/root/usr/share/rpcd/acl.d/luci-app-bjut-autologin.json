@@ -14,6 +14,9 @@
         "bjut-autologin": [
           "status",
           "accounts",
+          "ports",
+          "logs",
+          "settings",
           "billing_poll"
         ]
       }
@@ -25,6 +28,7 @@
       "ubus": {
         "bjut-autologin": [
           "login",
+          "account_set",
           "billing_start",
           "billing_captcha"
         ]

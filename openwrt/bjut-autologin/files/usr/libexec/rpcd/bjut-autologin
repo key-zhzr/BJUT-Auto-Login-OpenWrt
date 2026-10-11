@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # rpcd checks the caller's session/ACL before executing these named methods.
 if [ "$1" = list ]; then
-	printf '%s\n' '{"status":{},"accounts":{},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true}}'
+	printf '%s\n' '{"status":{},"accounts":{},"ports":{},"logs":{},"settings":{},"save_settings":{"enabled":"","interval":"","timeout":"","offline_confirmations":"","managed_routes":"","mwan3":"","log_level":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true}}'
 	exit 0
 fi
 [ "$1" = call ] || exit 2
@@ -12,9 +12,10 @@ BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$LIB_DIR/mwan.sh" || exit 1
 . "$LIB_DIR/billing.sh" || exit 1
 . "$LIB_DIR/routing.sh" || exit 1
+. "$LIB_DIR/workbench.sh" || exit 1
 mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR" || exit 1
 REQUEST="$(mktemp "$STATE_DIR/rpc.XXXXXX")" || exit 1
-trap 'rm -f -- "$REQUEST"' 0
+trap 'rm -f -- "$REQUEST"; configuration_unlock' 0
 head -c 131073 >"$REQUEST"
 [ "$(wc -c <"$REQUEST" | tr -d '[:space:]')" -le 131072 ] || exit 2
 load_configuration || exit 1
@@ -29,7 +30,7 @@ reply() {
 
 request_value() { json_file_value "$REQUEST" "@.$1"; }
 valid_ticket() { case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = 32 ]; }
-random_ticket() { dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+random_ticket() { "$CODEC_BIN" random16; }
 owner_hash() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 uci_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
 
@@ -50,11 +51,14 @@ accounts_list() {
 
 sync_accounts() {
 	local payload stage index=0 user password enabled section existing original count=0 result=0 is_new seen="" package newfile
+	configuration_lock || { reply error "另一项设置正在保存，请稍后重试"; return; }
 	payload="$STATE_DIR/accounts.$$.json"
 	request_value payload >"$payload"
 	stage="$(mktemp -d "$STATE_DIR/config.XXXXXX")" || return 1
 	original="${BJUT_CONFIG_DIR:-/etc/config}/bjut-autologin"
-	package="bjut_sync_$(random_ticket)"
+	package="$(random_ticket)"
+	valid_ticket "$package" || { rm -rf "$stage" "$payload"; reply error "无法准备账号同步，请更新路由端"; return; }
+	package="bjut_sync_$package"
 	cp "$original" "$stage/$package" || { rm -rf "$stage" "$payload"; return 1; }
 	cp "$original" "$stage/original"
 	while [ "$index" -lt 32 ]; do
@@ -122,7 +126,8 @@ billing_begin() {
 	# Delete expired jobs, cookies and captured login forms from volatile storage.
 	now="$(date +%s)"
 	billing_collect_expired "$now"
-	ticket="$(random_ticket)"; valid_ticket "$ticket" || return 1
+	ticket="$(random_ticket)"
+	valid_ticket "$ticket" || { reply error "无法准备计费查询，请更新路由端"; return; }
 	BILLING_JOB="$STATE_DIR/billing/$ticket"; mkdir "$BILLING_JOB" || return 1
 	owner="$(owner_hash "$owner")"; [ "${#owner}" = 64 ] || { rm -rf -- "$BILLING_JOB"; reply error "请重新安装路由端以补齐所需组件"; return; }
 	printf '%s' "$owner" >"$BILLING_JOB/owner"
@@ -169,6 +174,11 @@ session_rows() {
 case "$2" in
 	status) print_all_status ;;
 	accounts) accounts_list ;;
+	ports) workbench_ports ;;
+	logs) workbench_logs ;;
+	settings) workbench_settings ;;
+	save_settings) workbench_save_settings ;;
+	account_set) workbench_account_set ;;
 	login)
 		uplink="$(request_value uplink)"; account="$(request_value account)"
 		select_uplink "$uplink" || { reply error "所选上游不可用"; exit 0; }

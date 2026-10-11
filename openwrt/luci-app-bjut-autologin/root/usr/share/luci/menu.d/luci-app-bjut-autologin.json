@@ -12,8 +12,8 @@
     }
   },
   "admin/network/bjut-autologin/config": {
-    "title": "状态与设置",
-    "order": 10,
+    "title": "设置",
+    "order": 60,
     "action": {
       "type": "view",
       "path": "bjut-autologin/config"
@@ -21,10 +21,42 @@
   },
   "admin/network/bjut-autologin/billing": {
     "title": "计费系统",
-    "order": 20,
+    "order": 30,
     "action": {
       "type": "view",
       "path": "bjut-autologin/billing"
+    }
+  },
+  "admin/network/bjut-autologin/overview": {
+    "title": "控制台",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/overview"
+    }
+  },
+  "admin/network/bjut-autologin/accounts": {
+    "title": "账号管理",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/accounts"
+    }
+  },
+  "admin/network/bjut-autologin/diagnostics": {
+    "title": "网络诊断",
+    "order": 40,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/diagnostics"
+    }
+  },
+  "admin/network/bjut-autologin/logs": {
+    "title": "运行日志",
+    "order": 50,
+    "action": {
+      "type": "view",
+      "path": "bjut-autologin/logs"
     }
   }
 }

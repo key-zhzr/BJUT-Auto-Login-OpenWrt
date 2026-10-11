@@ -55,6 +55,12 @@ class OpenWrtPortTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
         ).stdout.decode()
 
+    def test_random_ticket_needs_no_optional_busybox_applet(self):
+        tokens = {self.codec_run('random16', '').strip() for _ in range(64)}
+        self.assertEqual(len(tokens), 64)
+        for token in tokens:
+            self.assertRegex(token, r'^[0-9a-f]{32}$')
+
     @staticmethod
     def python_eportal(value):
         encoded = value.encode("utf-16-be")

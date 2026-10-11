@@ -1,83 +1,15 @@
 'use strict';
 'require view';
 'require form';
-'require fs';
-'require rpc';
-'require poll';
 'require uci';
 'require tools.widgets as widgets';
 
-const callStatus = rpc.declare({ object: 'bjut-autologin', method: 'status', expect: {} });
-function readStatus() { return L.resolveDefault(callStatus(), null); }
-
-function statusLabel(state) {
-	const labels = {
-		stopped: _('未运行'),
-		busy: _('此出口正在检测'),
-		online: _('互联网已连接'),
-		authenticated_limited: _('认证有效，外网探测受限'),
-		probe_uncertain: _('连通性待确认，保留登录'),
-		offline_suspected: _('正在复核离线状态'),
-		cooldown: _('等待安全重试'),
-		waiting_interface: _('等待上游接口'),
-		portal_not_found: _('未发现认证门户'),
-		portal_not_ready: _('认证门户尚未就绪'),
-		blocked: _('安全策略已阻止'),
-		login_accepted: _('登录已受理，等待复核'),
-		auth_rejected: _('账号被拒绝'),
-		no_account: _('没有适用账号'),
-		request_failed: _('认证结果不明确')
-	};
-	return labels[state] || state || _('未知');
-}
-
-function routeLabel(value) {
-	return { managed:_('固定出口'), kernel:_('系统路由'), missing_default:_('缺少默认路由'), failed:_('出口未就绪'), not_configured:_('未取得地址') }[value] || _('待检查');
-}
-function probeLabel(value) {
-	return { reachable:_('通过'), unreachable:_('未通过'), not_configured:_('未取得地址') }[value] || _('待检测');
-}
-
-function statusPanel(status) {
-	if (status && status.uplinks) return E('div', { id: 'bjut-status' }, status.uplinks.map(statusPanel));
-	if (!status) {
-		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, _('运行状态')),
-			E('p', {}, _('尚无运行状态。保存并应用配置、启用服务后再刷新本页。'))
-		]);
-	}
-
-	const rows = [
-		[_('状态'), statusLabel(status.state)],
-		[_('说明'), status.message || '-'],
-		[_('IPv4 上游'), [status.network, status.device, status.ipv4, routeLabel(status.route4)].filter(Boolean).join(' / ') || '-'],
-		[_('IPv6 上游'), [status.network6, status.device6, status.ipv6, routeLabel(status.route6)].filter(Boolean).join(' / ') || '-'],
-		[_('外网探测'), 'IPv4: ' + probeLabel(status.internet4) + ' / IPv6: ' + probeLabel(status.internet6)],
-		[_('网络身份'), [status.transport, status.ssid, status.bssid].filter(Boolean).join(' / ') || '-'],
-		[_('认证协议'), status.protocol || '-'],
-		[_('最近账号'), status.account || '-'],
-		[_('更新时间'), status.updated_at ? new Date(status.updated_at * 1000).toLocaleString() : '-'],
-		[_('下次重试'), status.next_attempt ? new Date(status.next_attempt * 1000).toLocaleString() : '-']
-	];
-	if (status.checking) rows.splice(2, 0, [_('当前检测'), status.check_message || _('正在检测…')]);
-
-	return E('div', { 'class': 'cbi-section' }, [
-		E('h3', {}, _('运行状态')),
-		E('div', { 'class': 'table' }, rows.map(function(row) {
-			return E('div', { 'class': 'tr' }, [
-				E('div', { 'class': 'td left', 'style': 'width:25%' }, row[0]),
-				E('div', { 'class': 'td left' }, row[1])
-			]);
-		}))
-	]);
-}
-
 return view.extend({
 	load: function() {
-		return Promise.all([readStatus(), uci.load('bjut-autologin')]).then(function(data) { return data[0]; });
+		return uci.load('bjut-autologin');
 	},
 
-	render: function(status) {
+	render: function() {
 		let m, s, o;
 
 		m = new form.Map('bjut-autologin', _('BJUT 自动登录'),
@@ -241,10 +173,6 @@ return view.extend({
 		o.value('type3', _('仅 lgn 有线'));
 		o.default = 'auto';
 
-		return m.render().then(function(mapNode) {
-			const panel = E('div', {}, [statusPanel(status)]);
-			poll.add(function() { return readStatus().then(function(next) { panel.replaceChildren(statusPanel(next)); }); }, 2);
-			return E([], [panel, mapNode]);
-		});
+		return m.render();
 	}
 });

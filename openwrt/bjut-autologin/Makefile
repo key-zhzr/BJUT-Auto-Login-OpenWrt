@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -63,6 +63,8 @@ define Package/bjut-autologin/install
 	$(INSTALL_BIN) ./files/usr/libexec/rpcd/bjut-autologin $(1)/usr/libexec/rpcd/bjut-autologin
 	$(INSTALL_DIR) $(1)/usr/lib/bjut-autologin
 	$(INSTALL_DATA) ./files/usr/lib/bjut-autologin/*.sh $(1)/usr/lib/bjut-autologin/
+	$(INSTALL_DIR) $(1)/www/.well-known
+	$(INSTALL_DATA) ./files/www/.well-known/bjut-autologin.json $(1)/www/.well-known/
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/bjut-autologin.json $(1)/usr/share/rpcd/acl.d/
 	$(INSTALL_DIR) $(1)/usr/sbin

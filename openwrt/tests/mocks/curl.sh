@@ -138,7 +138,7 @@ case "$url" in
 		;;
 	*/eportal/portal/online_list*)
   case "$scenario" in
-   portal_online) code=200; body="dr1002({\"result\":1,\"total\":1,\"list\":[{\"online_ip\":\"${mock_source4}\"}]});" ;;
+   portal_online) code=200; body="dr1002({\"result\":1,\"total\":2,\"list\":[{\"online_ip\":\"10.126.99.1\",\"user_account\":\"25000001\"},{\"online_ip\":\"${mock_source4}\",\"user_account\":\"25000009\"}]});" ;;
    type1_success|type1_pinned|type1_already_online|preauth_public) code=200; body='dr1002({"result":1,"total":0,"list":[]});'; [ ! -e "$success_marker" ] || body="dr1002({\"result\":1,\"total\":1,\"list\":[{\"online_ip\":\"${mock_source4}\"}]});" ;;
    portal_unknown) code=200; body='unexpected response' ;;
   esac

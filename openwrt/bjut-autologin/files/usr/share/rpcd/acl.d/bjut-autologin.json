@@ -1,7 +1,7 @@
 {
   "bjut-autologin-app": {
-    "description": "BJUT App status, per-uplink login and account sync",
-    "read": { "ubus": { "bjut-autologin": [ "status", "accounts", "billing_poll" ] } },
-    "write": { "ubus": { "bjut-autologin": [ "login", "sync_accounts", "billing_start", "billing_captcha" ] } }
+    "description": "BJUT App router workbench",
+    "read": { "ubus": { "bjut-autologin": [ "status", "accounts", "ports", "logs", "settings", "billing_poll" ] } },
+    "write": { "ubus": { "bjut-autologin": [ "login", "sync_accounts", "account_set", "save_settings", "billing_start", "billing_captcha" ] } }
   }
 }
