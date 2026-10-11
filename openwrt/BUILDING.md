@@ -68,4 +68,4 @@ opkg --force-downgrade install /tmp/openwrt-*__luci-app-bjut-autologin_0.1.6-*.i
 
 APK 仍使用对应固件的包管理器安装。安装后执行 `bjut-autologin version`，应显示 `0.1.6`；LuCI 包也使用相同版本。
 
-当前 0.1.6 的修复包修订号为 2（IPK `0.1.6-2`、APK `0.1.6-r2`）。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的锁与路由逻辑。
+当前 0.1.6 的修复包修订号为 2，本轮官方 SDK 生成的 IPK/APK 均标记为 `0.1.6-r2`。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的锁与路由逻辑。
