@@ -68,6 +68,8 @@ case "$url" in
    */Self/login/getBrandInfo*) mime=application/json; body='{}' ;;
    */Self/dashboard/getOnlineList*)
     mime=application/json; body='{"rows":[{"sessionId":"fixture-session","ip":"10.126.19.139","ipv6":"2001:db8::1","mac":"aabbccddeeff","useTime":60,"userPassword":"do not expose"}]}'
+    [ "$scenario" != billing_array ] || body='[{"sessionId":"fixture-session","ip":"10.126.19.139","userPassword":"do not expose"}]'
+    [ "$scenario" != billing_empty_sessions ] || body='null'
     [ "$scenario" != billing_sessions_unavailable ] || body='{"error":"session service unavailable"}' ;;
    */Self/static/login.js*) body='/* fixture asset */' ;;
    */Self/dashboard/getLoginHistory*) mime=application/json; body='{"data":[["2026-10-11","2026-10-11","10.126.19.139","","aabbccddeeff",60,42,3,0]]}' ;;

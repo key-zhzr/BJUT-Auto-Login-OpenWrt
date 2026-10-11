@@ -31,6 +31,7 @@ class MultiUplinkTests(unittest.TestCase):
     run_service = base.OpenWrtPortTests.run_service
     requests = base.OpenWrtPortTests.requests
     status = base.OpenWrtPortTests.status
+    minimal_tr_path = base.OpenWrtPortTests.minimal_tr_path
 
     def rpc(self, method, payload, **env):
         scenario = env.pop('MOCK_SCENARIO', 'online')
@@ -321,6 +322,18 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(value['result']['balance'],'42')
         self.assertFalse(value['sessionsAvailable'])
         self.assertEqual(value['sessions'],[])
+
+    def test_billing_arrays_and_empty_lists_work_without_busybox_character_classes(self):
+        env = self.config()
+        env['PATH'] = self.minimal_tr_path()
+        for scenario, count in [('billing_array', 1), ('billing_empty_sessions', 0)]:
+            with self.subTest(scenario=scenario):
+                ticket, owner = self.billing(scenario, env)
+                value = self.billing_poll(ticket, owner, env)
+                self.assertEqual(value['result']['state'], 'ready', value)
+                self.assertTrue(value['sessionsAvailable'], value)
+                self.assertEqual(len(value['sessions']), count)
+                self.assertNotIn('userPassword', json.dumps(value))
 
     def test_wrong_billing_password_is_not_misclassified_as_captcha(self):
         env=self.config(); ticket,owner=self.billing('billing_rejected',env)

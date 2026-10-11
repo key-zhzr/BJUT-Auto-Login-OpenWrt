@@ -102,6 +102,19 @@ class OpenWrtPortTests(unittest.TestCase):
         path = self.state / "requests.log"
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    def minimal_tr_path(self):
+        tools = self.temp / "minimal-tr"
+        tools.mkdir(exist_ok=True)
+        executable = tools / "tr"
+        # OpenWrt may omit FEATURE_TR_CLASSES. Reject classes instead of letting
+        # the host's full tr conceal that incompatibility in portal fixtures.
+        executable.write_text(
+            '#!/bin/sh\ncase "$*" in *"[:"*) exit 127;; esac\n'
+            f'exec "{shutil.which("tr")}" "$@"\n'
+        )
+        executable.chmod(0o755)
+        return str(tools) + os.pathsep + os.environ['PATH']
+
     def test_codec_matches_original_protocol_vectors(self):
         self.assertEqual(self.codec_run("eportal", "dr1005"), "726427262623")
         self.assertEqual(self.codec_run("eportal", "4.2.2"), "2238243824")
@@ -293,6 +306,24 @@ class OpenWrtPortTests(unittest.TestCase):
         self.assertNotIn("172.26.33.104&", log)
         expected = self.python_eportal(",0,25000000")
         self.assertIn(f"user_account={expected}", log)
+
+    def test_type3_and_ssid_work_without_busybox_character_classes(self):
+        path = self.minimal_tr_path()
+        env = self.environment('online', PATH=path, BJUT_SOURCE_ONLY='1')
+        result = subprocess.run(
+            ['sh', '-c', f'. "{SCRIPT}"; known_public_ssid BJUT_WIFI && known_dorm_ssid BJUT_SUSHE'],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_service(
+            scenario='type3_success', PATH=path, MOCK_DEVICE='eth0',
+            MOCK_TRANSPORT_ACTUAL='ethernet', MOCK_LOGIN_TYPE='type3',
+            MOCK_IPV4='172.26.33.104', MOCK_ACCOUNT1_USERNAME='25000000',
+            MOCK_ACCOUNT1_PASSWORD='safe-fixture-password',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status()['protocol'], 'type3')
+        self.assertIn('encrypt=1', self.requests())
 
     def test_type3_matches_upstream_sanitized_har_fields(self):
         from urllib.parse import urlsplit, parse_qs

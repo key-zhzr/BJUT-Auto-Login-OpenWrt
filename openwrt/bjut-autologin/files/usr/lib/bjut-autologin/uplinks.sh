@@ -200,7 +200,7 @@ read_portal_session() {
 					fi
 					index=$((index + 1))
 				done
-			elif [ "$result" = 1 ] && [ "$total" = 0 ] && [ "$(jsonp_value '@.list' | tr -d '[:space:]')" = '[]' ]; then
+			elif [ "$result" = 1 ] && [ "$total" = 0 ] && [ "$(jsonp_value '@.list' | tr -d ' \011\012\015')" = '[]' ]; then
 				SESSION_STATE=offline
 			elif [ "$result" = 0 ]; then
 				case "$(jsonp_value '@.msg')" in *未认证*|*未登录*|*未在线*|*不在线*|*not\ online*|*not\ authenticated*|*获取用户在线信息数据为空*) SESSION_STATE=offline ;; esac

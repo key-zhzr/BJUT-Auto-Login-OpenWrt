@@ -17,7 +17,7 @@ mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR" || exit 1
 REQUEST="$(mktemp "$STATE_DIR/rpc.XXXXXX")" || exit 1
 trap 'rm -f -- "$REQUEST"; configuration_unlock' 0
 head -c 131073 >"$REQUEST"
-[ "$(wc -c <"$REQUEST" | tr -d '[:space:]')" -le 131072 ] || exit 2
+[ "$(wc -c <"$REQUEST" | tr -d ' \011\012\015')" -le 131072 ] || exit 2
 load_configuration || exit 1
 . "$JSHN_SH"
 

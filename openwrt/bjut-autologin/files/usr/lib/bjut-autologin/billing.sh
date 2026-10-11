@@ -51,7 +51,7 @@ billing_request() {
 			bound_curl ipv4 "$@" --config - 2>"$WORK_DIR/curl-error")"
 		rc=$?
 		[ "$rc" = 0 ] || return 1
-		size="$(wc -c <"$WORK_DIR/billing-body" | tr -d '[:space:]')"
+		size="$(wc -c <"$WORK_DIR/billing-body" | tr -d ' \011\012\015')"
 		is_uint "$size" && [ "$size" -le 1048576 ] || return 1
 		case "$code" in
 			2[0-9][0-9]) return 0 ;;
@@ -96,7 +96,7 @@ billing_captcha_image() {
 	billing_request "/Self/login/randomCode?t=$(date +%s)" || return 1
 	mime="$(sed -n 's/^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]:[[:space:]]*//p' "$WORK_DIR/headers" | tr -d '\r' | cut -d ';' -f1 | tail -n 1)"
 	case "$mime" in image/png|image/jpeg|image/gif|image/webp) ;; *) return 1 ;; esac
-	[ "$(wc -c <"$WORK_DIR/billing-body" | tr -d '[:space:]')" -le 131072 ] || return 1
+	[ "$(wc -c <"$WORK_DIR/billing-body" | tr -d ' \011\012\015')" -le 131072 ] || return 1
 	BILLING_IMAGE="data:$mime;base64,$(base64 <"$WORK_DIR/billing-body" | tr -d '\n')"
 }
 
@@ -140,8 +140,12 @@ billing_publish_overview() {
 	rm -f "$BILLING_JOB/online.json"
 	if billing_request /Self/dashboard/getOnlineList; then
 		# An HTTP-200 login page/error object is not an empty session list.
-		if "$JSONFILTER_BIN" -i "$WORK_DIR/billing-body" -e '@' >"$BILLING_JOB/online.json" 2>/dev/null; then
-			case "$(tr -d '[:space:]' <"$BILLING_JOB/online.json")" in
+		# Some portal versions return a literal null for an empty list, which
+		# jsonfilter builds differ on accepting as a root value.
+		if [ "$(tr -d ' \011\012\015' <"$WORK_DIR/billing-body")" = null ]; then
+			printf '[]' >"$BILLING_JOB/online.json"
+		elif "$JSONFILTER_BIN" -i "$WORK_DIR/billing-body" -e '@' >"$BILLING_JOB/online.json" 2>/dev/null; then
+			case "$(tr -d ' \011\012\015' <"$BILLING_JOB/online.json")" in
 				'['*|'{'*'"rows":['*|'{'*'"data":['*) ;;
 				*) rm -f "$BILLING_JOB/online.json" ;;
 			esac

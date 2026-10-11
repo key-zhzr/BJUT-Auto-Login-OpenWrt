@@ -197,7 +197,7 @@ is_campus_ipv4() {
 }
 
 normalize_ssid() {
-	printf '%s' "$1" | tr '[:upper:]_' '[:lower:]-' | sed 's/--*/-/g'
+	printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_' 'abcdefghijklmnopqrstuvwxyz-' | sed 's/--*/-/g'
 }
 
 valid_ap_id() {
@@ -629,7 +629,7 @@ http_request() {
 	rc=$?
 	case "$HTTP_CODE" in [0-9][0-9][0-9]) ;; *) HTTP_CODE="000" ;; esac
 	[ "$rc" -eq 0 ] || return 1
-	response_size="$(wc -c <"$HTTP_BODY" 2>/dev/null | tr -d '[:space:]')"
+	response_size="$(wc -c <"$HTTP_BODY" 2>/dev/null | tr -d ' \011\012\015')"
 	is_uint "$response_size" || return 1
 	[ "$response_size" -le "$MAX_RESPONSE_BYTES" ] || return 1
 	return 0
@@ -792,7 +792,7 @@ lgn_landing_probe() {
 	local url="https://lgn.bjut.edu.cn/" count=0 location normalized
 	while [ "$count" -lt 4 ]; do
 		if lgn_request "$url" "lgn.bjut.edu.cn" 443 "https://lgn.bjut.edu.cn/"; then
-			normalized="$(tr '[:upper:]' '[:lower:]' <"$HTTP_BODY" | tr -d '[:space:]')"
+			normalized="$(tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' <"$HTTP_BODY" | tr -d ' \011\012\015')"
 			case "$normalized" in *dr.comwebloginid_*authuserfield*|*authuserfield*dr.comwebloginid_*) return 0 ;; esac
 			case "$normalized" in *name=\"v6ip\"*|*name=\'v6ip\'*) return 0 ;; esac
 			return 1
@@ -852,7 +852,7 @@ detect_protocol() {
 
 type1_login() {
 	local username="$1" password="$2" account encoded_ipv6 encoded_account encoded_password encoded_ip base referer resolve host_header profile url
-	case "$(printf '%s' "$username" | tr '[:upper:]' '[:lower:]')" in
+	case "$(printf '%s' "$username" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')" in
 		*@campus) account="$username" ;;
 		*) account="$username@campus" ;;
 	esac
