@@ -136,13 +136,16 @@ static int extract(const char *html, const char *op, const char *name)
             end = find_ci(p, "</dt>"); a = tag_end(p);
             if (!end || !a) return 1;
             const char *label = strstr(a + 1, name);
-            if (label && label < end) {
-                const char *dd = next_tag(end + 5, "dd"), *next = next_tag(end + 5, "dt");
-                if (!dd || (next && next < dd)) return 1;
-                a=tag_end(dd); b=find_ci(dd,"</dd>");
-                if (a && b && b-a <= 1024) return emit_text(a+1,b,1);
-                return 1;
+            const char *dd = next_tag(end + 5, "dd"), *next = next_tag(end + 5, "dt"), *close = find_ci(end + 5, "</dl>");
+            if (dd && (!next || dd < next) && (!close || dd < close)) {
+                const char *da=tag_end(dd), *db=find_ci(dd,"</dd>");
+                if (!da || !db) return 1;
+                if (label && label < end) return db-da <= 1024 ? emit_text(da+1,db,1) : 1;
+                // Dashboard cards put their value in dt and the caption in dd.
+                label=strstr(da+1,name);
+                if (label && label < db) return end-a <= 1024 ? emit_text(a+1,end,1) : 1;
             }
+            if (label && label < end) return 1;
             p=end+5;
         }
         return 1;

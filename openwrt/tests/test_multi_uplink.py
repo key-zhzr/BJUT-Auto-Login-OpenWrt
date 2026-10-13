@@ -514,6 +514,11 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(json.loads(user.stdout)['leftMoney'], 42)
         self.assertEqual(self.html_run('status', html).stdout.strip(), '正常')
         self.assertNotEqual(self.html_run('user-json', 'window.user=function(){})').returncode, 0)
+        forward='<dl><dt>已用流量</dt><dd>2 GB</dd></dl>'
+        reverse='<dl><dt>1536 <small class="unit">MB</small></dt><dd>已用流量</dd></dl><dl><dt>99 MB</dt><dd>可用流量</dd></dl>'
+        self.assertEqual(self.html_run('metric',forward,'已用流量').stdout.strip(),'2 GB')
+        self.assertEqual(self.html_run('metric',reverse,'已用流量').stdout.strip(),'1536 MB')
+        self.assertNotEqual(self.html_run('metric','<dl><dt>9 MB</dt></dl><dd>已用流量</dd>','已用流量').returncode,0)
 
     def test_html_form_entities_and_captcha_visibility(self):
         html = '''<form method='post' action='/Self/login/verify;jsessionid=abc'><input value="1234" name="checkcode"><div id='randomDiv' class='form-group hide'></div></form>'''

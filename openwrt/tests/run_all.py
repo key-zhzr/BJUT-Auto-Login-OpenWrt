@@ -131,6 +131,7 @@ def validate_html_with_sanitizers():
             ('assets',b'<script src="/Self/static/login.js"></script><link href="/Self/static/login.css">'),
             ('metric','<dt>已用流量</dt><dd><span>2 GB</span></dd>'.encode()),
             ('metric','<dt>已用流量</dt><dt>别的指标</dt><dd>9 GB</dd>'.encode()),
+            ('metric','<dl><dt>1536 <small>MB</small></dt><dd>已用流量</dd></dl>'.encode()),
         ]
         for operation, payload in cases:
             args=[str(binary),operation] + (['checkcode'] if operation=='input' else ['已用流量'] if operation=='metric' else [])
