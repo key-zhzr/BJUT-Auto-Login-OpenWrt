@@ -251,7 +251,7 @@ log_message() {
 		error:debug|error:info|notice:debug|notice:info|info:debug) return 0 ;;
 	esac
 	if command_exists "$LOGGER_BIN"; then
-		"$LOGGER_BIN" -t "$TAG" -p "daemon.$priority" "$message" 2>/dev/null || true
+		printf '%s\n' "$message" | "$LOGGER_BIN" -t "$TAG" -p "daemon.$priority" 2>/dev/null || true
 	else
 		printf '%s: %s\n' "$TAG" "$message" >&2
 	fi
