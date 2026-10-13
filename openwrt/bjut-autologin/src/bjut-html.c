@@ -131,6 +131,22 @@ static int extract(const char *html, const char *op, const char *name)
 {
     const char *p = html, *a, *b, *end;
     if (!strcmp(op, "user-json")) return user_json(html);
+    if (!strcmp(op, "metric") && *name) {
+        while ((p = next_tag(p, "dt"))) {
+            end = find_ci(p, "</dt>"); a = tag_end(p);
+            if (!end || !a) return 1;
+            const char *label = strstr(a + 1, name);
+            if (label && label < end) {
+                const char *dd = next_tag(end + 5, "dd"), *next = next_tag(end + 5, "dt");
+                if (!dd || (next && next < dd)) return 1;
+                a=tag_end(dd); b=find_ci(dd,"</dd>");
+                if (a && b && b-a <= 1024) return emit_text(a+1,b,1);
+                return 1;
+            }
+            p=end+5;
+        }
+        return 1;
+    }
     if (!strcmp(op, "assets")) {
         const char *tags[] = {"script", "link"};
         const char *keys[] = {"src", "href"};

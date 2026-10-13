@@ -204,7 +204,7 @@ class OpenWrtPortTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         status = self.status()
         self.assertEqual(status["state"], "online")
-        self.assertEqual(status["protocol"], "type2")
+        self.assertEqual(status["protocol"], "bjut_wifi")
         log = self.requests()
         self.assertIn("DDDDD=25000001", log)
         self.assertIn("upass=p%20%21%26%25%E4%B8%AD", log)
@@ -260,7 +260,7 @@ class OpenWrtPortTests(unittest.TestCase):
             MOCK_ACCOUNT2_USERNAME="25000002",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.status()["account"], "25***02")
+        self.assertEqual(self.status()["account"], "25000002")
         self.assertIn("DDDDD=25000001", self.requests())
         self.assertIn("DDDDD=25000002", self.requests())
 
@@ -270,7 +270,7 @@ class OpenWrtPortTests(unittest.TestCase):
             MOCK_BSSID="FA:53:29:12:34:56", MOCK_LOGIN_TYPE="type1",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.status()["protocol"], "type1")
+        self.assertEqual(self.status()["protocol"], "bjut-sushe")
         self.assertIn("--pinnedpubkey", self.requests())
         self.assertIn("--resolve wlgn.bjut.edu.cn:802:10.21.221.98", self.requests())
 
@@ -295,7 +295,7 @@ class OpenWrtPortTests(unittest.TestCase):
             MOCK_ACCOUNT1_PASSWORD="safe-fixture-password",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.status()["protocol"], "type3")
+        self.assertEqual(self.status()["protocol"], "lgn")
         log = self.requests()
         self.assertIn("lgn6.bjut.edu.cn/drcom/getipv6", log)
         self.assertIn("--ipv6", log)
@@ -322,7 +322,7 @@ class OpenWrtPortTests(unittest.TestCase):
             MOCK_ACCOUNT1_PASSWORD='safe-fixture-password',
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.status()['protocol'], 'type3')
+        self.assertEqual(self.status()['protocol'], 'lgn')
         self.assertIn('encrypt=1', self.requests())
 
     def test_type3_matches_upstream_sanitized_har_fields(self):
@@ -515,8 +515,7 @@ class OpenWrtPortTests(unittest.TestCase):
         logger_text = (self.state / "logger.log").read_text(encoding="utf-8")
         self.assertNotIn(password, status_text)
         self.assertNotIn(password, logger_text)
-        self.assertNotIn("25001234", status_text)
-        self.assertNotIn("25001234", logger_text)
+        self.assertIn("25001234", logger_text)
 
 
 if __name__ == "__main__":

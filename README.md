@@ -6,8 +6,8 @@
 - 多上游分别选择 IPv4 / IPv6 接口、源地址与账号，兼容 mwan3。
 - lgn 的 IPv4 + IPv6 联动认证，缺少 IPv6 时可先认证 IPv4。
 - 分开判断认证会话与外网探测，避免单个探测地址失败就反复登录。
-- LuCI 计费页面查询余额、流量和在线设备，支持图片验证码。
-- App 查看路由状态、按上游登录与同步选定账号。
+- LuCI 计费页查询余额、总流量、剩余流量、账单和在线设备，支持图片验证码。
+- App 内查看、登录、编辑路由账号及上游，支持记住密码和自动重连。
 
 [下载与编译](openwrt/BUILDING.md) · [安装与配置](openwrt/README.md) · [测试方法](openwrt/TESTING.md) · [变更记录](openwrt/CHANGELOG.md) · [上游同步说明](openwrt/UPSTREAM.md)
 

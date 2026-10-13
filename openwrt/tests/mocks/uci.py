@@ -47,7 +47,16 @@ def operation(command, arg):
             section[parts[1]] = value
         file_for(package).write_text(json.dumps(data))
     elif command == 'delete':
-        data.pop(parts[0], None)
+        if len(parts) == 1:
+            data.pop(parts[0], None)
+        else:
+            data.get(parts[0], {}).pop(parts[1], None)
+        file_for(package).write_text(json.dumps(data))
+    elif command == 'reorder':
+        keys=list(data)
+        keys.remove(parts[0])
+        keys.insert(int(value),parts[0])
+        data={key:data[key] for key in keys}
         file_for(package).write_text(json.dumps(data))
 
 
@@ -62,7 +71,7 @@ try:
         for k,v in load(package).items(): print(package+'.'+k+'='+v.get('.type',''))
     elif command == 'export':
         print(json.dumps(load(args[0])))
-    elif command in ('get', 'set', 'delete'):
+    elif command in ('get', 'set', 'delete', 'reorder'):
         operation(command, args[0])
 except (KeyError, IndexError, ValueError):
     sys.exit(1)

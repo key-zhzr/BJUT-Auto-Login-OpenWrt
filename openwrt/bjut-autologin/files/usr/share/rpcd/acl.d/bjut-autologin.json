@@ -1,7 +1,35 @@
 {
   "bjut-autologin-app": {
     "description": "BJUT App router workbench",
-    "read": { "ubus": { "bjut-autologin": [ "status", "accounts", "ports", "logs", "settings", "billing_poll" ] } },
-    "write": { "ubus": { "bjut-autologin": [ "login", "sync_accounts", "account_set", "save_settings", "billing_start", "billing_captcha" ] } }
+    "read": {
+      "ubus": {
+        "bjut-autologin": [
+          "status",
+          "accounts",
+          "ports",
+          "logs",
+          "settings",
+          "billing_poll"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "bjut-autologin": [
+          "login",
+          "sync_accounts",
+          "account_set",
+          "save_settings",
+          "billing_start",
+          "billing_captcha",
+          "account_save",
+          "account_delete",
+          "account_move",
+          "uplink_save",
+          "uplink_delete",
+          "billing_records"
+        ]
+      }
+    }
   }
 }

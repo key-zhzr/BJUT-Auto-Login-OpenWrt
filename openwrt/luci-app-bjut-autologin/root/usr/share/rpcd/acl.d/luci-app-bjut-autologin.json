@@ -30,7 +30,14 @@
           "login",
           "account_set",
           "billing_start",
-          "billing_captcha"
+          "billing_captcha",
+          "save_settings",
+          "account_save",
+          "account_delete",
+          "account_move",
+          "uplink_save",
+          "uplink_delete",
+          "billing_records"
         ]
       }
     }

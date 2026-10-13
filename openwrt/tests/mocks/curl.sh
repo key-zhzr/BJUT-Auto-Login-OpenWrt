@@ -73,9 +73,11 @@ case "$url" in
     [ "$scenario" != billing_sessions_unavailable ] || body='{"error":"session service unavailable"}' ;;
    */Self/static/login.js*) body='/* fixture asset */' ;;
    */Self/dashboard/getLoginHistory*) mime=application/json; body='{"data":[["2026-10-11","2026-10-11","10.126.19.139","","aabbccddeeff",60,42,3,0]]}' ;;
+   */Self/bill/getUserOnlineLog*)
+    mime=application/json; body="$(python3 "$(dirname "$0")/record_fixture.py" "$url")" ;;
    *)
     if [ -n "$fixture_user" ]; then
-     body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});</script><label>状　　态：</label><div><span>正常</span></div>"
+     body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});</script><label>状　　态：</label><div><span>正常</span></div><dl><dt>已用流量</dt><dd>2 GB</dd></dl>"
     else
      body="<script src='/Self/static/login.js'></script><script src='https://other.test/unsafe.js'></script><form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='$( [ "$scenario" = billing_captcha ] || printf hide )'></div></form>"
     fi ;;

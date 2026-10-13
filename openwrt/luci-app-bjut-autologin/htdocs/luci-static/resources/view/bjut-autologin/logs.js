@@ -17,6 +17,6 @@ return view.extend({
 			finally { busy = false; }
 		}
 		poll.add(refresh,5);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-header'},[E('h2',{},_('运行日志')),E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),E('section',{'class':'bj-card'},content)]);
+		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-actions'},[E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),E('section',{'class':'bj-card'},content)]);
 	}
 });

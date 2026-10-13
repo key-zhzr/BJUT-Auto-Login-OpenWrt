@@ -30,6 +30,6 @@ return view.extend({
 			finally { busy = false; }
 		}
 		draw(data); poll.add(refresh,2);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-header'},[E('h2',{},_('控制台')),E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),summary,message,E('section',{'class':'bj-card'},[E('h3',{},_('端口状态')),cards])]);
+		return E('div',{'class':'bjut-workbench'},[bjut.style(),summary,message,E('section',{'class':'bj-card'},[E('h3',{},_('端口状态')),cards])]);
 	}
 });

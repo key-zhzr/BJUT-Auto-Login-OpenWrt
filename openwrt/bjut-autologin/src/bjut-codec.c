@@ -217,6 +217,42 @@ static int validate_ipv6(const unsigned char *data, size_t length)
     return -1;
 }
 
+static int validate_ipv4(const unsigned char *data, size_t length)
+{
+    char text[INET_ADDRSTRLEN];
+    struct in_addr address;
+    if (!length || length >= sizeof(text)) return -1;
+    memcpy(text, data, length); text[length] = 0;
+    return inet_pton(AF_INET, text, &address) == 1 ? 0 : -1;
+}
+static int leap(int y) { return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0); }
+static int month_days(int y, int m)
+{
+    static const int days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    return days[m-1] + (m == 2 && leap(y));
+}
+static int date_codec(const unsigned char *data, size_t length, int to_days)
+{
+    char text[32], extra, *end;
+    int y, m, d, total = 0, i;
+    if (!length || length >= sizeof(text)) return -1;
+    memcpy(text, data, length); text[length] = 0;
+    if (to_days) {
+        if (length != 10 || text[4] != '-' || text[7] != '-') return -1;
+        for (i=0;i<10;i++) if (i != 4 && i != 7 && (text[i] < '0' || text[i] > '9')) return -1;
+        if (sscanf(text, "%d-%d-%d%c", &y, &m, &d, &extra) != 3 || y < 1970 || y > 2199 || m < 1 || m > 12 || d < 1 || d > month_days(y,m)) return -1;
+        for (i=1970;i<y;i++) total += 365 + leap(i);
+        for (i=1;i<m;i++) total += month_days(y,i);
+        return printf("%d", total+d-1) < 0 ? -1 : 0;
+    }
+    errno=0; long number=strtol(text,&end,10);
+    if (errno || *end || number < 0 || number > 84005) return -1;
+    d=(int)number; y=1970;
+    while (d >= 365+leap(y)) { d -= 365+leap(y); y++; }
+    m=1; while (d >= month_days(y,m)) { d-=month_days(y,m); m++; }
+    return printf("%04d-%02d-%02d",y,m,d+1) < 0 ? -1 : 0;
+}
+
 static void usage(const char *program)
 {
     fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6|id32|random16} < input\n", program);
@@ -269,6 +305,12 @@ int main(int argc, char **argv)
         result = write_base64(data, length);
     } else if (strcmp(argv[1], "validate-ipv6") == 0) {
         result = validate_ipv6(data, length);
+    } else if (strcmp(argv[1], "validate-ipv4") == 0) {
+        result = validate_ipv4(data, length);
+    } else if (strcmp(argv[1], "date-days") == 0) {
+        result = date_codec(data, length, 1);
+    } else if (strcmp(argv[1], "days-date") == 0) {
+        result = date_codec(data, length, 0);
     } else if (strcmp(argv[1], "id32") == 0) {
         /* A portable identifier, never a password or authentication hash. */
         uint32_t value = UINT32_C(2166136261);

@@ -3,115 +3,48 @@
 'require rpc';
 'require poll';
 'require bjut-autologin.workbench as bjut';
-
-const status = rpc.declare({ object: 'bjut-autologin', method: 'status', expect: {} });
-const accounts = rpc.declare({ object: 'bjut-autologin', method: 'accounts', expect: {} });
-const begin = rpc.declare({ object: 'bjut-autologin', method: 'billing_start', params: ['uplink', 'account', 'owner'], expect: {} });
-const result = rpc.declare({ object: 'bjut-autologin', method: 'billing_poll', params: ['ticket', 'owner'], expect: {} });
-const captcha = rpc.declare({ object: 'bjut-autologin', method: 'billing_captcha', params: ['ticket', 'owner', 'code', 'refresh'], expect: {} });
-
+'require bjut-autologin.records as records';
+const status=rpc.declare({object:'bjut-autologin',method:'status',expect:{}});
+const accounts=rpc.declare({object:'bjut-autologin',method:'accounts',expect:{}});
+const begin=rpc.declare({object:'bjut-autologin',method:'billing_start',params:['uplink','account','owner'],expect:{}});
+const result=rpc.declare({object:'bjut-autologin',method:'billing_poll',params:['ticket','owner'],expect:{}});
+const captcha=rpc.declare({object:'bjut-autologin',method:'billing_captcha',params:['ticket','owner','code','refresh'],expect:{}});
 return view.extend({
-	handleSave: null, handleSaveApply: null, handleReset: null,
-	load: function() { return Promise.all([status(), accounts()]); },
-	render: function(data) {
-		let jobs = [], busy = false, pending = false;
-		const uplinks = data[0].uplinks || [];
-		const selectStyle = 'width:100%;min-height:42px';
-		const uplink = E('select', { 'class': 'cbi-input-select', style: selectStyle }, [E('option', { value: 'all' }, _('所有上游（自动汇总）'))].concat(uplinks.map(function(item) {
-			return E('option', { value: item.id }, [item.id, item.network, item.device, item.ipv4].filter(Boolean).join(' · '));
-		})));
-		const account = E('select', { 'class': 'cbi-input-select', style: selectStyle }, [E('option', { value: 'current' }, _('当前认证账号'))].concat((data[1].accounts || []).filter(function(item) { return item.hasPassword; }).map(function(item) {
-			return E('option', { value: item.id }, item.user + (item.enabled ? '' : _('（手动）')));
-		})));
-		const message = E('p');
-		const summary = E('div', { 'class': 'bj-card', hidden: true });
-		const details = E('div', {'class':'bj-billing-grid'});
-		const submit = E('button', { 'class': 'btn cbi-button-action', type: 'button', style: 'min-height:42px', click: refresh }, _('刷新查询'));
-		const selectors = E('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:16px' }, [
-			E('label', { style: 'flex:1;min-width:180px;max-width:100%' }, [E('div', {}, _('上游')), uplink]),
-			E('label', { style: 'flex:1;min-width:180px;max-width:100%' }, [E('div', {}, _('计费账号')), account]), submit
-		]);
-		function row(label, value) { return E('div', { style: 'padding:6px 0;overflow-wrap:anywhere' }, [E('strong', {}, label + '：'), String(value == null || value === '' ? '--' : value)]); }
-		function updateSummary() {
-			const unique = new Map();
-			jobs.forEach(function(job) { if (job.item && job.item.account) unique.set(job.item.account, job.item); });
-			const items = Array.from(unique.values());
-			const balances = items.map(function(item) { return item.balance === '' || item.balance == null ? NaN : Number(item.balance); });
-			const completed = jobs.filter(function(job) { return !job.running && job.started; }).length;
-			busy = jobs.some(function(job) { return job.running || !job.started; }); submit.disabled = busy;
-			uplink.disabled = busy; account.disabled = busy;
-			message.textContent = (busy ? _('正在查询各条上游…') : _('查询已结束')) + ' ' + completed + ' / ' + jobs.length;
-			summary.hidden = !items.length;
-			summary.replaceChildren(E('h3', {}, _('账号汇总')), row(_('已查询账号'), items.length),
-				row(_('余额合计'), balances.every(Number.isFinite) ? balances.reduce(function(a, b) { return a + b; }, 0).toFixed(2) + ' 元' : _('部分余额暂不可用')),
-				E('p', {}, _('同一账号通过多个上游查询时只统计一次。')));
-			if (!busy && pending) { pending = false; void refresh(); }
-		}
-		async function startJob(job) {
-			job.started = true; job.running = true; job.content.textContent = _('正在准备查询…');
-			try {
-				const response = await begin(job.uplink, job.account, L.env.sessionid);
-				if (!response.ticket) throw new Error(response.message || _('无法开始查询'));
-				job.ticket = response.ticket;
-			} catch (error) { job.running = false; job.content.textContent = String(error.message || error); }
-			updateSummary(); pump();
-		}
-		function pump() {
-			const free = 4 - jobs.filter(function(job) { return job.running; }).length;
-			jobs.filter(function(job) { return !job.started; }).slice(0, Math.max(0, free)).forEach(function(job) { void startJob(job); });
-		}
-		async function refresh() {
-			if (busy) { pending = true; return; }
-			const selected = uplink.value === 'all' ? uplinks : uplinks.filter(function(item) { return item.id === uplink.value; });
-			if (!selected.length) { message.textContent = _('请先在校园网设置中添加上游。'); return; }
-			jobs = selected.map(function(item) { return { uplink: item.id, account: account.value || 'current', started: false, running: false, ticket: '', item: null,
-				content: E('div', {}, _('等待查询…')), title: [item.id, item.network, item.device].filter(Boolean).join(' · ') }; });
-			details.replaceChildren.apply(details, jobs.map(function(job) { return E('div', { 'class': 'bj-card' }, [E('h3', {}, job.title), job.content]); }));
-			updateSummary(); pump();
-		}
-		uplink.addEventListener('change', refresh); account.addEventListener('change', refresh);
-		function overview(item) {
-			return [row(_('账号'), item.account), row(_('余额'), item.balance === '' ? '' : Number(item.balance).toFixed(2) + ' 元'), row(_('剩余流量'), item.remainingFlow === '' ? '' : (Number(item.remainingFlow)/1024).toFixed(2) + ' GB'), row(_('状态'), item.accountStatus), row(_('套餐'), item.package)];
-		}
-		function showCaptcha(job, item) {
-			const input = E('input', { type: 'text', maxlength: 12, autocomplete: 'off', placeholder: _('验证码'), 'class': 'cbi-input-text' });
-			const image = E('img', { src: item.image, alt: _('计费系统验证码'), style: 'max-width:100%;width:240px;display:block;margin:12px 0' });
-			async function answer(refreshImage) {
-				if (job.running) return;
-				job.running = true; updateSummary();
-				try {
-					const next = await captcha(job.ticket, L.env.sessionid, input.value.trim(), refreshImage);
-					if (next.state === 'error') throw new Error(next.message);
-					job.content.textContent = next.message;
-				} catch (error) { job.running = false; job.content.textContent = String(error.message || error); updateSummary(); }
-			}
-			job.content.replaceChildren(E('p', {}, item.message), image, input, E('div', { style: 'display:flex;gap:12px;margin-top:12px' }, [
-				E('button', { type: 'button', 'class': 'btn', click: function() { void answer(true); } }, _('换一张')),
-				E('button', { type: 'button', 'class': 'btn cbi-button-action', click: function() { void answer(false); } }, _('继续'))]));
-		}
-		poll.add(async function() {
-			await Promise.all(jobs.filter(function(job) { return job.running && job.ticket; }).map(async function(job) {
-				try {
-					const response = await result(job.ticket, L.env.sessionid), item = response.result || response;
-					if (item.account) job.item = item;
-					if (item.state === 'captcha') { job.running = false; showCaptcha(job, item); }
-					else {
-						const cards = item.account ? overview(item) : [];
-						cards.unshift(E('p', {}, item.message || _('等待查询')));
-						if (item.state === 'loading') cards.push(E('progress', {max:100,value:item.percent || 2}));
-						if (item.state !== 'loading') job.running = false;
-						if (item.state === 'ready') {
-							cards.push(E('h4', {}, _('在线设备')));
-							(response.sessions || []).forEach(function(session) { cards.push(E('div', {}, [row('IPv4', session.ip), row('IPv6', session.ipv6), row('MAC', session.mac), row(_('在线时长'), session.useTime ? Math.round(Number(session.useTime) / 60) + ' ' + _('分钟') : '')])); });
-							if (!(response.sessions || []).length) cards.push(E('p', {}, response.sessionsAvailable ? _('暂无在线设备。') : _('在线设备暂时无法查询，请稍后刷新。')));
-						}
-						job.content.replaceChildren.apply(job.content, cards);
-					}
-				} catch (error) { job.running = false; job.content.textContent = _('查询未完成：') + String(error.message || error); }
-			}));
-			updateSummary(); pump();
-		}, 2);
-		Promise.resolve().then(refresh);
-		return E('div', { 'class': 'bjut-workbench' }, [bjut.style(),E('h2', {}, _('计费系统')), selectors, message, summary, details]);
-	}
+ handleSave:null,handleSaveApply:null,handleReset:null,
+ load:function(){return Promise.all([status(),accounts()]);},
+ render:function(data){
+  let jobs=[],busy=false,polling=false,summaryStamp='',devicesStamp='';const uplinks=data[0].uplinks || [];
+  function button(text,action){return E('button',{'class':'btn',type:'button',click:action},_(text));}
+  const uplink=E('select',{'class':'cbi-input-select'},[E('option',{value:'all'},_('所有上游'))].concat(uplinks.map(function(item){return E('option',{value:item.id},[item.device,item.network].filter(Boolean).join(' · ') || item.id);}))),account=E('select',{'class':'cbi-input-select'},[E('option',{value:'current'},_('当前认证账号'))].concat((data[1].accounts || []).filter(function(item){return item.hasPassword;}).map(function(item){return E('option',{value:item.id},item.user+(item.enabled?'':_('（手动）')));}))),message=E('p',{'role':'status'}),summary=E('div',{'class':'bj-summary'}),details=E('div',{'class':'bj-billing-grid'}),devices=E('section',{'class':'bj-billing-grid bj-enter',hidden:true});
+  const submit=button('刷新',function(){void refresh();});
+  function targets(){const seen=new Set();return jobs.filter(function(job){const key=job.item.account || job.uplink;if(seen.has(key))return false;seen.add(key);return true;}).map(function(job){return {uplink:job.uplink,account:job.account,title:job.title};});}
+  const overview=E('section',{'class':'bj-enter'},[summary,details]),recordView=records.render(targets);recordView.hidden=true;
+  const sections=[overview,recordView,devices],tabs=E('nav',{'class':'bj-tabs','aria-label':_('计费功能')},['概览','用量与账单','在线设备'].map(function(text,index){const tab=button(text,function(){Array.from(tabs.children).forEach(function(other,i){other.classList.toggle('active',i===index);other.setAttribute('aria-selected',String(i===index));sections[i].hidden=i!==index;});});tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(index===0));if(index===0)tab.classList.add('active');return tab;}));tabs.setAttribute('role','tablist');
+  function row(label,value){return E('div',{'class':'bj-bill-row'},[E('span',{},_(label)),E('strong',{},String(value==null || value===''?'--':value))]);}
+  function number(value,suffix,scale){return value!=='' && value!=null && Number.isFinite(Number(value))?(Number(value)/(scale || 1)).toFixed(2)+' '+suffix:'--';}
+  function update(){
+   busy=jobs.some(function(job){return job.running || job.starting;});submit.disabled=uplink.disabled=account.disabled=busy;message.textContent=busy?_('正在查询各条上游…'):_('路由器查询已完成');
+   const unique=new Map();jobs.forEach(function(job){if(job.item.account && ['ready','loading'].includes(job.item.state))unique.set(job.item.account,job.item);});const items=Array.from(unique.values());
+   function sum(key,suffix,scale){const values=items.map(function(item){return item[key]==='' || item[key]==null?NaN:Number(item[key]);});return values.length && values.every(function(value){return Number.isFinite(value) && (key==='balance' || value>=0);})?number(values.reduce(function(a,b){return a+b;},0),suffix,scale):'--';}
+   const metrics=[['已查询账号',String(items.length)],['余额合计',sum('balance','元')],['总流量',sum('totalFlow','GB',1024)],['剩余流量',sum('remainingFlow','GB',1024)]];
+   if(JSON.stringify(metrics)!==summaryStamp){summaryStamp=JSON.stringify(metrics);metrics.forEach(function(item,i){let card=summary.children[i];if(!card){card=E('article',{'class':'bj-card'},[E('span',{},_(item[0])),E('strong')]);summary.append(card);}card.lastElementChild.textContent=item[1];});}
+   const stamp=JSON.stringify(jobs.map(function(job){return [job.item.account,job.item.state,job.sessions,job.sessionsAvailable];}));if(stamp!==devicesStamp){devicesStamp=stamp;const seen=new Set();const cards=jobs.filter(function(job){if(job.item.state!=='ready' || !job.item.account || seen.has(job.item.account))return false;seen.add(job.item.account);return true;}).map(function(job){return E('article',{'class':'bj-card'},[E('strong',{},_('账号')+' '+job.item.account)].concat((job.sessions || []).length?(job.sessions || []).map(function(session){return E('div',{'class':'bj-device'},[row('IPv4',session.ip),row('IPv6',session.ipv6),row('MAC',session.mac),row('在线时长',session.useTime?Math.round(Number(session.useTime)/60)+' 分钟':'--')]);}):[E('p',{},job.sessionsAvailable?_('暂无在线设备。'):_('在线设备暂时无法查询。'))]));});devices.replaceChildren.apply(devices,cards.length?cards:[E('p',{},_('请先查询计费账号。'))]);}
+  }
+  function draw(job){const item=job.item,stamp=JSON.stringify(item);if(job.card.dataset.result===stamp)return;job.card.dataset.result=stamp;job.card.replaceChildren(E('strong',{},job.title),E('p',{},item.message || _('等待查询')));
+   if(item.state==='loading')job.card.append(E('progress',{max:100,value:item.percent || 2}));
+   if(item.account)job.card.append(row('账号',item.account),row('余额',number(item.balance,'元')),row('总流量',number(item.totalFlow,'GB',1024)),row('剩余流量',number(item.remainingFlow,'GB',1024)),row('状态',item.accountStatus),row('套餐',item.package));
+   if(item.state==='captcha')showCaptcha(job);
+  }
+  function showCaptcha(job){const image=E('img',{alt:_('计费系统验证码')}),input=E('input',{'class':'cbi-input-text',type:'text',maxlength:12,autocomplete:'off',placeholder:_('验证码')});if(/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(job.item.image || ''))image.src=job.item.image;
+   async function answer(refreshImage){if(job.running || (!refreshImage && !input.value.trim()))return;job.running=true;update();try{const response=await captcha(job.ticket,L.env.sessionid,input.value.trim(),refreshImage);if(response.state==='error')throw new Error(response.message);job.item={state:'loading',message:_('正在核对验证码'),percent:40};draw(job);}catch(error){job.running=false;message.textContent=String(error.message || error);update();}}
+   job.card.append(image,input,E('div',{'class':'bj-actions'},[button('换一张',function(){void answer(true);}),button('继续',function(){void answer(false);})]));
+  }
+  async function refresh(){if(busy)return;const selected=uplink.value==='all'?uplinks:uplinks.filter(function(item){return item.id===uplink.value;});if(!selected.length){message.textContent=_('请先在设置中添加上游。');return;}
+   jobs=selected.map(function(item){return {uplink:item.id,account:account.value || 'current',ticket:'',running:false,starting:true,item:{state:'loading',message:_('正在准备查询'),percent:2},title:[item.device,item.network].filter(Boolean).join(' · ') || item.id,card:E('article',{'class':'bj-card bj-enter'})};});details.replaceChildren.apply(details,jobs.map(function(job){draw(job);return job.card;}));update();
+   await Promise.all(jobs.map(async function(job){try{const response=await begin(job.uplink,job.account,L.env.sessionid);if(!response.ticket)throw new Error(response.message || _('无法开始查询'));job.ticket=response.ticket;job.running=true;}catch(error){job.item={state:'error',message:String(error.message || error)};draw(job);}finally{job.starting=false;}}));update();
+  }
+  uplink.addEventListener('change',refresh);account.addEventListener('change',refresh);
+  poll.add(async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);job.item=response.result || response;job.running=job.item.state==='loading';job.sessions=response.sessions;job.sessionsAvailable=response.sessionsAvailable;draw(job);}catch(error){job.running=false;job.item={state:'error',message:String(error.message || error)};draw(job);}}));update();}finally{polling=false;}},2);
+  Promise.resolve().then(refresh);return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-record-controls'},[E('label',{},[E('span',{},_('上游')),uplink]),E('label',{},[E('span',{},_('计费账号')),account]),submit]),message,tabs,overview,recordView,devices]);
+ }
 });

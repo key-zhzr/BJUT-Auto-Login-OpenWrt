@@ -7,9 +7,9 @@
 | 类别 | 覆盖内容 |
 |---|---|
 | 编码 | 原 Rust 核心的 `dr1005`、`4.2.2`、Base64 固定向量；随机 Unicode、代理对、URL 百分号编码；IPv6 严格解析；非法 UTF-8/超长输入 |
-| Type 1 | 正常 TLS、旧宿舍证书 SPKI 固定回退、SNI/Host/固定 IP、`@campus`、本地 IPv4、HTTP 明确启用边界 |
-| Type 2 | HTTPS 固定网关、完整 Dr.COM 参数、特殊字符密码、多账号明确拒绝后轮换 |
-| Type 3 | `loadUserInfo`、IPv6 发现、动态字段 XOR、主/备固定网关、缺少 IPv6 时仅提交已验证门户的 IPv4 认证；外部 IPv6 前缀不发送；模糊结果不重复提交 |
+| bjut-sushe | 正常 TLS、旧宿舍证书 SPKI 固定回退、SNI/Host/固定 IP、`@campus`、本地 IPv4、HTTP 明确启用边界 |
+| bjut_wifi | HTTPS 固定网关、完整 Dr.COM 参数、特殊字符密码、多账号明确拒绝后轮换 |
+| lgn | `loadUserInfo`、IPv6 发现、动态字段 XOR、主/备固定网关、缺少 IPv6 时仅提交已验证门户的 IPv4 认证；外部 IPv6 前缀不发送；模糊结果不重复提交 |
 | 联网状态机 | 已联网快速路径、连续离线确认、登录后复核、指数退避、认证拒绝冷却、手动检查 |
 | 失败语义 | 非校园 IP、SSID/BSSID 不匹配、协议/传输不匹配、无门户、门户未就绪、结果未知、超大响应、并发锁和陈旧锁恢复 |
 | 隐私 | 密码与完整账号不出现在 curl argv、syslog 和 JSON 状态；状态账号脱敏 |
@@ -36,7 +36,7 @@ python3 -m unittest -v openwrt/tests/test_openwrt_port.py
 
 1. 将对应 SDK 生成的 IPK/APK 安装到匹配固件的设备；GitHub Actions 的交叉编译不能代替实机安装。
 2. 在 `bjut-sushe`、`bjut_wifi` 和 `lgn` 三种真实网络分别执行一次 `manual`。
-3. 验证目标固件 curl 的 TLS 后端支持 `--pinnedpubkey`；不支持时 Type 1 旧证书路径应安全失败。
+3. 验证目标固件 curl 的 TLS 后端支持 `--pinnedpubkey`；不支持时 bjut-sushe 旧证书路径应安全失败。
 4. 测量目标路由器的实际 RSS、CPU 唤醒和 24 小时重连表现。
 
 建议现场测试流程：

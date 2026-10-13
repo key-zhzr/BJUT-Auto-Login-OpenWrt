@@ -17,6 +17,6 @@ return view.extend({
 		}
 		async function refresh() { try { draw(await status()); } catch(error) { message.textContent=String(error.message || error); } }
 		draw(data);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-header'},[E('h2',{},_('网络诊断')),E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),message,content]);
+		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-actions'},[message,E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),content]);
 	}
 });

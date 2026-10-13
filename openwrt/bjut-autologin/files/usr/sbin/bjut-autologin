@@ -234,16 +234,15 @@ known_public_ssid() {
 }
 
 mask_username() {
-	local value length prefix suffix
-	value="$1"
-	length="${#value}"
-	if [ "$length" -le 4 ]; then
-		printf '***'
-		return
-	fi
-	prefix="$(printf '%s' "$value" | cut -c1-2)"
-	suffix="$(printf '%s' "$value" | tail -c 2)"
-	printf '%s***%s' "$prefix" "$suffix"
+    printf '%s' "$1"
+}
+
+protocol_name() {
+    case "$1" in type1|bjut-sushe) printf 'bjut-sushe';; type2|bjut_wifi) printf 'bjut_wifi';; type3|lgn) printf 'lgn';; *) printf '%s' "$1";; esac
+}
+
+protocol_internal() {
+    case "$1" in bjut-sushe) printf 'type1';; bjut_wifi) printf 'type2';; lgn) printf 'type3';; *) printf '%s' "$1";; esac
 }
 
 log_message() {
@@ -273,6 +272,7 @@ load_main_section() {
 	config_get_bool CFG_MANAGED_ROUTES "$1" managed_routes 1
 	config_get CFG_TRANSPORT "$1" transport "auto"
 	config_get CFG_LOGIN_TYPE "$1" login_type "auto"
+	CFG_LOGIN_TYPE="$(protocol_internal "$CFG_LOGIN_TYPE")"
 	config_get CFG_COMPATIBILITY "$1" compatibility "secure"
 	config_get CFG_INTERVAL "$1" interval "20"
 	config_get CFG_TIMEOUT "$1" timeout "3"
@@ -351,6 +351,7 @@ validate_configuration() {
 			config_get username "$section" username ""
 			config_get password "$section" password ""
 			config_get protocol "$section" login_type "auto"
+			protocol="$(protocol_internal "$protocol")"
 			case "$protocol" in auto|type1|type2|type3) ;; *) printf 'Invalid account login_type in %s\n' "$section" >&2; return 1 ;; esac
 			[ "${#username}" -le 256 ] || { printf 'Account username is too long in %s\n' "$section" >&2; return 1; }
 			[ "${#password}" -le 4096 ] || { printf 'Account password is too long in %s\n' "$section" >&2; return 1; }
@@ -388,7 +389,7 @@ load_runtime_state() {
 	RUNTIME_STATE="$(json_file_value "$previous_file" '@.state')"
 	RUNTIME_IPV4="$(json_file_value "$previous_file" '@.ipv4')"
 	RUNTIME_ACCOUNT="$(json_file_value "$previous_file" '@.account')"
-	RUNTIME_PROTOCOL="$(json_file_value "$previous_file" '@.protocol')"
+	RUNTIME_PROTOCOL="$(protocol_internal "$(json_file_value "$previous_file" '@.protocol')")"
 	if [ "$RUNTIME_IPV4" != "$LOCAL_IPV4" ]; then
 		RUNTIME_FAILURES=0; RUNTIME_OFFLINE_COUNT=0; RUNTIME_NEXT_ATTEMPT=0; RUNTIME_STATE=""
 		RUNTIME_ACCOUNT=""; RUNTIME_PROTOCOL=""
@@ -428,7 +429,7 @@ write_status() {
 	json_add_string route6 "$ROUTE6"
 	json_add_string ssid "$SSID"
 	json_add_string bssid "$BSSID"
-	json_add_string protocol "$protocol"
+	json_add_string protocol "$(protocol_name "$protocol")"
 	json_add_string account "$account"
 	json_add_int next_attempt "$next_attempt"
 	json_add_int failures "$failures"
@@ -935,11 +936,12 @@ try_accounts() {
 		config_get username "$section" username ""
 		config_get password "$section" password ""
 		config_get account_protocol "$section" login_type "auto"
+		account_protocol="$(protocol_internal "$account_protocol")"
 		[ -n "$username" ] && [ -n "$password" ] || continue
 		[ "$account_protocol" = "auto" ] || [ "$account_protocol" = "$protocol" ] || continue
 		attempted=1
 		masked="$(mask_username "$username")"
-		log_message notice "正在通过 $protocol 尝试账号 $masked"
+		log_message notice "正在通过 $(protocol_name "$protocol") 尝试账号 $masked"
 		login_protocol "$protocol" "$username" "$password"
 		rc=$?
 		password=""

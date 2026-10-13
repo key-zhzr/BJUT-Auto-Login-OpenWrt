@@ -2,6 +2,7 @@
 
 json_init() {
 	_MOCK_JSON=""
+	_MOCK_DEPTH=0; _MOCK_KIND=object
 }
 
 json_load() {
@@ -27,7 +28,25 @@ json_add_string() {
 	local key value
 	key="$(_json_escape "$1")"
 	value="$(_json_escape "$2")"
-	_json_append "\"$key\":\"$value\""
+	if [ "${_MOCK_KIND:-object}" = array ]; then _json_append "\"$value\""; else _json_append "\"$key\":\"$value\""; fi
+}
+
+json_add_array() {
+	_MOCK_DEPTH=$((_MOCK_DEPTH+1))
+	eval "_MOCK_PARENT_${_MOCK_DEPTH}=\$_MOCK_JSON"
+	eval "_MOCK_KIND_${_MOCK_DEPTH}=\$_MOCK_KIND"
+	local key="$(_json_escape "$1")"
+	eval "_MOCK_KEY_${_MOCK_DEPTH}=\$key"
+	_MOCK_JSON=""; _MOCK_KIND=array
+}
+
+json_close_array() {
+	local child="[$_MOCK_JSON]" key
+	eval "_MOCK_JSON=\$_MOCK_PARENT_${_MOCK_DEPTH}"
+	eval "_MOCK_KIND=\$_MOCK_KIND_${_MOCK_DEPTH}"
+	eval "key=\$_MOCK_KEY_${_MOCK_DEPTH}"
+	_MOCK_DEPTH=$((_MOCK_DEPTH-1))
+	if [ "$_MOCK_KIND" = array ]; then _json_append "$child"; else _json_append "\"$key\":$child"; fi
 }
 
 json_add_int() {

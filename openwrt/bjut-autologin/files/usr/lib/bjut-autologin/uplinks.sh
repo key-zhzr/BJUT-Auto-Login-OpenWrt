@@ -44,6 +44,7 @@ select_uplink() {
 	fi
 	valid_device_name "$CFG_NETWORK" || return 1
 	case "$CFG_TRANSPORT" in auto|ethernet|wifi) ;; *) return 1 ;; esac
+	CFG_LOGIN_TYPE="$(protocol_internal "$CFG_LOGIN_TYPE")"
 	case "$CFG_LOGIN_TYPE" in auto|type1|type2|type3) ;; *) return 1 ;; esac
 	case "$CFG_COMPATIBILITY" in secure|legacy_http) ;; *) return 1 ;; esac
 	[ -z "$CFG_DEVICE" ] || valid_device_name "$CFG_DEVICE" || return 1
@@ -228,7 +229,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
-	printf '{"apiVersion":1,"version":"%s","capabilities":["ports","billing","logs","settings","account_set"],"uplinks":[' "$VERSION"
+	printf '{"apiVersion":1,"version":"%s","capabilities":["ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records"],"uplinks":[' "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"

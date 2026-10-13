@@ -91,6 +91,12 @@ def validate_c_with_sanitizers():
             ("base64", b"10.126.21.113", 0),
             ("validate-ipv6", b"2001:db8::10", 0),
             ("validate-ipv6", b"2001:::10", 1),
+            ("validate-ipv4", b"192.0.2.1", 0),
+            ("validate-ipv4", b"256.0.0.1", 1),
+            ("date-days", b"2024-02-29", 0),
+            ("date-days", b"2026-02-29", 1),
+            ("date-days", b"2026-10-13\nextra", 1),
+            ("days-date", b"0", 0),
             ("eportal", b"\xff", 1),
             ("urlencode", b"x" * 17000, 1),
         ]
@@ -123,9 +129,11 @@ def validate_html_with_sanitizers():
             ('captcha',b'<div id="randomDiv" class="hide"></div>'),
             ('status','<label>状态</label><div><span>正常</span></div>'.encode()),
             ('assets',b'<script src="/Self/static/login.js"></script><link href="/Self/static/login.css">'),
+            ('metric','<dt>已用流量</dt><dd><span>2 GB</span></dd>'.encode()),
+            ('metric','<dt>已用流量</dt><dt>别的指标</dt><dd>9 GB</dd>'.encode()),
         ]
         for operation, payload in cases:
-            args=[str(binary),operation] + (['checkcode'] if operation=='input' else [])
+            args=[str(binary),operation] + (['checkcode'] if operation=='input' else ['已用流量'] if operation=='metric' else [])
             result=subprocess.run(args,input=payload,capture_output=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'})
             if b'Sanitizer' in result.stderr or result.returncode not in (0,1): raise RuntimeError('HTML extraction failed sanitizer check')
     finally: shutil.rmtree(temp)

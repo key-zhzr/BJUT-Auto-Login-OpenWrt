@@ -69,8 +69,7 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(self.status()['state'], 'authenticated_limited')
         self.assertEqual(self.status()['session'], 'online')
         self.assertEqual(self.status()['offline_count'], 0)
-        self.assertEqual(self.status()['account'], '25***09')
-        self.assertNotIn('25000009', json.dumps(self.status()))
+        self.assertEqual(self.status()['account'], '25000009')
         self.assertNotIn('/eportal/portal/login?', self.requests())
 
     def test_public_preauth_allowlist_does_not_hide_explicitly_offline_session(self):
@@ -103,8 +102,8 @@ class MultiUplinkTests(unittest.TestCase):
         data = self.status()
         self.assertEqual(len(data['uplinks']), 2)
         a, b = data['uplinks']
-        self.assertEqual((a['network'], a['device6'], a['account']), ('wan14','lan6','25***01'))
-        self.assertEqual((b['network'], b['account']), ('wan24','25***02'))
+        self.assertEqual((a['network'], a['device6'], a['account']), ('wan14','lan6','25000001'))
+        self.assertEqual((b['network'], b['account']), ('wan24','25000002'))
         self.assertEqual(a['ipv6'], '2001:da8:216::123')
         self.assertEqual(b['internet6'], 'not_configured')
         self.assertIn('ifhost!lan6!2001:da8:216::123', self.requests())
@@ -285,8 +284,8 @@ class MultiUplinkTests(unittest.TestCase):
         ticket = json.loads(response.stdout)['ticket']
         return ticket, owner
 
-    def billing_poll(self, ticket, owner, env):
-        for _ in range(100):
+    def billing_poll(self, ticket, owner, env, attempts=100):
+        for _ in range(attempts):
             result = self.rpc('billing_poll', {'ticket':ticket,'owner':owner}, **env)
             value = json.loads(result.stdout)
             if value.get('result',{}).get('state') != 'loading': return value
@@ -479,7 +478,7 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('user_account=25000002%40campus',self.requests())
         item=json.loads((self.state/'uplink-dorm_b.json').read_text())
-        self.assertEqual(item['account'],'25***02')
+        self.assertEqual(item['account'],'25000002')
 
     def test_already_online_response_does_not_rotate_or_claim_selected_account(self):
         self.run_service(scenario='type1_already_online',MOCK_LOGIN_TYPE='type1',MOCK_ACCOUNT_COUNT='2',MOCK_SSID='bjut_sushe')
@@ -495,12 +494,12 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(item['state'],'authenticated_limited')
         self.assertEqual(item['session'],'online')
         self.assertEqual(item['internet4'],'unreachable')
-        self.assertEqual(item['account'],'25***01')
+        self.assertEqual(item['account'],'25000001')
 
     def test_lgn_landing_identifies_unauthenticated_gateway_without_user_info(self):
         result=self.run_service(scenario='type3_success',MOCK_DEVICE='eth0',MOCK_TRANSPORT_ACTUAL='ethernet',MOCK_LOGIN_TYPE='auto',MOCK_IPV4='172.26.33.104')
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(self.status()['protocol'],'type3')
+        self.assertEqual(self.status()['protocol'],'lgn')
         self.assertEqual(self.status()['session'],'online')
         self.assertIn('URL https://lgn.bjut.edu.cn/',self.requests())
         self.assertIn('/eportal/portal/login?',self.requests())
@@ -523,6 +522,74 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(self.html_run('captcha', html).stdout, '0')
         self.assertEqual(self.html_run('captcha', html.replace(' hide','')).stdout, '1')
 
+
+    def test_account_editor_keeps_password_and_order_and_delete_prunes_uplinks(self):
+        env=self.config();path=Path(env['MOCK_CONFIG_JSON'])
+        response=self.rpc('account_save',{'account':'account2','username':'25000022','password':'','enabled':'1','login_type':'lgn'},**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'ready',response.stderr)
+        data=json.loads(path.read_text())
+        self.assertEqual(data['account2']['password'],'second fixture password')
+        self.assertEqual(data['account2']['login_type'],'type3')
+        self.assertEqual(data['account1']['password'],'first fixture password')
+        response=self.rpc('account_move',{'account':'account2','direction':'up'},**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'ready',response.stderr)
+        self.assertLess(list(json.loads(path.read_text())).index('account2'),list(json.loads(path.read_text())).index('account1'))
+        response=self.rpc('account_delete',{'account':'account1'},**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'ready',response.stderr)
+        data=json.loads(path.read_text());self.assertNotIn('account1',data)
+        self.assertEqual(data['dorm_a']['accounts'],'')
+        self.assertEqual(data['dorm_b']['accounts'],['account2'])
+
+    def test_account_creation_and_invalid_edits_are_atomic(self):
+        env=self.config();path=Path(env['MOCK_CONFIG_JSON']);original=path.read_bytes()
+        for args in [dict(account='',username='25000001',password='new',enabled='1',login_type='auto'),dict(account='missing',username='25000003',password='new',enabled='1',login_type='auto'),dict(account='',username='bad;cmd',password='new',enabled='1',login_type='auto')]:
+            response=self.rpc('account_save',args,**env);self.assertEqual(json.loads(response.stdout)['state'],'error');self.assertEqual(path.read_bytes(),original)
+        response=self.rpc('account_save',dict(account='',username='25000003',password='fixture-password',enabled='0',login_type='bjut_wifi'),**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'ready',response.stderr)
+        new=[item for key,item in json.loads(path.read_text()).items() if key.startswith('app_')][0]
+        self.assertEqual(new['password'],'fixture-password');self.assertEqual(new['enabled'],'0')
+        public=self.rpc('accounts',{},**env);self.assertNotIn('fixture-password',public.stdout);self.assertIn('bjut_wifi',public.stdout)
+
+    def test_uplink_editor_validates_sources_and_preserves_account_mapping(self):
+        env=self.config();path=Path(env['MOCK_CONFIG_JSON']);original=path.read_bytes()
+        response=self.rpc('uplink_save',{'uplink':'dorm_a','payload':json.dumps({'network':'wan14','source4':'256.0.0.1'})},**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'error');self.assertEqual(path.read_bytes(),original)
+        response=self.rpc('uplink_save',{'uplink':'dorm_a','payload':json.dumps({'network':'wan14','network6':'wan16','source4':'10.126.19.139','source6':'2001:db8::1','login_type':'bjut-sushe','accounts':'account2'})},**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'ready',response.stderr)
+        data=json.loads(path.read_text());self.assertEqual(data['dorm_a']['accounts'],'account2');self.assertEqual(data['dorm_b']['accounts'],['account2']);self.assertEqual(data['account1']['password'],'first fixture password')
+
+    def test_date_codec_round_trips_calendar_and_rejects_impossible_days(self):
+        import datetime
+        for date in ['1970-01-01','2000-02-29','2024-02-29','2026-10-13','2199-12-31']:
+            encoded=subprocess.run([str(self.codec),'date-days'],input=date,text=True,capture_output=True,check=True).stdout
+            self.assertEqual(int(encoded),(datetime.date.fromisoformat(date)-datetime.date(1970,1,1)).days)
+            decoded=subprocess.run([str(self.codec),'days-date'],input=encoded,text=True,capture_output=True,check=True).stdout.strip()
+            self.assertEqual(decoded,date)
+        for date in ['2026-02-29','2026-04-31','1969-12-31','2200-01-01','2026-1-01']:
+            self.assertNotEqual(subprocess.run([str(self.codec),'date-days'],input=date,text=True,capture_output=True).returncode,0,date)
+
+    def test_billing_flow_metrics_use_actual_values(self):
+        env=self.config();ticket,owner=self.billing('billing_success',env);value=self.billing_poll(ticket,owner,env)['result']
+        self.assertEqual(float(value['usedFlow']),2048);self.assertEqual(float(value['totalFlow']),3072);self.assertEqual(float(value['remainingFlow']),1024)
+
+    def test_records_split_dates_and_merge_global_page_without_private_fields(self):
+        env=self.config();owner='1'*32
+        response=self.rpc('billing_records',dict(uplink='dorm_a',account='account1',owner=owner,kind='usage',start_date='2026-05-01',end_date='2026-08-29',year='',page='2'),BJUT_BILLING=CORE/'files/usr/libexec/bjut-billing',BJUT_HTML=self.html,MOCK_SCENARIO='billing_success',**env)
+        self.assertEqual(response.returncode,0,response.stderr);ticket=json.loads(response.stdout)['ticket'];value=self.billing_poll(ticket,owner,env,attempts=600)['result']
+        self.assertEqual(value['state'],'ready',value);self.assertEqual(value['total'],122);self.assertEqual(len(value['rows']),22)
+        self.assertEqual(value['rows'][0][0],'2026-06-30 #99');self.assertEqual(value['rows'][21][0],'2026-05-01 #0')
+        self.assertNotIn('private-field',json.dumps(value));self.assertNotIn('private-session',json.dumps(value))
+        self.assertIn('startTime=2026-07-01&endTime=2026-08-29',self.requests());self.assertIn('startTime=2026-05-02&endTime=2026-06-30',self.requests());self.assertIn('startTime=2026-05-01&endTime=2026-05-01',self.requests())
+
+    def test_invalid_record_dates_fail_before_any_campus_request(self):
+        env=self.config();response=self.rpc('billing_records',dict(uplink='dorm_a',account='current',owner='1'*32,kind='usage',start_date='2026-02-29',end_date='2026-03-01',year='',page='1'),**env)
+        self.assertEqual(json.loads(response.stdout)['state'],'error');self.assertEqual(self.requests(),'')
+
+    def test_canonical_protocol_names_are_accepted_in_existing_configuration(self):
+        env=self.config();path=Path(env['MOCK_CONFIG_JSON']);data=json.loads(path.read_text())
+        data['main']['login_type']='lgn';data['dorm_a']['login_type']='bjut-sushe';data['account1']['login_type']='bjut-sushe';path.write_text(json.dumps(data))
+        response=self.rpc('settings',{},**env);self.assertEqual(response.returncode,0,response.stderr)
+        public=json.loads(response.stdout);self.assertEqual(public['service']['login_type'],'lgn');self.assertEqual(public['uplinks'][0]['login_type'],'bjut-sushe')
 
 if __name__ == '__main__':
     unittest.main()

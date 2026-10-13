@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # rpcd checks the caller's session/ACL before executing these named methods.
 if [ "$1" = list ]; then
-	printf '%s\n' '{"status":{},"accounts":{},"ports":{},"logs":{},"settings":{},"save_settings":{"enabled":"","interval":"","timeout":"","offline_confirmations":"","managed_routes":"","mwan3":"","log_level":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true}}'
+	printf '%s\n' '{"status":{},"accounts":{},"ports":{},"logs":{},"settings":{},"save_settings":{"enabled":"","network":"","device":"","transport":"","login_type":"","compatibility":"","strict_network":"","expected_ssid":"","expected_bssid":"","interval":"","timeout":"","offline_confirmations":"","max_backoff":"","credential_cooldown":"","post_login_delay":"","online_url":"","online_code":"","managed_routes":"","mwan3":"","log_level":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true},"account_save":{"account":"","username":"","password":"","enabled":"","login_type":""},"account_delete":{"account":""},"account_move":{"account":"","direction":""},"uplink_save":{"uplink":"","payload":""},"uplink_delete":{"uplink":""},"billing_records":{"uplink":"","account":"","owner":"","kind":"","start_date":"","end_date":"","year":"","page":""}}'
 	exit 0
 fi
 [ "$1" = call ] || exit 2
@@ -35,7 +35,7 @@ owner_hash() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 uci_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
 
 accounts_list() {
-	local section user enabled present comma=""
+	local section user enabled present account_type comma=""
 	printf '{"accounts":['
 	for section in $ACCOUNT_SECTIONS; do
 		config_get user "$section" username ""
@@ -44,6 +44,7 @@ accounts_list() {
 		[ -z "$present" ] || present=1
 		json_init; json_add_string id "$section"; json_add_string user "$user"
 		json_add_int enabled "$enabled"; json_add_int hasPassword "${present:-0}"
+        config_get account_type "$section" login_type auto; json_add_string loginType "$(protocol_name "$account_type")"
 		printf '%s' "$comma"; comma=,; json_dump
 	done
 	printf ']}\n'
@@ -115,8 +116,12 @@ launch_billing() {
 }
 
 billing_begin() {
-	local owner uplink account ticket now old
+	local owner uplink account ticket now old key kind start end year page
 	owner="$(request_value owner)"
+    if [ "${1:-}" = records ]; then
+        kind="$(request_value kind)"; start="$(request_value start_date)"; end="$(request_value end_date)"; year="$(request_value year)"; page="$(request_value page)"
+        billing_validate_records "$kind" "$start" "$end" "$year" "$page" || { reply error "请检查记录类型、日期和页码"; return; }
+    fi
 	valid_ticket "$owner" && [ "$owner" != 00000000000000000000000000000000 ] || { reply error "请重新登录路由管理页面"; return; }
 	uplink="$(request_value uplink)"; account="$(request_value account)"
 	select_uplink "$uplink" || { reply error "所选上游不可用"; return; }
@@ -133,6 +138,9 @@ billing_begin() {
 	printf '%s' "$owner" >"$BILLING_JOB/owner"
 	printf '%s' "$now" >"$BILLING_JOB/created"
 	json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action begin
+    if [ "${1:-}" = records ]; then
+        json_add_string kind "$kind"; json_add_string start_date "$start"; json_add_string end_date "$end"; json_add_string year "$year"; json_add_string page "$page"
+    fi
 	json_dump >"$BILLING_JOB/request.json"
 	billing_progress loading 2 "正在准备计费查询"
 	launch_billing
@@ -188,6 +196,12 @@ case "$2" in
 		reply loading "已开始核对上游与登录状态" ;;
 	sync_accounts) sync_accounts ;;
 	billing_start) billing_begin ;;
+    billing_records) billing_begin records ;;
+    account_save) workbench_account_save ;;
+    account_delete) workbench_account_delete ;;
+    account_move) workbench_account_move ;;
+    uplink_save) workbench_uplink_save ;;
+    uplink_delete) workbench_uplink_delete ;;
 	billing_poll)
 		ticket_job || { reply error "查询已过期，请刷新"; exit 0; }
 		printf '{"result":'; cat "$BILLING_JOB/result.json"
@@ -203,6 +217,7 @@ case "$2" in
 		fi
 		uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"; account="$(json_file_value "$BILLING_JOB/request.json" '@.account')"
 		json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action "$action"; json_add_string code "$code"
+        for key in kind start_date end_date year page; do value="$(json_file_value "$BILLING_JOB/request.json" "@.$key")"; [ -z "$value" ] || json_add_string "$key" "$value"; done
 		json_dump >"$BILLING_JOB/request.json"
 		billing_progress loading 40 "正在核对验证码"; launch_billing
 		reply loading "正在继续计费查询" ;;

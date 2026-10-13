@@ -147,32 +147,6 @@ return view.extend({
 		o = s.option(form.Value, 'expected_ssid', _('SSID')); o.modalonly = true;
 		o = s.option(form.Value, 'expected_bssid', _('BSSID')); o.modalonly = true;
 
-		s = m.section(form.GridSection, 'account', _('账号'));
-		s.anonymous = true;
-		s.addremove = true;
-		s.sortable = true;
-		s.nodescriptions = true;
-		s.description = _('账号按此处顺序尝试。只有网关明确返回拒绝时才会切换下一个账号；超时或响应不明确时不会轮换。停用账号仍可用于手动登录和计费查询。');
-
-		o = s.option(form.Flag, 'enabled', _('启用'));
-		o.default = o.enabled;
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'username', _('账号'));
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'password', _('密码'));
-		o.password = true;
-		o.modalonly = true;
-		o.rmempty = false;
-
-		o = s.option(form.ListValue, 'login_type', _('适用协议'));
-		o.value('auto', _('全部 / 自动'));
-		o.value('type1', _('仅 bjut-sushe'));
-		o.value('type2', _('仅 bjut_wifi'));
-		o.value('type3', _('仅 lgn 有线'));
-		o.default = 'auto';
-
 		return m.render();
 	}
 });
