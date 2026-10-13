@@ -97,6 +97,9 @@ def validate_c_with_sanitizers():
             ("date-days", b"2026-02-29", 1),
             ("date-days", b"2026-10-13\nextra", 1),
             ("days-date", b"0", 0),
+            ("timestamp-date", b"2214143999000", 0),
+            ("timestamp-date", b"7258089600000", 1),
+            ("timestamp-date", b"1791820800000x", 1),
             ("eportal", b"\xff", 1),
             ("urlencode", b"x" * 17000, 1),
         ]

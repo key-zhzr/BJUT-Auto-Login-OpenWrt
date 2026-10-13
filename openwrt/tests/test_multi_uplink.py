@@ -590,6 +590,17 @@ class MultiUplinkTests(unittest.TestCase):
         env=self.config();response=self.rpc('billing_records',dict(uplink='dorm_a',account='current',owner='1'*32,kind='usage',start_date='2026-02-29',end_date='2026-03-01',year='',page='1'),**env)
         self.assertEqual(json.loads(response.stdout)['state'],'error');self.assertEqual(self.requests(),'')
 
+    def test_record_dates_are_readable_without_reformatting_other_numeric_fields(self):
+        env=self.config();owner='1'*32
+        response=self.rpc('billing_records',dict(uplink='dorm_a',account='account1',owner=owner,kind='usage',start_date='2026-10-13',end_date='2026-10-13',year='',page='1'),BJUT_BILLING=CORE/'files/usr/libexec/bjut-billing',BJUT_HTML=self.html,MOCK_SCENARIO='billing_success',MOCK_NUMERIC_RECORD_DATES='1',**env)
+        self.assertEqual(response.returncode,0,response.stderr)
+        ticket=json.loads(response.stdout)['ticket'];value=self.billing_poll(ticket,owner,env,attempts=600)['result']
+        self.assertEqual(value['state'],'ready',value)
+        row=dict(zip(value['columns'],value['rows'][0]))
+        self.assertEqual(row['loginTime'],'2026-10-13 00:00:00')
+        self.assertEqual(row['logoutTime'],'2026-10-13 00:01:00')
+        self.assertEqual(row['flow'],'1791820800000')
+
     def test_canonical_protocol_names_are_accepted_in_existing_configuration(self):
         env=self.config();path=Path(env['MOCK_CONFIG_JSON']);data=json.loads(path.read_text())
         data['main']['login_type']='lgn';data['dorm_a']['login_type']='bjut-sushe';data['account1']['login_type']='bjut-sushe';path.write_text(json.dumps(data))

@@ -61,6 +61,19 @@ class OpenWrtPortTests(unittest.TestCase):
         for token in tokens:
             self.assertRegex(token, r'^[0-9a-f]{32}$')
 
+    def test_billing_timestamp_dates_use_campus_timezone_beyond_2038(self):
+        for value, expected in (
+            ('1791820800000', '2026-10-13 00:00:00'),
+            ('1791820800', '2026-10-13 00:00:00'),
+            ('2214143999000', '2040-02-29 23:59:59'),
+            ('7258089599000', '2199-12-31 23:59:59'),
+        ):
+            self.assertEqual(self.codec_run('timestamp-date', value), expected)
+        for invalid in ('2026-10-13', '7258089600000', '9999999999999', '0000000000000', '1791820800000x'):
+            result = subprocess.run([str(self.codec), 'timestamp-date'], input=invalid.encode(), capture_output=True)
+            self.assertNotEqual(result.returncode, 0, invalid)
+            self.assertEqual(result.stdout, b'', invalid)
+
     @staticmethod
     def python_eportal(value):
         encoded = value.encode("utf-16-be")

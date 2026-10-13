@@ -253,6 +253,29 @@ static int date_codec(const unsigned char *data, size_t length, int to_days)
     return printf("%04d-%02d-%02d",y,m,d+1) < 0 ? -1 : 0;
 }
 
+/* jfself dates are epoch milliseconds. Avoid time_t's 2038 limit on 32-bit
+ * routers and use the campus timezone even when the router runs in UTC. */
+static int timestamp_date(const unsigned char *data, size_t length)
+{
+    uint64_t number = 0, seconds;
+    size_t i;
+    int y = 1970, m = 1, d, clock;
+    if (length != 10 && length != 13) return -1;
+    for (i = 0; i < length; i++) {
+        if (data[i] < '0' || data[i] > '9') return -1;
+        number = number * 10 + data[i] - '0';
+    }
+    if (!number) return -1;
+    seconds = (length == 13 ? number / 1000 : number) + 8 * 3600;
+    if (seconds / 86400 > 84005) return -1;
+    d = (int)(seconds / 86400);
+    clock = (int)(seconds % 86400);
+    while (d >= 365 + leap(y)) { d -= 365 + leap(y); y++; }
+    while (d >= month_days(y, m)) { d -= month_days(y, m); m++; }
+    return printf("%04d-%02d-%02d %02d:%02d:%02d", y, m, d + 1,
+                  clock / 3600, clock / 60 % 60, clock % 60) < 0 ? -1 : 0;
+}
+
 static void usage(const char *program)
 {
     fprintf(stderr, "Usage: %s {urlencode|eportal|base64|validate-ipv6|id32|random16} < input\n", program);
@@ -311,6 +334,8 @@ int main(int argc, char **argv)
         result = date_codec(data, length, 1);
     } else if (strcmp(argv[1], "days-date") == 0) {
         result = date_codec(data, length, 0);
+    } else if (strcmp(argv[1], "timestamp-date") == 0) {
+        result = timestamp_date(data, length);
     } else if (strcmp(argv[1], "id32") == 0) {
         /* A portable identifier, never a password or authentication hash. */
         uint32_t value = UINT32_C(2166136261);

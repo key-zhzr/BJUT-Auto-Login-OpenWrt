@@ -355,7 +355,7 @@ billing_record_fetch() {
 }
 
 billing_publish_records() {
- local actual="$1" start end year page first last cursor stop from to offset=0 total=0 page_from page_to page_index global index key value column row_position list row_bytes window_count
+ local actual="$1" start end year page first last cursor stop from to offset=0 total=0 page_from page_to page_index global index key value column row_position list row_bytes window_count formatted
  start="$(json_file_value "$BILLING_JOB/request.json" '@.start_date')"; end="$(json_file_value "$BILLING_JOB/request.json" '@.end_date')"; year="$(json_file_value "$BILLING_JOB/request.json" '@.year')"; page="$(json_file_value "$BILLING_JOB/request.json" '@.page')"
  billing_validate_records "$BILLING_RECORD_KIND" "$start" "$end" "$year" "$page" && billing_record_spec "$BILLING_RECORD_KIND" || { billing_progress error 100 '记录查询内容无效'; return 1; }
  BILLING_REFERER="https://jfself.bjut.edu.cn$RECORD_PAGE"
@@ -387,6 +387,12 @@ billing_publish_records() {
      json_init;json_add_array row;column=0
      for key in $RECORD_FIELDS; do
       case "$row_bytes" in '['*) value="$(json_file_value "$RECORD_SOURCE" "$row_position[$column]")";; *) value="$(json_file_value "$RECORD_SOURCE" "$row_position.$key")";; esac
+      case "$key" in
+       loginTime|logoutTime|startAt|endAt|billedAt|paidAt|operatedAt|fldoperatedate|fldchangedate|fldexcutedate|fldstatedate|fldnewvalue)
+        case "$value" in ''|*[!0-9]*) ;; *)
+         if formatted="$(printf '%s' "$value" | "$CODEC_BIN" timestamp-date 2>/dev/null)"; then value="$formatted"; fi;;
+        esac;;
+      esac
       [ "${#value}" -le 512 ] || value='内容较长';json_add_string '' "$value";column=$((column+1))
      done
      json_close_array;json_dump >>"$list"
