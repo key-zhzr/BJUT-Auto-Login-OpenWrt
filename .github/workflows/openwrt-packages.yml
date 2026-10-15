@@ -20,6 +20,7 @@ on:
           - mediatek/filogic
           - rockchip/armv8
           - bcm27xx/bcm2711
+          - qualcommax/ipq60xx
           - ipq40xx/generic
           - mvebu/cortexa9
           - ipq806x/generic
@@ -35,7 +36,7 @@ concurrency:
 
 jobs:
   plan:
-    if: github.repository == 'key-zhzr/BJUT-Auto-Login-OpenWrt'
+    if: github.repository == 'key-zhzr/BJUT-Auto-Login-OpenWrt' || github.repository == 'neooier/BJUT-Auto-Login-OpenWrt'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
