@@ -30,7 +30,7 @@
 
 ### 连我 NN6000 v2
 
-在本 fork 的 Actions 中选择 `OpenWrt packages`，将 `platform` 设为 `qualcommax/ipq60xx`，`package_format` 设为 `apk` 或 `all`。构建使用 OpenWrt 25.12.5 官方 SDK，生成本体和 LuCI 两个 APK。官方 SDK 容器标签为 `ghcr.io/openwrt/sdk:qualcommax-ipq60xx-25.12.5`。
+在 Actions 中选择 `OpenWrt packages`，将 `platform` 设为 `qualcommax/ipq60xx`，`package_format` 设为 `apk` 或 `all`。构建使用 OpenWrt 25.12.5 官方 SDK，生成本体和 LuCI 两个 APK。官方 SDK 容器标签为 `ghcr.io/openwrt/sdk:qualcommax-ipq60xx-25.12.5`。
 
 OpenWrt 24.10.8 没有官方 IPQ60xx SDK，因此该平台不生成 IPK；选择 `all` 时自动跳过此组合，单独选择 `ipk` 时明确报错。这里构建的是插件安装包，不是 NN6000 v2 的刷机固件；使用 ImmortalWrt、NSS 或其他定制固件时，需先核对系统版本、包格式和 ABI，必要时使用该固件自己的 SDK 编译。
 
