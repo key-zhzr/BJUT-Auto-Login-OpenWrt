@@ -8,6 +8,7 @@
     { "target": "mediatek/filogic", "arch": "aarch64_cortex-a53" },
     { "target": "rockchip/armv8", "arch": "aarch64_generic" },
     { "target": "bcm27xx/bcm2711", "arch": "aarch64_cortex-a72" },
+    { "target": "qualcommax/ipq60xx", "arch": "aarch64_cortex-a53", "formats": ["apk"] },
     { "target": "ipq40xx/generic", "arch": "arm_cortex-a7_neon-vfpv4" },
     { "target": "mvebu/cortexa9", "arch": "arm_cortex-a9_vfpv3-d16" },
     { "target": "ipq806x/generic", "arch": "arm_cortex-a15_neon-vfpv4" },

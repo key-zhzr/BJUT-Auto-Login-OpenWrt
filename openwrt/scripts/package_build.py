@@ -51,11 +51,15 @@ def build_matrix(package_format='all', platform='all'):
         for target in config['platforms']:
             if platform != 'all' and target['target'] != platform:
                 continue
+            # IPQ60xx has an official 25.12 SDK, but no 24.10 SDK.
+            if release['format'] not in target.get('formats', ('ipk', 'apk')):
+                continue
+            target = {key: value for key, value in target.items() if key != 'formats'}
             sdk = target['target'].replace('/', '-') + '-' + release['version']
             rows.append({**release, **target, 'sdk': sdk,
                          'id': 'openwrt-' + sdk + '-' + release['format']})
     if not rows or len({r['id'] for r in rows}) != len(rows):
-        raise ValueError('Empty or duplicate build matrix')
+        raise ValueError('No supported SDK for the selected platform/format, or duplicate build matrix')
     return {'include': rows}
 
 

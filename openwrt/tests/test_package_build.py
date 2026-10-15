@@ -41,12 +41,19 @@ class PackageBuildTests(unittest.TestCase):
 
     def test_matrix_matches_format_to_firmware_and_filters_platform(self):
         matrix = build.build_matrix()['include']
-        self.assertEqual(len(matrix), 18)
+        self.assertEqual(len(matrix), 19)
         self.assertEqual({r['version'] for r in matrix if r['format'] == 'ipk'}, {'24.10.8'})
         self.assertEqual({r['version'] for r in matrix if r['format'] == 'apk'}, {'25.12.5'})
         selected = build.build_matrix('apk', 'ramips/mt7621')['include']
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]['sdk'], 'ramips-mt7621-25.12.5')
+        nn6000 = build.build_matrix('all', 'qualcommax/ipq60xx')['include']
+        self.assertEqual(len(nn6000), 1)
+        self.assertEqual(nn6000[0]['sdk'], 'qualcommax-ipq60xx-25.12.5')
+        self.assertEqual(nn6000[0]['arch'], 'aarch64_cortex-a53')
+        self.assertEqual(nn6000[0]['format'], 'apk')
+        with self.assertRaises(ValueError):
+            build.build_matrix('ipk', 'qualcommax/ipq60xx')
         for args in [('zip', 'all'), ('all', '../unknown')]:
             with self.assertRaises(ValueError):
                 build.build_matrix(*args)
