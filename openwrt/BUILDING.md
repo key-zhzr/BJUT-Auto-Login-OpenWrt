@@ -19,6 +19,7 @@
 | `mediatek/filogic` | `aarch64_cortex-a53` | MT7981/MT7986/MT7988 路由器 |
 | `rockchip/armv8` | `aarch64_generic` | Rockchip ARM64 设备 |
 | `bcm27xx/bcm2711` | `aarch64_cortex-a72` | Raspberry Pi 4 |
+| `qualcommax/ipq60xx` | `aarch64_cortex-a53` | 连我 NN6000 v2 / IPQ6000（仅 25.12 APK） |
 | `ipq40xx/generic` | `arm_cortex-a7_neon-vfpv4` | IPQ40xx 路由器 |
 | `mvebu/cortexa9` | `arm_cortex-a9_vfpv3-d16` | Marvell Armada 路由器 |
 | `ipq806x/generic` | `arm_cortex-a15_neon-vfpv4` | IPQ806x 路由器 |
@@ -26,6 +27,12 @@
 | `ath79/generic` | `mips_24kc` | 常见 Atheros MIPS 路由器 |
 
 配置见 [`build-targets.json`](build-targets.json)。修改 SDK 版本时应核对[官方发布目录](https://downloads.openwrt.org/releases/)中的目标及包架构，再执行完整构建。
+
+### 连我 NN6000 v2
+
+在 Actions 中选择 `OpenWrt packages`，将 `platform` 设为 `qualcommax/ipq60xx`，`package_format` 设为 `apk` 或 `all`。构建使用 OpenWrt 25.12.5 官方 SDK，生成本体和 LuCI 两个 APK。官方 SDK 容器标签为 `ghcr.io/openwrt/sdk:qualcommax-ipq60xx-25.12.5`。
+
+OpenWrt 24.10.8 没有官方 IPQ60xx SDK，因此该平台不生成 IPK；选择 `all` 时自动跳过此组合，单独选择 `ipk` 时明确报错。这里构建的是插件安装包，不是 NN6000 v2 的刷机固件；使用 ImmortalWrt、NSS 或其他定制固件时，需先核对系统版本、包格式和 ABI，必要时使用该固件自己的 SDK 编译。
 
 安装前在路由器上执行 `ubus call system board`，查看固件版本及 `release.target`；再用 `opkg print-architecture` 或 `apk --print-arch` 核对包架构。选择与固件匹配的版本、平台和格式。ImmortalWrt 或其他定制固件建议使用其对应 SDK 编译，不能仅根据 CPU 名称判断兼容性。
 
@@ -35,7 +42,7 @@
 
 更新两个包的 `PKG_VERSION`，保持一致，再推送 `openwrt-v<版本号>` 标签。例如当前版本对应 `openwrt-v0.1.6`。
 
-标签触发全部 18 项编译。仅在离线检查、全部 SDK 编译、两个包的完整性及校验和核对均通过后，才上传安装包并发布 GitHub Release。Release 包含可直接下载的 IPK/APK、`builds.json` 和 `SHA256SUMS`。已经公开发布的版本不会被重复构建覆盖；修改后使用新版本标签。
+标签触发全部 19 项编译。仅在离线检查、全部 SDK 编译、两个包的完整性及校验和核对均通过后，才上传安装包并发布 GitHub Release。Release 包含可直接下载的 IPK/APK、`builds.json` 和 `SHA256SUMS`。已经公开发布的版本不会被重复构建覆盖；修改后使用新版本标签。
 
 手动运行仅生成 Actions 附件，不发布版本。工作流默认令牌权限为只读，只有标签发布任务取得 `contents: write`；不需要额外令牌或 PR 权限。
 
