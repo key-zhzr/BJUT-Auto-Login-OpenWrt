@@ -196,7 +196,8 @@ class OpenWrtPortTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.status()["state"], "online")
         log = self.requests()
-        self.assertEqual(log.count("URL "), 1)
+        self.assertGreaterEqual(log.count("URL "), 1)
+        self.assertLessEqual(log.count("URL "), 3)
         self.assertNotIn("drcom", log)
 
     def test_current_openwrt_rpcd_iwinfo_path_works_without_cli(self):

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -75,6 +75,7 @@ define Package/bjut-autologin/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
  chmod 0600 /etc/config/bjut-autologin 2>/dev/null || true
+ /usr/sbin/bjut-autologin setup >/dev/null 2>&1 || true
  [ ! -x /etc/init.d/rpcd ] || /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 fi
 exit 0

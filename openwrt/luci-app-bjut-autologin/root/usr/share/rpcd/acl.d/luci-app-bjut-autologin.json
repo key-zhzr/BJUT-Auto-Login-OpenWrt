@@ -17,7 +17,8 @@
           "ports",
           "logs",
           "settings",
-          "billing_poll"
+          "billing_poll",
+          "dashboard"
         ]
       }
     },
@@ -37,7 +38,11 @@
           "account_move",
           "uplink_save",
           "uplink_delete",
-          "billing_records"
+          "billing_records",
+          "logout",
+          "switch_account",
+          "billing_details",
+          "billing_action"
         ]
       }
     }

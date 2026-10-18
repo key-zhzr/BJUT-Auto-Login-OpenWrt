@@ -13,6 +13,7 @@ EXTRA_HELP="
 
 start_service() {
 	local enabled
+	"$PROG" setup >/dev/null || return 1
 	config_load bjut-autologin
 	config_get_bool enabled main enabled 0
 	[ "$enabled" = "1" ] || return 0

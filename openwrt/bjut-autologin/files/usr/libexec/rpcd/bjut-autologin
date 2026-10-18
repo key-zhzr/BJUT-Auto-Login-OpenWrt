@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # rpcd checks the caller's session/ACL before executing these named methods.
 if [ "$1" = list ]; then
-	printf '%s\n' '{"status":{},"accounts":{},"ports":{},"logs":{},"settings":{},"save_settings":{"enabled":"","network":"","device":"","transport":"","login_type":"","compatibility":"","strict_network":"","expected_ssid":"","expected_bssid":"","interval":"","timeout":"","offline_confirmations":"","max_backoff":"","credential_cooldown":"","post_login_delay":"","online_url":"","online_code":"","managed_routes":"","mwan3":"","log_level":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true},"account_save":{"account":"","username":"","password":"","enabled":"","login_type":""},"account_delete":{"account":""},"account_move":{"account":"","direction":""},"uplink_save":{"uplink":"","payload":""},"uplink_delete":{"uplink":""},"billing_records":{"uplink":"","account":"","owner":"","kind":"","start_date":"","end_date":"","year":"","page":""}}'
+	printf '%s\n' '{"status":{},"dashboard":{},"logout":{"uplink":"","account":""},"switch_account":{"uplink":"","account":""},"accounts":{},"ports":{},"logs":{},"settings":{},"save_settings":{"enabled":"","transport":"","login_type":"","compatibility":"","strict_network":"","expected_ssid":"","expected_bssid":"","interval":"","timeout":"","offline_confirmations":"","max_backoff":"","credential_cooldown":"","post_login_delay":"","online_url":"","online_code":"","managed_routes":"","mwan3":"","log_level":"","log_target":"","log_directory":"","log_web":"","log_max_kb":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_details":{"uplink":"","account":"","owner":"","module":""},"billing_action":{"ticket":"","owner":"","operation":"","payload":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true},"account_save":{"account":"","username":"","password":"","enabled":"","login_type":""},"account_delete":{"account":""},"account_move":{"account":"","direction":""},"uplink_save":{"uplink":"","payload":""},"uplink_delete":{"uplink":""},"billing_records":{"uplink":"","account":"","owner":"","kind":"","start_date":"","end_date":"","year":"","page":""}}'
 	exit 0
 fi
 [ "$1" = call ] || exit 2
@@ -112,18 +112,31 @@ sync_accounts() {
 launch_billing() {
 	# Detach from rpcd's bounded request lifetime. The polling method only reads
 	# the caller's ticket; it cannot run arbitrary commands or read arbitrary files.
+	rm -f "$BILLING_JOB/worker-pid"
+	printf '%s' "$(date +%s)" >"$BILLING_JOB/launched"
 	/bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" </dev/null >/dev/null 2>&1 &
 }
 
 billing_begin() {
-	local owner uplink account ticket now old key kind start end year page
+	local owner uplink account ticket now old key kind start end year page module operation payload expectedAccount old_job
 	owner="$(request_value owner)"
+    if [ "${1:-}" = details ]; then
+      module="$(request_value module)";case "$module" in services|devices|security|history);;*)reply error '计费模块无效';return;;esac
+    fi
+    if [ "${1:-}" = action ];then
+      ticket_job && [ "$(json_file_value "$BILLING_JOB/result.json" '@.state')" = ready ] || { reply error '请先完成计费查询';return; }
+      old_job="$BILLING_JOB";expectedAccount="$(json_file_value "$old_job/result.json" '@.account')"
+      [ -n "$expectedAccount" ] || { reply error '请重新查询计费账号';return; }
+      operation="$(request_value operation)";payload="$(request_value payload)"
+      billing_validate_payload "$operation" "$payload" || { reply error '计费操作内容无效';return; }
+    fi
     if [ "${1:-}" = records ]; then
         kind="$(request_value kind)"; start="$(request_value start_date)"; end="$(request_value end_date)"; year="$(request_value year)"; page="$(request_value page)"
         billing_validate_records "$kind" "$start" "$end" "$year" "$page" || { reply error "请检查记录类型、日期和页码"; return; }
     fi
 	valid_ticket "$owner" && [ "$owner" != 00000000000000000000000000000000 ] || { reply error "请重新登录路由管理页面"; return; }
 	uplink="$(request_value uplink)"; account="$(request_value account)"
+    if [ -n "$old_job" ];then uplink="$(json_file_value "$old_job/request.json" '@.uplink')";account="$(json_file_value "$old_job/request.json" '@.account')";fi
 	select_uplink "$uplink" || { reply error "所选上游不可用"; return; }
 	[ -n "$account" ] || account=current
 	case "$account" in current) ;; *) case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) reply error "所选账号不存在"; return ;; esac ;; esac
@@ -138,6 +151,12 @@ billing_begin() {
 	printf '%s' "$owner" >"$BILLING_JOB/owner"
 	printf '%s' "$now" >"$BILLING_JOB/created"
 	json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action begin
+    [ -z "$module" ] || json_add_string module "$module"
+    if [ -n "$operation" ];then
+      json_add_string operation "$operation";json_add_string expectedAccount "$expectedAccount"
+      printf '%s' "$payload" >"$BILLING_JOB/action.json"
+      if [ "$operation" = disconnectSession ];then cp "$old_job/online.json" "$BILLING_JOB/selected-online.json" || { reply error '在线会话已过期，请刷新';return; };fi
+    fi
     if [ "${1:-}" = records ]; then
         json_add_string kind "$kind"; json_add_string start_date "$start"; json_add_string end_date "$end"; json_add_string year "$year"; json_add_string page "$page"
     fi
@@ -168,6 +187,7 @@ session_rows() {
 		item="$prefix[$index]"
 		[ -n "$(json_file_value "$source" "$item.sessionId")" ] || break
 		json_init
+		json_add_int sessionIndex "$index"
 		for key in loginTime ip ipv6 mac useTime downFlow upFlow; do
 			value="$(json_file_value "$source" "$item.$key")"
 			[ "${#value}" -le 256 ] || value=""
@@ -181,22 +201,27 @@ session_rows() {
 
 case "$2" in
 	status) print_all_status ;;
+	dashboard) printf '{"status":'; print_all_status; printf ',"ports":'; workbench_ports; printf ',"accounts":'; accounts_list; printf '}\n';;
 	accounts) accounts_list ;;
 	ports) workbench_ports ;;
 	logs) workbench_logs ;;
 	settings) workbench_settings ;;
 	save_settings) workbench_save_settings ;;
 	account_set) workbench_account_set ;;
-	login)
+	login|logout|switch_account)
 		uplink="$(request_value uplink)"; account="$(request_value account)"
 		select_uplink "$uplink" || { reply error "所选上游不可用"; exit 0; }
 		case " $ACCOUNT_SECTIONS " in *" $account "*) ;; *) [ -z "$account" ] || { reply error "所选账号不存在"; exit 0; } ;; esac
-		printf '%s' "$account" >"$STATE_DIR/manual-$uplink"
+		action=login
+		case "$2" in logout) action=logout;; switch_account) action=switch; [ -n "$account" ] || { reply error '请先选择要切换的账号'; exit 0; };; esac
+		printf '%s\n%s\n' "$action" "$account" >"$STATE_DIR/manual-$uplink.$$" && mv -f "$STATE_DIR/manual-$uplink.$$" "$STATE_DIR/manual-$uplink"
 		/bin/sh "$SELF_BIN" manual "$uplink" "$account" </dev/null >/dev/null 2>&1 &
-		reply loading "已开始核对上游与登录状态" ;;
+		reply loading "操作已排队，正在处理所选接口" ;;
 	sync_accounts) sync_accounts ;;
 	billing_start) billing_begin ;;
     billing_records) billing_begin records ;;
+    billing_details) billing_begin details ;;
+    billing_action) billing_begin action ;;
     account_save) workbench_account_save ;;
     account_delete) workbench_account_delete ;;
     account_move) workbench_account_move ;;
@@ -204,6 +229,10 @@ case "$2" in
     uplink_delete) workbench_uplink_delete ;;
 	billing_poll)
 		ticket_job || { reply error "查询已过期，请刷新"; exit 0; }
+        if [ "$(json_file_value "$BILLING_JOB/result.json" '@.state')" = loading ];then
+          worker="$(cat "$BILLING_JOB/worker-pid" 2>/dev/null)";launched="$(cat "$BILLING_JOB/launched" 2>/dev/null)"
+          if { is_uint "$worker" && ! kill -0 "$worker" 2>/dev/null; } || { [ -z "$worker" ] && is_uint "$launched" && [ "$(($(date +%s)-launched))" -gt 10 ]; };then billing_progress error 100 '计费查询已中断，请刷新后重试';fi
+        fi
 		printf '{"result":'; cat "$BILLING_JOB/result.json"
 		printf ',"sessionsAvailable":'; if [ -s "$BILLING_JOB/online.json" ]; then printf true; else printf false; fi
 		printf ',"sessions":'; session_rows; printf '}\n' ;;
@@ -217,7 +246,7 @@ case "$2" in
 		fi
 		uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"; account="$(json_file_value "$BILLING_JOB/request.json" '@.account')"
 		json_init; json_add_string uplink "$uplink"; json_add_string account "$account"; json_add_string action "$action"; json_add_string code "$code"
-        for key in kind start_date end_date year page; do value="$(json_file_value "$BILLING_JOB/request.json" "@.$key")"; [ -z "$value" ] || json_add_string "$key" "$value"; done
+        for key in kind start_date end_date year page module operation expectedAccount; do value="$(json_file_value "$BILLING_JOB/request.json" "@.$key")"; [ -z "$value" ] || json_add_string "$key" "$value"; done
 		json_dump >"$BILLING_JOB/request.json"
 		billing_progress loading 40 "正在核对验证码"; launch_billing
 		reply loading "正在继续计费查询" ;;

@@ -1,8 +1,5 @@
 config service 'main'
 	option enabled '0'
-	option network 'wwan'
-	option device ''
-	option network6 ''
 	option mwan3 '1'
 	option managed_routes '1'
 	option transport 'auto'
@@ -19,7 +16,11 @@ config service 'main'
 	option strict_network '1'
 	option expected_ssid ''
 	option expected_bssid ''
-	option log_level 'notice'
+	option log_level 'info'
+	option log_target 'system'
+	option log_directory '/tmp/bjut-autologin-log'
+	option log_web '0'
+	option log_max_kb '256'
 
 # Add one or more account sections. They are tried in file order. Keep this
 # file mode 0600 because UCI stores the password as plain text.
@@ -30,15 +31,14 @@ config service 'main'
 #	option password 'replace-me'
 #	option login_type 'auto'
 
-# For multiple uplinks, add named uplink sections. When any uplink section
-# exists, the legacy main.network is ignored. IPv6 may use a separate logical
+# Add each upstream as a named uplink. IPv6 may use a separate logical
 # interface/device; an empty network6 follows the IPv4 physical device.
 #
 # config uplink 'dorm_a'
 #	option enabled '1'
 #	option network 'wan14'
 #	option network6 'wan16'
-#	option login_type 'type1'
+#	option login_type 'bjut-sushe'
 #	list accounts 'student_a'
 #
 # config uplink 'dorm_b'

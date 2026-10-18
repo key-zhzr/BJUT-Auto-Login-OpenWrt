@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-SENSITIVE = ('src-tauri/src/', 'src-tauri/Cargo.', 'src/network-trust', 'openwrt/', '.github/')
+SENSITIVE = ('src-tauri/src/', 'src-tauri/Cargo.', 'src/network-trust', 'src/router-billing-tools.ts', 'scripts/build-router-billing-ui.mjs', 'openwrt/', '.github/')
 
 
 def git(repo, *args, check=True):
@@ -53,6 +53,19 @@ def synchronize(repo, ref, run_checks=True):
         git(repo, 'add', 'openwrt/UPSTREAM-REVIEW.md')
         git(repo, 'commit', '-m', 'docs(openwrt): record upstream merge conflicts')
         return {'state': 'conflict', 'upstream': upstream, 'branch': branch, 'conflicts': conflicts}
+    shared_view = repo / 'scripts/build-router-billing-ui.mjs'
+    shared_source = repo / 'src/router-billing-tools.ts'
+    if run_checks and shared_view.is_file() and shared_source.is_file():
+        try:
+            # Regenerate only the shared billing view. Package installation is
+            # locked and lifecycle hooks are disabled; router runtime stays JS/
+            # shell/C and never depends on Node or the App's build toolchain.
+            subprocess.run(['npm', 'ci', '--ignore-scripts'], cwd=repo, check=True)
+            subprocess.run(['node', str(shared_view), str(repo)], cwd=repo, check=True)
+            git(repo, 'add', 'openwrt/luci-app-bjut-autologin/htdocs/luci-static/resources/bjut-autologin/billing-tools.js')
+        except (subprocess.CalledProcessError, OSError):
+            git(repo, 'merge', '--abort', check=False)
+            raise RuntimeError('Shared billing view could not be regenerated; main was not changed.') from None
     if run_checks:
         try:
             subprocess.run([sys.executable, str(repo / 'openwrt/tests/run_all.py')], cwd=repo, check=True)

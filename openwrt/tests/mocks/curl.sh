@@ -40,6 +40,13 @@ if [ "$scenario" = multi_mapped ]; then scenario=type1_success; fi
 if [ "${MOCK_PUBLIC_FAILURES:-0}" = 1 ]; then
  case "$url" in http://connect.test/*|https://www.baidu.com/*|https://test6.ustc.edu.cn/*|https://dns.alidns.com/*) exit 7 ;; esac
 fi
+case "$url" in
+ http://connect.test/*) delay="${MOCK_DELAY_CONFIGURED:-}";;
+ https://www.baidu.com/*|https://test6.ustc.edu.cn/*) delay="${MOCK_DELAY_USTC:-}";;
+ https://dns.alidns.com/*) delay="${MOCK_DELAY_ALIDNS:-}";;
+ *)delay='';;
+esac
+if [ -n "$delay" ];then sleep "$delay" & wait_pid=$!;trap 'kill "$wait_pid" 2>/dev/null;exit 0' 15;wait "$wait_pid";trap - 15;fi
 code=404
 body='not found'
 
@@ -66,6 +73,18 @@ case "$url" in
    */Self/login/randomCode*)
     mime=image/png; body=fixture-image ;;
    */Self/login/getBrandInfo*) mime=application/json; body='{}' ;;
+   */Self/service/goStop*) body="<button id='stopNow'>报停</button>";;
+   */Self/service/goReopen*) body="<button id='reOpenNow' disabled>复通</button>";;
+   */Self/service/package*) body="<a class='pick-card' data-package='2'>套餐：新套餐 描述：测试</a><script>post('doPackage',{csrftoken:'fixture-csrf'});</script>";;
+   */Self/service/consumeProtect*) body="<input name='csrftoken' value='fixture-csrf'><script>window.user=(function(x){return x})({\"installmentFlag\":100,\"useMoney\":25});</script>";;
+   */Self/setting/changePassword*) body="<input name='csrftoken' value='fixture-csrf'><script>var passwordPolicy={\"FLDMINLENGTH\":8,\"FLDREQUIREUPPER\":1,\"FLDREQUIREDIGIT\":1};</script>";;
+   */Self/setting/passwordQuestion*) body="<input name='csrftoken' value='fixture-csrf'><select id='question1'><option value='1'>问题一</option><option value='2'>问题二</option><option value='3'>问题三</option></select>";;
+   */Self/service/myMac*) body='<html>MAC</html>';;
+   */Self/service/getMacList*) mime=application/json;body='{"rows":[["在线","aabbccddeeff","测试设备","2026-10-18","10.126.19.139"]]}' ;;
+   */Self/dashboard/refreshMauthType*) body="<a data-toggle='oprateMauth'>开启</a>";;
+   */Self/service/stop|*/Self/service/reOpen|*/Self/service/doPackage|*/Self/service/changeConsumeProtect|*/Self/service/bindMac|*/Self/setting/changePasswordMethod|*/Self/setting/updatePasswordQuestion|*/Self/dashboard/tooffline*)
+    [ "${MOCK_ACTION_TIMEOUT:-0}" != 1 ] || exit 28
+    mime=application/json;body='{"state":"success","success":true}' ;;
    */Self/dashboard/getOnlineList*)
     mime=application/json; body='{"rows":[{"sessionId":"fixture-session","ip":"10.126.19.139","ipv6":"2001:db8::1","mac":"aabbccddeeff","useTime":60,"userPassword":"do not expose"}]}'
     [ "$scenario" != billing_array ] || body='[{"sessionId":"fixture-session","ip":"10.126.19.139","userPassword":"do not expose"}]'
@@ -77,7 +96,7 @@ case "$url" in
     mime=application/json; body="$(python3 "$(dirname "$0")/record_fixture.py" "$url")" ;;
    *)
     if [ -n "$fixture_user" ]; then
-     body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});</script><label>状　　态：</label><div><span>正常</span></div><dl><dt>已用流量</dt><dd>2 GB</dd></dl>"
+     body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"useFlag\":1,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});var AJAXCSRFTOKEN='fixture-ajax';</script><label>状　　态：</label><div><span>正常</span></div><dl><dt>已用流量</dt><dd>2 GB</dd></dl>"
     else
      body="<script src='/Self/static/login.js'></script><script src='https://other.test/unsafe.js'></script><form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='$( [ "$scenario" = billing_captcha ] || printf hide )'></div></form>"
     fi ;;
@@ -112,6 +131,8 @@ case "$url" in
 			type2_*|auth_rejected|ambiguous|oversized|unknown_result) code=200; body='dr1002({"result":0,"msg":"not online"});'; [ ! -e "$success_marker" ] || body='dr1002({"result":1})'; ;;
 		esac
 		;;
+    */drcom/logout*|*/eportal/portal/logout*)
+        code=200;body='dr1004({"result":1})';rm -f "$success_marker";;
 	*/drcom/login*)
 		case "$scenario" in
 			type2_success|type2_rotate)

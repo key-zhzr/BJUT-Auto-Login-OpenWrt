@@ -125,35 +125,71 @@ bound_curl() {
 	fi
 	if [ "$CFG_MWAN3" = "1" ] && [ -r "$MWAN_WRAPPER" ]; then
 		mark="$(mwan_mask)" || return 98
+		if [ "${BJUT_CURL_EXEC:-0}" = 1 ]; then
+			FAMILY="$family" DEVICE="$device" SRCIP="$source" FWMARK="$mark" LD_PRELOAD="$MWAN_WRAPPER"
+			export FAMILY DEVICE SRCIP FWMARK LD_PRELOAD
+			exec "$CURL_BIN" --interface "$interface" "$@"
+		fi
 		FAMILY="$family" DEVICE="$device" SRCIP="$source" FWMARK="$mark" \
 			LD_PRELOAD="$MWAN_WRAPPER" "$CURL_BIN" --interface "$interface" "$@"
 	else
+		[ "${BJUT_CURL_EXEC:-0}" != 1 ] || exec "$CURL_BIN" --interface "$interface" "$@"
 		"$CURL_BIN" --interface "$interface" "$@"
 	fi
 }
 
 probe_family() {
-	local family="$1" url address target resolve
+	trap - 0
+	local family="$1" target directory workers="" pid code all_done success=0
 	[ "$family" != "ipv6" ] || [ -n "$LOCAL_IPV6" ] || { printf 'not_configured'; return; }
-	# Keep the configured target, then diversify across independently hosted,
-	# certificate-verified HTTPS targets. Public DNS is not a prerequisite.
-	if http_request "$CFG_ONLINE_URL" "" "" "" strict "$family" && [ "$HTTP_CODE" = "$CFG_ONLINE_CODE" ]; then
-		printf 'reachable'; return
-	fi
-	for target in ustc alidns; do
-		case "$target:$family" in
-			ustc:ipv6) url=https://test6.ustc.edu.cn/; resolve='test6.ustc.edu.cn:443:[2001:da8:d800::1043]' ;;
-			ustc:*) url=https://www.baidu.com/robots.txt; resolve='www.baidu.com:443:110.242.69.21' ;;
-			alidns:ipv6) url=https://dns.alidns.com/; resolve='dns.alidns.com:443:[2400:3200::1]' ;;
-			*) url=https://dns.alidns.com/; resolve='dns.alidns.com:443:223.5.5.5' ;;
-		esac
-		# A valid TLS connection to the fixed public service is path evidence,
-		# including 404/429/5xx; do not mistake a site's response for no network.
-		if http_request "$url" "" "$resolve" "" strict "$family"; then
-			case "$HTTP_CODE" in [1-5][0-9][0-9]) printf 'reachable'; return ;; esac
-		fi
+	for target in configured ustc alidns; do
+		directory="$WORK_DIR/$target"; mkdir -p "$directory"
+		rm -f "$directory/done" "$directory/ok"
 	done
-	printf 'unreachable'
+	for target in configured ustc alidns; do
+		directory="$WORK_DIR/$target"
+		probe_target "$family" "$target" "$directory" & workers="$workers $!"
+	done
+	while :; do
+		all_done=1
+		for target in configured ustc alidns; do
+			[ -e "$WORK_DIR/$target/done" ] || all_done=0
+			[ ! -e "$WORK_DIR/$target/ok" ] || success=1
+		done
+		[ "$success" = 0 ] && [ "$all_done" = 0 ] || break
+		sleep 0.05 2>/dev/null || sleep 1
+	done
+	for pid in $workers; do kill "$pid" 2>/dev/null || true; done
+	for pid in $workers; do wait "$pid" 2>/dev/null || true; done
+	if [ "$success" = 1 ]; then printf 'reachable'; else printf 'unreachable'; fi
+}
+
+probe_target() {
+	trap - 0
+	local family="$1" target="$2" directory="$3" url resolve="" code rc curl_pid
+	case "$target:$family" in
+		configured:*) url="$CFG_ONLINE_URL";;
+		ustc:ipv6) url=https://test6.ustc.edu.cn/; resolve='test6.ustc.edu.cn:443:[2001:da8:d800::1043]';;
+		ustc:*) url=https://www.baidu.com/robots.txt; resolve='www.baidu.com:443:110.242.69.21';;
+		alidns:ipv6) url=https://dns.alidns.com/; resolve='dns.alidns.com:443:[2400:3200::1]';;
+		*) url=https://dns.alidns.com/; resolve='dns.alidns.com:443:223.5.5.5';;
+	esac
+	set -- --silent --show-error --output "$directory/body" --write-out '%{http_code}' --dump-header "$directory/headers" \
+		--connect-timeout "$CFG_TIMEOUT" --max-time "$CFG_TIMEOUT" --max-filesize "$MAX_RESPONSE_BYTES" \
+		--noproxy '*' --proxy '' --proto '=http,https' --user-agent "BJUT-Auto-Login-OpenWrt/$VERSION"
+	if [ "$family" = ipv6 ]; then set -- "$@" --ipv6; else set -- "$@" --ipv4; fi
+	[ -z "$resolve" ] || set -- "$@" --resolve "$resolve"
+	# exec gives the worker a directly owned curl PID, so early success can
+	# cancel the other targets without leaving requests or inherited pipes alive.
+	printf 'url = "%s"\n' "$url" | (BJUT_CURL_EXEC=1; bound_curl "$family" "$@" --config -) >"$directory/code" 2>"$directory/error" & curl_pid=$!
+	trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 0' 1 2 15
+	wait "$curl_pid"; rc=$?; trap - 1 2 15
+	code="$(cat "$directory/code")"
+	if [ "$rc" = 0 ]; then
+		if [ "$target" = configured ]; then [ "$code" != "$CFG_ONLINE_CODE" ] || : >"$directory/ok"
+		else case "$code" in [1-5][0-9][0-9]) : >"$directory/ok";; esac; fi
+	fi
+	: >"$directory/done"
 }
 
 online_check() {
@@ -229,7 +265,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
-	printf '{"apiVersion":1,"version":"%s","capabilities":["ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records"],"uplinks":[' "$VERSION"
+	printf '{"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","uplink_actions","billing_actions"],"uplinks":[' "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"

@@ -41,10 +41,10 @@ workbench_settings() {
  local section key value comma="" network i=0 dump
  printf '{"service":'
  json_init
- for key in enabled network device transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level; do
+ for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb; do
   case "$key" in
    enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
-   managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";;
+   managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";; log_target) value="$CFG_LOG_TARGET";; log_directory) value="$CFG_LOG_DIRECTORY";; log_web) value="$CFG_LOG_WEB";; log_max_kb) value="$CFG_LOG_MAX_KB";;
    max_backoff) value="$CFG_MAX_BACKOFF";; credential_cooldown) value="$CFG_CREDENTIAL_COOLDOWN";; post_login_delay) value="$CFG_POST_LOGIN_DELAY";;
    *) config_get value "$MAIN_SECTION" "$key" "";;
   esac
@@ -73,8 +73,8 @@ workbench_settings() {
 
 workbench_logs() {
  local text
- text="$(logread -e "$TAG" 2>/dev/null | tail -n 120 | cut -c1-1024 |
-  awk 'tolower($0) ~ /(user_password|password|authorization|cookie|token)[=:]/ {print "[敏感日志已隐藏]"; next} {gsub(/Type1_221_98|Type1|type1/,"bjut-sushe");gsub(/Type2_251_3|Type2|type2/,"bjut_wifi");gsub(/Type3_172_30|Type3|type3/,"lgn");print}')"
+ text="$( { if [ "${CFG_LOG_TARGET:-system}" = file ] && valid_log_directory "$CFG_LOG_DIRECTORY" && [ -f "$CFG_LOG_DIRECTORY/bjut-autologin.log" ] && [ ! -L "$CFG_LOG_DIRECTORY/bjut-autologin.log" ]; then tail -n 500 "$CFG_LOG_DIRECTORY/bjut-autologin.log"; else logread -e "$TAG" 2>/dev/null | tail -n 500; fi; } |
+  awk 'tolower($0) ~ /(user_password|password|authorization|cookie|token)[=:]/ {print "[敏感日志已隐藏]"; next} { $0=substr($0,1,1024);gsub(/Type1_221_98|Type1|type1/,"bjut-sushe");gsub(/Type2_251_3|Type2|type2/,"bjut_wifi");gsub(/Type3_172_30|Type3|type3/,"lgn");print}')"
  json_init; json_add_string text "$text"; json_dump
 }
 
@@ -115,7 +115,7 @@ workbench_validate_field() {
  case "$value" in *'
 '*|*"$(printf '\r')"*) return 1;; esac
  case "$key" in
-  enabled|managed_routes|mwan3|strict_network) case "$value" in 0|1) return 0;; esac;;
+  enabled|managed_routes|mwan3|strict_network|log_web) case "$value" in 0|1) return 0;; esac;;
   interval) is_uint "$value" && [ "$value" -ge 5 ] && [ "$value" -le 3600 ]; return $?;;
   timeout) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 30 ]; return $?;;
   offline_confirmations) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 10 ]; return $?;;
@@ -123,7 +123,10 @@ workbench_validate_field() {
   credential_cooldown) is_uint "$value" && [ "$value" -ge 30 ] && [ "$value" -le 86400 ]; return $?;;
   post_login_delay) is_uint "$value" && [ "$value" -le 15 ]; return $?;;
   online_code) is_uint "$value" && [ "$value" -ge 100 ] && [ "$value" -le 599 ]; return $?;;
-  log_level) case "$value" in debug|info|notice|error) return 0;; esac;;
+  log_level) case "$value" in trace|debug|info|notice|warning|error) return 0;; esac;;
+  log_target) case "$value" in system|file) return 0;; esac;;
+  log_directory) valid_log_directory "$value"; return $?;;
+  log_max_kb) valid_range "$value" 64 4096; return $?;;
   transport) case "$value" in auto|wifi|ethernet) return 0;; esac;;
   login_type) case "$value" in auto|type1|type2|type3|bjut-sushe|bjut_wifi|lgn) return 0;; esac;;
   compatibility) case "$value" in secure|legacy_http) return 0;; esac;;
@@ -143,7 +146,7 @@ workbench_save_settings() {
  json_load "$(cat "$REQUEST")" || { reply error "设置内容无效"; return; }; json_get_keys keys
  [ -n "$keys" ] || { reply error "没有要保存的设置"; return; }
  for key in $keys; do
-  case "$key" in enabled|network|device|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
  done
  interval="$(request_value interval)"; interval="${interval:-$CFG_INTERVAL}"

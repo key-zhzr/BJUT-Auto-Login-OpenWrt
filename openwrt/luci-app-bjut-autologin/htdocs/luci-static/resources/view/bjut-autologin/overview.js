@@ -1,35 +1,17 @@
 'use strict';
 'require view';
-'require rpc';
-'require poll';
+'require bjut-autologin.client as client';
 'require bjut-autologin.workbench as bjut';
-
-const status = rpc.declare({object:'bjut-autologin',method:'status',expect:{}});
-const ports = rpc.declare({object:'bjut-autologin',method:'ports',expect:{}});
-const accounts = rpc.declare({object:'bjut-autologin',method:'accounts',expect:{}});
-const login = rpc.declare({object:'bjut-autologin',method:'login',params:['uplink','account'],expect:{}});
-
 return view.extend({
-	handleSave:null,handleSaveApply:null,handleReset:null,
-	load:function() { return Promise.all([status(),ports(),accounts()]); },
-	render:function(data) {
-		const cards = E('div'), summary = E('p'), message = E('p',{'role':'status'});
-		let previous = '', busy = false;
-		function draw(next) {
-			const stamp = JSON.stringify(next);
-			const up = (next[0].uplinks || []).filter(function(item) { return item.state==='online' || item.state==='authenticated_limited'; }).length;
-			summary.textContent = _('已连接上游')+' '+up+' / '+(next[0].uplinks || []).length;
-			if (stamp !== previous && !cards.contains(document.activeElement)) {
-				cards.replaceChildren(bjut.ports(next[0],next[1],next[2],login)); previous = stamp;
-			}
-		}
-		async function refresh() {
-			if (busy) return; busy = true;
-			try { draw(await Promise.all([status(),ports(),accounts()])); message.textContent = ''; }
-			catch(error) { message.textContent = _('状态读取失败：')+String(error.message || error); }
-			finally { busy = false; }
-		}
-		draw(data); poll.add(refresh,2);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),summary,message,E('section',{'class':'bj-card'},[E('h3',{},_('端口状态')),cards])]);
-	}
+ handleSave:null,handleSaveApply:null,handleReset:null,
+ load:function(){return client.call('dashboard');},
+ render:function(data){
+  const summary=E('p'),message=E('p',{'role':'status'});let checking=false,watcher;
+  function action(name){return function(uplink,account){return client.call(name,{uplink:uplink,account:account || ''});};}
+  const grid=bjut.portGrid({login:action('login'),logout:action('logout'),switchAccount:action('switch_account'),changed:function(){return watcher.refresh();}});
+  function draw(next){const list=next.status.uplinks || [];checking=list.some(function(item){return item.checking;});summary.textContent=_('已连接上游')+' '+list.filter(function(item){return item.state==='online' || item.state==='authenticated_limited';}).length+' / '+list.length;grid.render(next.status,next.ports,next.accounts);}
+  const root=E('div',{'class':'bjut-workbench'},[bjut.style(),summary,message,E('section',{'class':'bj-card'},[E('h3',{},_('端口状态')),grid.element])]);
+  draw(data);watcher=client.watch(root,async function(){try{draw(await client.call('dashboard'));message.textContent='';}catch(error){message.textContent=_('状态读取失败，将自动重试：')+String(error.message || error);}},function(){return checking?1:2;});
+  return bjut.disclosures(root);
+ }
 });

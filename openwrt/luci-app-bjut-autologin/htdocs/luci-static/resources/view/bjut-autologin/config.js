@@ -3,6 +3,7 @@
 'require form';
 'require uci';
 'require tools.widgets as widgets';
+'require bjut-autologin.workbench as bjut';
 
 return view.extend({
 	load: function() {
@@ -20,18 +21,6 @@ return view.extend({
 
 		o = s.option(form.Flag, 'enabled', _('启用服务'));
 		o.rmempty = false;
-
-		o = s.option(widgets.NetworkSelect, 'network', _('上游逻辑接口'));
-		o.rmempty = false;
-		o.nocreate = true;
-		o.description = _('用于旧版单上游配置；添加下方上游后，此项不再使用。');
-
-		o = s.option(form.Value, 'device', _('Linux 设备覆盖'));
-		o.placeholder = _('自动读取');
-		o.description = _('通常留空；仅当逻辑接口报告的 l3_device 不正确时填写，例如 phy0-sta0。');
-		o.validate = function(sectionId, value) {
-			return !value || /^[A-Za-z0-9_.:@-]+$/.test(value) ? true : _('设备名包含无效字符');
-		};
 
 		o = s.option(form.ListValue, 'transport', _('传输类型'));
 		o.value('auto', _('自动判断'));
@@ -98,7 +87,7 @@ return view.extend({
 		o.datatype = 'range(0,15)';
 		o.default = '2';
 		o.rmempty = false;
-		o.description = _('网关接受登录后等待该时长，再检查互联网是否恢复。');
+		o.description = _('首次联网复核未通过时，等待后再检查。');
 
 		o = s.option(form.Value, 'online_url', _('联网检测 URL'));
 		o.default = 'http://connect.rom.miui.com/generate_204';
@@ -113,11 +102,26 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.ListValue, 'log_level', _('日志级别'));
+		o.value('trace', _('详细跟踪'));
 		o.value('debug', _('调试'));
 		o.value('info', _('信息'));
 		o.value('notice', _('通知'));
+		o.value('warning', _('警告'));
 		o.value('error', _('仅错误'));
-		o.default = 'notice';
+		o.default = 'info';
+
+		o = s.option(form.ListValue, 'log_target', _('日志保存位置'));
+		o.value('system', _('系统日志')); o.value('file', _('自定义目录')); o.default = 'system'; o.rmempty = false;
+		o = s.option(form.Value, 'log_directory', _('日志目录'));
+		o.default = '/tmp/bjut-autologin-log'; o.depends('log_target','file'); o.rmempty = false;
+		o.description = _('可选择 /tmp、/var/log 或存储设备上的目录。');
+		o.validate = function(section,value) { return /^\/(tmp|var\/log|mnt|media|overlay|srv|data)\/[-A-Za-z0-9_./]+$/.test(value) && !/(^|\/)\.\.?(\/|$)|\/\//.test(value) && !value.endsWith('/') ? true : _('请输入有效的日志目录'); };
+		o = s.option(form.Flag, 'log_web', _('通过网页查看日志'));
+		o.depends('log_target','file'); o.default = '0'; o.rmempty = false;
+		o.description = _('自动建立 /www/bjut-autologin.log 链接；局域网内可直接访问。');
+		o = s.option(form.Value, 'log_max_kb', _('单份日志大小（KB）'));
+		o.default = '256'; o.datatype = 'range(64,4096)'; o.depends('log_target','file'); o.rmempty = false;
+		o.description = _('达到上限后轮换，保留一份旧日志。');
 
 		o = s.option(form.Flag, 'managed_routes', _('固定上游路由'));
 		o.default = o.enabled; o.rmempty = false;
@@ -147,6 +151,6 @@ return view.extend({
 		o = s.option(form.Value, 'expected_ssid', _('SSID')); o.modalonly = true;
 		o = s.option(form.Value, 'expected_bssid', _('BSSID')); o.modalonly = true;
 
-		return m.render();
+		return m.render().then(function(root){root.append(bjut.style());return root;});
 	}
 });

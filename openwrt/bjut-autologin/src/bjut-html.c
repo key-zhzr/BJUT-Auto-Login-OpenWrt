@@ -127,9 +127,107 @@ static int user_json(const char *html)
     return 1;
 }
 
+static int safe_id(const char *a, const char *b)
+{
+    if (b <= a || b-a > 64) return 0;
+    for (; a < b; a++) if (!isalnum((unsigned char)*a) && *a != '-' && *a != '_') return 0;
+    return 1;
+}
+
+static int literal(const char *html, const char *name)
+{
+    const char *p=html, *a;
+    while ((p=find_ci(p,name))) {
+        if (p>html && (isalnum((unsigned char)p[-1]) || p[-1]=='_')) { p++; continue; }
+        p+=strlen(name);
+        if (isalnum((unsigned char)*p) || *p=='_') continue;
+        if (*p=='\'' || *p=='"') p++;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p!=':' && *p!='=') continue;
+        p++; while (isspace((unsigned char)*p)) p++;
+        char quote=*p;
+        if (quote!='\'' && quote!='"') continue;
+        a=++p;
+        while (*p && (isalnum((unsigned char)*p) || *p=='-' || *p=='_' || *p=='.')) p++;
+        if (*p==quote && p>a && p-a<=256) return emit_text(a,p,0);
+    }
+    return 1;
+}
+
+static int choices(const char *html, int packages)
+{
+    const char *p=html, *a, *b, *body, *end, *limit=NULL;
+    int count=0;
+    if (!packages) {
+        while ((p=next_tag(p,"select")) && !attr_is(p,"id","question1")) p++;
+        if (!p || !(limit=find_ci(p,"</select>"))) return 1;
+    }
+    while ((p=next_tag(p,packages?"a":"option")) && (!limit || p<limit)) {
+        if (attr(p,packages?"data-package":"value",&a,&b) && safe_id(a,b) && !(b-a==1 && *a=='0')) {
+            body=tag_end(p); end=find_ci(p,packages?"</a>":"</option>");
+            if (body && end && end>body && end-body<=1024) {
+                emit_text(a,b,0); putchar('\t'); emit_text(body+1,end,1); putchar('\n');
+                if (++count>=100) break;
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+
 static int extract(const char *html, const char *op, const char *name)
 {
     const char *p = html, *a, *b, *end;
+    if (!strcmp(op,"object") && *name) {
+        p=strstr(html,name); if(!p || !(p=strchr(p,'{')))return 1;
+        a=p;int depth=0,quoted=0,escaped=0;
+        for(;*p;p++){
+            if(quoted){if(escaped)escaped=0;else if(*p=='\\')escaped=1;else if(*p=='"')quoted=0;}
+            else if(*p=='"')quoted=1;else if(*p=='{')depth++;else if(*p=='}' && --depth==0)return emit_text(a,p+1,0);
+        }
+        return 1;
+    }
+    if (!strcmp(op,"literal") && *name) return literal(html,name);
+    if (!strcmp(op,"package-csrf")) {
+        p=find_ci(html,"post('doPackage'"); if (!p) p=find_ci(html,"post(\"doPackage\"");
+        if (!p) return 1;
+        char snippet[1025]; size_t n=strlen(p); if(n>1024)n=1024; memcpy(snippet,p,n);snippet[n]=0;
+        return literal(snippet,"csrftoken");
+    }
+    if (!strcmp(op,"packages")) return choices(html,1);
+    if (!strcmp(op,"questions")) return choices(html,0);
+    if (!strcmp(op,"package-cancel")) {
+        const char *tags[]={"a","button","input"};
+        const char *keys[]={"href","action","onclick"};
+        for(int i=0;i<3;i++){
+            p=html;
+            while((p=next_tag(p,tags[i]))){
+                if(attr_is(p,"data-toggle","undoPackage"))return 0;
+                for(int k=0;k<3;k++)if(attr(p,keys[k],&a,&b)){
+                    const char *match=find_ci(a,"undoPackage");if(match && match<b)return 0;
+                }
+                p++;
+            }
+        }
+        return 1;
+    }
+    if (!strcmp(op,"enabled")) {
+        while ((p=strchr(p,'<'))) {
+            if (attr_is(p,"id",name)) {
+                end=tag_end(p); a=find_ci(p,"disabled");
+                return end && (!a || a>end) ? 0 : 1;
+            }
+            p++;
+        }
+        return 1;
+    }
+    if (!strcmp(op,"mauth")) {
+        p=find_ci(html,"oprateMauth"); if(!p)return 1;
+        a=strchr(p,'>');b=find_ci(p,"</a>");if(!a || !b)return 1;
+        end=strstr(a,"开启");if(end && end<b){printf("1");return 0;}
+        end=strstr(a,"关闭");if(end && end<b){printf("0");return 0;}
+        return 1;
+    }
     if (!strcmp(op, "user-json")) return user_json(html);
     if (!strcmp(op, "metric") && *name) {
         while ((p = next_tag(p, "dt"))) {

@@ -135,9 +135,22 @@ def validate_html_with_sanitizers():
             ('metric','<dt>已用流量</dt><dd><span>2 GB</span></dd>'.encode()),
             ('metric','<dt>已用流量</dt><dt>别的指标</dt><dd>9 GB</dd>'.encode()),
             ('metric','<dl><dt>1536 <small>MB</small></dt><dd>已用流量</dd></dl>'.encode()),
+            ('literal',b"const ajaxCsrfToken='safe-token_1';"),
+            ('literal',b"ajaxCsrfToken=(()=>evil())"),
+            ('object',b'passwordPolicy={"nested":{"escaped":"}\\\""},"FLDMINLENGTH":8}'),
+            ('object',b'passwordPolicy={"nested":{}'),
+            ('packages',b'<a data-package="2">Package <b>two</b></a>'),
+            ('packages',b'<a data-package="2" title="</a>">broken'),
+            ('questions',b'<select id="question1"><option value="1">Question</option></select>'),
+            ('package-csrf',b"post('doPackage',{csrftoken:'fixture'})"),
+            ('package-cancel',b'''<script>$("[data-toggle='undoPackage']")</script>'''),
+            ('package-cancel',b"<a data-toggle='undoPackage'>cancel</a>"),
+            ('enabled',b"<button id='stopNow' disabled>stop</button>"),
+            ('mauth',"<a data-toggle='oprateMauth'>开启</a>".encode()),
+
         ]
         for operation, payload in cases:
-            args=[str(binary),operation] + (['checkcode'] if operation=='input' else ['已用流量'] if operation=='metric' else [])
+            args=[str(binary),operation] + (['checkcode'] if operation=='input' else ['已用流量'] if operation=='metric' else ['ajaxCsrfToken'] if operation=='literal' else ['passwordPolicy'] if operation=='object' else ['stopNow'] if operation=='enabled' else [])
             result=subprocess.run(args,input=payload,capture_output=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'})
             if b'Sanitizer' in result.stderr or result.returncode not in (0,1): raise RuntimeError('HTML extraction failed sanitizer check')
     finally: shutil.rmtree(temp)
@@ -180,6 +193,7 @@ def main():
     validate_security_invariants()
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
     run([sys.executable, "openwrt/tests/test_multi_uplink.py"])
+    run([sys.executable, "-m", "unittest", "discover", "-s", "openwrt/tests", "-p", "test_router_revision10.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

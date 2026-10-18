@@ -56,60 +56,42 @@ opkg install luci-app-bjut-autologin_*.ipk
 
 ## 配置
 
-安装后可在 LuCI 的“网络 → BJUT 自动登录”中设置，也可编辑 `/etc/config/bjut-autologin`。最小配置如下：
+安装后可在 LuCI 的“网络 → BJUT 自动登录”中设置。账号在账号管理中编辑；设置页按上游分别选择 IPv4 / IPv6 接口。也可编辑 `/etc/config/bjut-autologin`：
 
 ```uci
 config service 'main'
 	option enabled '1'
-	option network 'wwan'
-	option transport 'auto'
-	option login_type 'auto'
 	option compatibility 'secure'
 	option interval '20'
+	option timeout '3'
 	option strict_network '1'
-
-config account
-	option enabled '1'
-	option username '你的学号'
-	option password '你的密码'
-	option login_type 'auto'
-```
-
-单上游旧配置可继续使用。需要多个上游时，添加命名的 `uplink` 段；存在这些段后，`main.network` 不再参与认证。每条上游分别选择 IPv4、IPv6 逻辑接口，IPv6 留空时读取 IPv4 物理设备上的可用全局地址。
-
-```uci
-config uplink 'dorm_a'
-	option enabled '1'
-	option network 'wan14'
-	option network6 'wan16'
-	option transport 'ethernet'
-	option login_type 'type1'
-	list accounts 'student_a'
-
-config uplink 'dorm_b'
-	option enabled '1'
-	option network 'wan24'
-	option network6 'wan26'
-	option transport 'ethernet'
-	option login_type 'type1'
-	list accounts 'student_b'
+	option log_level 'info'
+	option log_target 'system'
 
 config account 'student_a'
 	option enabled '1'
 	option username '你的学号'
 	option password '你的密码'
 	option login_type 'auto'
+
+config uplink 'dorm_a'
+	option enabled '1'
+	option network 'wan14'
+	option network6 'wan16'
+	option transport 'ethernet'
+	option login_type 'bjut-sushe'
+	list accounts 'student_a'
 ```
 
-`student_b` 同样添加为账号段。四条上游可继续增加 `wan34/wan36`、`wan44/wan46` 的段，账号可以复用。每条物理出口只配置一次，IPv4 / IPv6 放在同一段中。
+添加第二条上游时，增加 `uplink 'dorm_b'`，填写对应的 `wan24/wan26` 和账号范围。账号可以复用，每条物理出口只配置一次，IPv4 / IPv6 放在同一段中。
 
-- `network` / `network6` 是 netifd 逻辑接口；`device` / `device6` 可覆盖实际 Linux 设备，通常留空。
+- `network` / `network6` 是 netifd 逻辑接口；IPv6 留空时读取 IPv4 物理设备上的可用全局地址。`device` / `device6` 可覆盖 Linux 设备，通常留空。
 - `source4` / `source6` 可指定该设备已取得的地址；留空自动读取，不使用其他设备的地址。
-- `accounts` 指定此上游的账号范围，按账号页顺序尝试；留空使用所有已启用账号。停用只影响自动登录，手动登录、计费查询和 App 同步仍可选用。
-- `login_type=auto` 按接口与门户选择协议；`172.26/16` 有线优先确认 lgn，可固定 `type1/type2/type3`。
+- `accounts` 指定此上游的账号范围，按账号页顺序尝试；留空使用全部已启用账号。停用只影响自动登录，手动登录、计费和 App 同步仍可选用。
+- `login_type=auto` 自动确认门户，也可指定 `bjut-sushe`、`bjut_wifi` 或 `lgn`。`172.26/16` 有线优先确认 lgn。
 - `expected_ssid/expected_bssid` 可限制无线网络。`legacy_http` 无线仍要求精确 BSSID；默认保持安全模式。
-- 默认每 20 秒检查，单次请求超时 3 秒。LuCI 每 2 秒读取状态，保留最近一次完成的结果，同时显示正在进行的检测步骤。IPv4/IPv6 同时检测，并用多个证书校验通过的 HTTPS 目标作为补充，固定公网地址避免 DNS 单点问题。
-- 宿舍 `online_list` 与 lgn 账号信息用于确认会话。已认证但公网探测失败时保留登录；网络错误、未知响应、已在线结果不会自动轮换账号。明确拒绝才尝试下一账号，各上游独立冷却。
+- 默认每 20 秒检测，单次请求超时 3 秒。IPv4 / IPv6 和同类备用目标并行探测，首个可靠响应通过便结束等待。LuCI 通常每 2 秒刷新，检测时每秒刷新；操作账号下拉框不暂停更新，请求失败后自动重试。
+- 认证会话和外网分别判断。已认证但探测失败时保留登录，未知响应或“账号已在线”不会轮换账号，明确拒绝才尝试下一账号。
 
 ### mwan3 与出口路由
 
@@ -138,21 +120,29 @@ logread -e bjut-autologin
 
 可用 `bjut-autologin manual dorm_a student_a` 手动提交指定账号，含已停用账号。`manual` 会立即检测并绕过离线确认次数/冷却计时，但仍不会绕过接口、校园网地址、协议探测、SSID/BSSID 与 TLS 安全检查。
 
-运行状态只写入 `/var/run/bjut-autologin/status.json`，重启后自动清空，不写闪存日志。状态中的账号已脱敏。
+控制台的每个端口提供登录、切换账号和注销。切换前需选择账号；注销后暂停该上游的自动认证，手动登录恢复。命令行也可使用 `bjut-autologin logout dorm_a`、`bjut-autologin switch dorm_a student_a`。
+
+状态保存在 `/var/run/bjut-autologin/`，重启后清空，账号完整显示。信息级记录检测开始、会话判断、登录与最终状态；调试和详细级显示更多探测步骤，不记录密码和会话令牌。
+
+### 日志设置
+
+默认写入系统日志。设置页也可选择文件日志，配置自定义目录和单文件大小（64–4096 KiB，默认 256 KiB），达到大小后轮换为 `.1`。默认目录 `/tmp/bjut-autologin-log` 位于内存，重启清空；需要持久保存时选择挂载的存储目录。
+
+勾选“通过网页查看日志”后会创建 `/www/bjut-autologin.log` 软链接，可通过路由器网页地址读取日志；关闭后移除本项目创建的链接。运行日志页和 App 会读取当前选择的日志来源。
 
 ## 计费与 App 协作
 
-LuCI 的“网络 → BJUT 自动登录 → 计费系统”打开后自动查询各条上游，优先通过 lgn2jfself 免密跳转获取当前认证账号，无法使用时按上游账号分配回退。同一账号通过多条上游查询时，余额、总流量和剩余流量合计只统计一次。也可选择单条上游或已保存账号，查询余额、流量、账户状态、七类用量与账单记录和在线设备。计费请求固定到 `172.21.0.16`，保持 HTTPS 域名与证书验证；支持在页面中刷新、填写验证码。先显示已读取的概览，再加载在线设备。用量与账单自动拆分较长日期范围，支持分页与本页 CSV 导出；充值继续使用 App 的当前设备功能。管理员、上游、账号和源地址隔离会话，刷新时复用当前会话，账号密码或出口变化后重新建立。
+LuCI 的“网络 → BJUT 自动登录 → 计费系统”打开后自动查询各条上游，优先通过 lgn2jfself 免密跳转获取当前认证账号，无法使用时按上游账号分配回退。同一账号通过多条上游查询时，余额、总流量和剩余流量合计只统计一次。也可选择单条上游或已保存账号，查询余额、流量、账户状态、七类用量与账单记录、在线设备和近期上网记录。计费请求固定到 `172.21.0.16`，保持 HTTPS 域名与证书验证；支持在页面中刷新、填写验证码。先显示已读取的概览，再按需要读取其他模块。账户服务提供报停/复通、套餐预约与取消、消费保护；设备与安全提供会话下线、MAC 绑定/解绑、无感认证、计费密码和密码保护。每次操作都核对当前账号，响应不明确时不会自动重复提交。用量与账单自动拆分较长日期范围，支持分页与本页 CSV 导出；充值继续使用 App 的当前设备功能。管理员、上游、账号和源地址隔离会话，刷新时复用当前会话，账号密码或出口变化后重新建立。
 
 App 自动查找当前局域网网关及已连接的路由地址，通过公开的产品标识识别 BJUT 路由端；发现过程不发送账号密码。发现后从控制台连接，未找到时使用“设置 → 路由协作 → 手动连接”。首次遇到自签证书时，App 会显示 SHA-256 指纹供确认；确认后只信任该证书，也可手动粘贴 PEM。
 
 连接后，控制台以端口卡片展示各上游的物理连接、IPv4/IPv6、认证账号、累计收发及当前速率；账号管理同时显示本机与路由账号，停用仅影响自动登录。计费中心默认查询路由器各上游并合并重复账号，仍可切换到当前设备使用完整计费服务。网络诊断附加路由上游结果，运行日志显示路由日志，设置页可编辑路由器服务和上游，账号管理可添加、编辑、删除和排序路由账号，所有协作操作都在 App 内完成。两端的网络判断、自动登录与凭据存储仍独立，断开协作后 App 继续正常使用。
 
-LuCI 拆分为控制台、账号管理、计费系统、网络诊断、运行日志与设置；前五页采用 App 风格卡片，设置页保留 LuCI 表单。账号全部在账号管理中编辑，编号完整显示。建议使用包含上述功能的 `0.1.6-r8` 或后续安装包，旧包仍可进行基本状态查看和账号同步。
+LuCI 拆分为控制台、账号管理、计费系统、网络诊断、运行日志与设置；前五页采用 App 风格卡片，设置页保留 LuCI 表单。账号全部在账号管理中编辑，编号完整显示。建议使用包含上述功能的 `0.1.6-r10` 或后续安装包，旧包仍可进行基本状态查看和账号同步。
 
 默认使用 HTTPS。已有可信局域网的 HTTP 管理服务时，可在连接弹窗勾选“允许局域网 HTTP”并填写私有 IP 地址，例如 `http://192.168.1.1`。此连接中的管理密码和账号同步内容会明文传输；不会自动降级 HTTPS，也不允许公网 HTTP 或通过重定向传递凭据。
 
-连接后可以查看所有上游，按上游、指定账号发起登录，并勾选 App 账号同步到路由器。同步仅新增或更新勾选账号，保留其他账号、排序、协议限制和上游分配；保存失败时保留原配置。未勾选“记住路由密码”时仅在本次运行中使用；勾选后将密码保存在 App 的安全存储中，启动或掉线时自动重连。手动“停止协作”会暂停自动重连，可在设置中移除保存的密码。密码和令牌不写入日志或设置备份。路由端的账号仍按下方 UCI 安全原则保存。
+连接后可以查看所有上游，按上游、指定账号发起登录，并勾选 App 账号同步到路由器。同步仅新增或更新勾选账号，保留其他账号、排序、协议限制和上游分配；保存失败时保留原配置。未勾选“记住路由密码”时仅在本次运行中使用；勾选后将密码与当前 Wi-Fi 名称、BSSID 或有线网关、路由器标识一同保存，仅在匹配网络中自动重连。每次发送密码或管理令牌前均确认产品和设备标识；升级前保存的资料需要手动连接一次以绑定网络。手动“停止协作”会暂停自动重连，可在设置中移除保存的密码。密码和令牌不写入日志或设置备份。路由端的账号仍按下方 UCI 安全原则保存。
 
 协作使用已有 uhttpd/rpcd，接口为 `bjut-autologin`、协议 `apiVersion=1`，不新建匿名控制服务，不提供任意文件或命令接口。`.well-known/bjut-autologin.json` 只公布产品名、版本和接口路径。管理请求需登录 `/ubus`；标准 LuCI 通常已安装 `uhttpd-mod-ubus`，仅安装本体的设备需从对应固件的软件源补齐。LuCI 管理账号需要相应 ACL 权限；已有权限受限的管理账号可按需授予 `bjut-autologin-app` 组。不要为此修改 GitHub Actions 权限。
 
@@ -193,7 +183,7 @@ ls -l /etc/uhttpd.crt /etc/uhttpd.key
 ## 安全说明
 
 - 密码因 OpenWrt UCI 的性质以明文保存在 `/etc/config/bjut-autologin`；包会把文件权限设为 `0600`。能取得路由器 root 或完整 LuCI 配置权限的用户仍可读取密码。
-- 凭据 URL 通过 curl 配置标准输入传入，不出现在 `ps` 命令行；日志和状态文件不记录密码、完整用户名或完整认证响应。
+- 凭据 URL 通过 curl 配置标准输入传入，不出现在 `ps` 命令行；日志和状态文件不记录密码、会话令牌或完整认证响应；管理界面及状态中的账号完整显示。
 - 所有校园网请求使用 `curl --interface` 固定到所选上游设备，并用 `--resolve` 固定到已知网关，避免 VPN/TUN 或污染 DNS 接管认证流量。
 - `legacy_http` 会明文传输账号密码，仅在校内网关确实无法使用 HTTPS 时手动启用。无线下还必须配置精确 BSSID，但 BSSID 不是密码学身份验证，风险仍显著高于 TLS。
 - bjut-sushe 的旧证书回退采用 curl 的 `--pinnedpubkey` 固定已记录证书的 SPKI；若固件中的 curl/TLS 后端不支持该能力，会安全失败，不会自动降级 HTTP。
@@ -202,7 +192,7 @@ ls -l /etc/uhttpd.crt /etc/uhttpd.key
 
 - 离线测试可以验证请求字段、状态机和安全失败逻辑，但无法替代校内三个真实网关的现场测试；首次使用建议执行 `manual` 并检查 `status`/`logread`。
 - `lgn` 从所选 IPv6 接口访问 lgn6 的 IPv6 网关；IPv6 发现未通过时，在已确认 IPv4 门户的前提下只提交 IPv4 认证；不会捏造 IPv6 地址。
-- LuCI 提供余额、流量、账户状态与在线设备查询。充值、账单导出及完整校园服务继续使用 App。
+- LuCI 和 App 协作提供概览、账单导出、账户服务、设备与安全；充值继续使用 App 的当前设备功能。
 
 ## 运行测试
 

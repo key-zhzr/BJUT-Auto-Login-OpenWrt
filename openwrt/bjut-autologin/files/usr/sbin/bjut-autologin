@@ -48,6 +48,7 @@ PROBE4=unknown
 PROBE6=unknown
 SESSION_STATE=unknown
 MANUAL_ACCOUNT=""
+MANUAL_ACTION=login
 CONFIG_LOADED=0
 MAIN_SECTION=""
 ACCOUNT_SECTIONS=""
@@ -74,6 +75,9 @@ TYPE1_TLS_HOST=""
 TYPE1_TLS_PROFILE=""
 OBSERVED_IPV6=""
 OBSERVED_ACCOUNT=""
+VERIFIED_PROTOCOL=""
+VERIFIED_AT=0
+VERIFIED_IDENTITY=""
 
 RUNTIME_FAILURES=0
 RUNTIME_OFFLINE_COUNT=0
@@ -246,15 +250,7 @@ protocol_internal() {
 }
 
 log_message() {
-	local priority="$1" message="$2"
-	case "$CFG_LOG_LEVEL:$priority" in
-		error:debug|error:info|notice:debug|notice:info|info:debug) return 0 ;;
-	esac
-	if command_exists "$LOGGER_BIN"; then
-		printf '%s\n' "$message" | "$LOGGER_BIN" -t "$TAG" -p "daemon.$priority" 2>/dev/null || true
-	else
-		printf '%s: %s\n' "$TAG" "$message" >&2
-	fi
+	bjut_log_message "$1" "$2"
 }
 
 load_main_section() {
@@ -285,7 +281,11 @@ load_main_section() {
 	config_get_bool CFG_STRICT_NETWORK "$1" strict_network 1
 	config_get CFG_EXPECTED_SSID "$1" expected_ssid ""
 	config_get CFG_EXPECTED_BSSID "$1" expected_bssid ""
-	config_get CFG_LOG_LEVEL "$1" log_level "notice"
+	config_get CFG_LOG_LEVEL "$1" log_level "info"
+	config_get CFG_LOG_TARGET "$1" log_target system
+	config_get CFG_LOG_DIRECTORY "$1" log_directory /tmp/bjut-autologin-log
+	config_get_bool CFG_LOG_WEB "$1" log_web 0
+	config_get CFG_LOG_MAX_KB "$1" log_max_kb 256
 }
 
 collect_account_section() {
@@ -333,7 +333,9 @@ validate_configuration() {
 	case "$CFG_TRANSPORT" in auto|wifi|ethernet) ;; *) printf 'Invalid transport: %s\n' "$CFG_TRANSPORT" >&2; return 1 ;; esac
 	case "$CFG_LOGIN_TYPE" in auto|type1|type2|type3) ;; *) printf 'Invalid login_type: %s\n' "$CFG_LOGIN_TYPE" >&2; return 1 ;; esac
 	case "$CFG_COMPATIBILITY" in secure|legacy_http) ;; *) printf 'Invalid compatibility: %s\n' "$CFG_COMPATIBILITY" >&2; return 1 ;; esac
-	case "$CFG_LOG_LEVEL" in debug|info|notice|error) ;; *) printf 'Invalid log_level: %s\n' "$CFG_LOG_LEVEL" >&2; return 1 ;; esac
+	case "$CFG_LOG_LEVEL" in trace|debug|info|notice|warning|error) ;; *) printf 'Invalid log_level\n' >&2; return 1 ;; esac
+	case "$CFG_LOG_TARGET" in system|file) ;; *) printf 'Invalid log_target\n' >&2; return 1;; esac
+	valid_log_directory "$CFG_LOG_DIRECTORY" && valid_range "$CFG_LOG_MAX_KB" 64 4096 || { printf 'Invalid log directory or size\n' >&2; return 1; }
 	valid_range "$CFG_INTERVAL" 5 3600 || { printf 'interval must be 5..3600 seconds\n' >&2; return 1; }
 	valid_range "$CFG_TIMEOUT" 1 30 || { printf 'timeout must be 1..30 seconds\n' >&2; return 1; }
 	valid_range "$CFG_OFFLINE_CONFIRMATIONS" 1 10 || { printf 'offline_confirmations must be 1..10\n' >&2; return 1; }
@@ -435,10 +437,12 @@ write_status() {
 	json_add_int failures "$failures"
 	json_add_int offline_count "$offline_count"
 	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE"
+	log_message info "检测完成：${message}；IPv4=${PROBE4}，IPv6=${PROBE6}，会话=$SESSION_STATE${account:+，账号=$account}"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then cp "$STATE_FILE" "$SOURCE_STATE.$$" && mv -f "$SOURCE_STATE.$$" "$SOURCE_STATE"; fi
 }
 
 write_phase() {
+	log_message debug "$1"
 	printf '%s %s\n%s\n' "$$" "$(date +%s)" "$1" >"$STATE_DIR/phase-$UPLINK_ID.$$" &&
 		mv -f "$STATE_DIR/phase-$UPLINK_ID.$$" "$STATE_DIR/phase-$UPLINK_ID"
 }
@@ -457,6 +461,7 @@ print_status_file() (
 		fi
 	fi
 	# Keep the last completed result visible while a new check is running.
+	if [ -s "$STATE_DIR/manual-$section" ]; then checking=1; message='操作已排队，即将处理'; fi
 	json_add_int checking "$checking"
 	json_add_string check_message "$message"
 	json_dump
@@ -628,6 +633,7 @@ http_request() {
 	fi
 	HTTP_CODE="$(printf 'url = "%s"\n' "$url" | bound_curl "$family" "$@" --config - 2>"$WORK_DIR/curl-error")"
 	rc=$?
+	log_message trace "网关请求：${family}，HTTP=${HTTP_CODE}，结果=$rc"
 	case "$HTTP_CODE" in [0-9][0-9][0-9]) ;; *) HTTP_CODE="000" ;; esac
 	[ "$rc" -eq 0 ] || return 1
 	response_size="$(wc -c <"$HTTP_BODY" 2>/dev/null | tr -d ' \011\012\015')"
@@ -838,11 +844,16 @@ detect_protocol() {
 	else
 		candidates="type1 type2"
 	fi
+	if [ "$CFG_LOGIN_TYPE" = auto ]; then
+		case "$RUNTIME_PROTOCOL" in type1|type2|type3) candidates="$RUNTIME_PROTOCOL $(printf '%s' "$candidates" | sed "s/$RUNTIME_PROTOCOL//g")";; esac
+	fi
 	for candidate in $candidates; do
 		probe_protocol "$candidate"
 		rc=$?
 		if [ "$rc" -eq 0 ]; then
 			SELECTED_PROTOCOL="$candidate"
+			VERIFIED_PROTOCOL="$candidate"; VERIFIED_AT="$(date +%s)"
+			VERIFIED_IDENTITY="$(portal_identity_signature)"
 			return 0
 		fi
 		[ "$rc" -eq 2 ] && [ -z "$portal_only" ] && portal_only="$candidate"
@@ -861,13 +872,10 @@ type1_login() {
 	encoded_password="$(urlencode "$password")" || return 11
 	encoded_ip="$(urlencode "$LOCAL_IPV4")" || return 11
 	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
-		probe_type1_http || return 11
 		base="http://$DORM_GATEWAY:801/eportal/portal/login"
 		referer="http://$DORM_GATEWAY/"
 		resolve=""; host_header=""; profile="http"
 	else
-		# Re-probe immediately before credentials are sent.
-		probe_type1 || return 11
 		[ -n "$TYPE1_TLS_HOST" ] || return 11
 		base="https://$TYPE1_TLS_HOST:802/eportal/portal/login"
 		referer="https://$DORM_GATEWAY:802/"
@@ -886,10 +894,8 @@ type2_login() {
 	encoded_user="$(urlencode "$username")" || return 11
 	encoded_password="$(urlencode "$password")" || return 11
 	if [ "$CFG_COMPATIBILITY" = "legacy_http" ]; then
-		probe_type2 || return 11
 		base="http://$WIFI_GATEWAY/drcom/login"; referer="http://$WIFI_GATEWAY/"; resolve=""
 	else
-		probe_type2 || return 11
 		base="https://wlgn.bjut.edu.cn/drcom/login"; referer="https://wlgn.bjut.edu.cn/"; resolve="wlgn.bjut.edu.cn:443:$WIFI_GATEWAY"
 	fi
 	url="$base?callback=dr1003&DDDDD=$encoded_user&upass=$encoded_password&0MKKey=123456&R1=0&R2=&R3=0&R6=0&para=00&v6ip=&terminal_type=1&lang=zh-cn&jsVersion=4.1&v=$(request_id)&lang=zh"
@@ -899,7 +905,6 @@ type2_login() {
 
 type3_login() {
 	local username="$1" password="$2" account enc_account enc_password enc_ipv4 enc_ipv6 url
-	probe_type3 || return 11
 	OBSERVED_IPV6=""
 	discover_lgn_ipv6 || OBSERVED_IPV6=""
 	case "$username" in ,0,*) account="$username" ;; *) account=",0,$username" ;; esac
@@ -913,7 +918,27 @@ type3_login() {
 	parse_login_response
 }
 
+portal_identity_signature() {
+	printf '%s\n' "$DEVICE" "$DEVICE6" "$LOCAL_IPV4" "$LOCAL_IPV6" "$TRANSPORT" "$SSID" "$BSSID" | sha256sum | awk '{print $1}'
+}
+
+verify_before_login() {
+	local protocol="$1" previous now
+	previous="$(portal_identity_signature)"
+	read_network_identity && [ "$(portal_identity_signature)" = "$previous" ] && validate_network_identity "$protocol" || {
+		log_message warning '网络身份在认证前发生变化，已停止提交'; return 1;
+	}
+	now="$(date +%s)"
+	if [ "$VERIFIED_PROTOCOL" != "$protocol" ] || [ "$VERIFIED_IDENTITY" != "$previous" ] || [ "$now" -lt "$VERIFIED_AT" ] || [ "$((now-VERIFIED_AT))" -gt 10 ]; then
+		probe_protocol "$protocol" || return 1
+		VERIFIED_PROTOCOL="$protocol"; VERIFIED_AT="$now"; VERIFIED_IDENTITY="$previous"
+	fi
+	# This is only a short-lived, in-process gateway fingerprint. The actual
+	# credential request still checks TLS / the exact pin and binds its source.
+}
+
 login_protocol() {
+	verify_before_login "$1" || return 11
 	case "$1" in
 		type1) type1_login "$2" "$3" ;;
 		type2) type2_login "$2" "$3" ;;
@@ -967,8 +992,10 @@ calculate_backoff() {
 }
 
 run_once_impl() {
-	local now rc failures delay offline_count internet_ok=0 portal_rc=1 explicit_auth=0
+	local now rc failures delay offline_count requested_user internet_ok=0 portal_rc=1 explicit_auth=0
+	if [ -f "$STATE_DIR/paused-$UPLINK_ID" ] && [ "$FORCE" != 1 ]; then return 0; fi
 	SESSION_STATE=unknown; OBSERVED_ACCOUNT=""; OBSERVED_IPV6=""; PROBE4=unknown; PROBE6=unknown
+	VERIFIED_PROTOCOL=""; VERIFIED_AT=0; VERIFIED_IDENTITY=""
 	ROUTE4=unknown; ROUTE6=unknown
 	[ "$FORCE" != 1 ] || [ -z "$MANUAL_ACCOUNT" ] || explicit_auth=1
 	write_phase "正在核对上游地址"
@@ -983,6 +1010,7 @@ run_once_impl() {
 		fi
 		return 1
 	fi
+	log_message info "开始检测：网络=${CFG_NETWORK}，IPv4=${LOCAL_IPV4}，事件=$EVENT"
 	if ! acquire_source_lock; then
 		[ -s "$STATE_FILE" ] || write_status busy "此物理出口正在检测，请稍候" "" "" 0 0 0
 		return 75
@@ -996,14 +1024,40 @@ run_once_impl() {
 		return 1
 	fi
 	SELECTED_PROTOCOL=""
-	write_phase "正在检测 IPv4 / IPv6 连通性"
-	online_check && internet_ok=1
+	if [ "$FORCE" != 1 ] || { [ "$TRANSPORT" = wifi ] && [ "$CFG_LOGIN_TYPE" = auto ] && [ -z "$MANUAL_ACCOUNT" ] && [ -z "$RUNTIME_PROTOCOL" ]; }; then
+		write_phase "正在检测 IPv4 / IPv6 连通性"
+		online_check && internet_ok=1
+	fi
 	# Known dormitory uplinks must consult online_list even when an individual
 	# public target is reachable before authentication.
 	if [ "$explicit_auth" = 1 ] || [ "$internet_ok" = 0 ] || [ "$CFG_LOGIN_TYPE" != auto ] || [ -n "$RUNTIME_PROTOCOL" ] || [ "$TRANSPORT" = ethernet ]; then
 		write_phase "正在确认认证会话"
 		detect_protocol; portal_rc=$?
 		if [ "$portal_rc" = 0 ]; then read_portal_session "$SELECTED_PROTOCOL"; fi
+		log_message info "认证网关：$(protocol_name "${SELECTED_PROTOCOL:-unknown}")，会话=$SESSION_STATE"
+	fi
+	if [ "$FORCE" = 1 ] && [ "$MANUAL_ACTION" = login ] && [ -n "$MANUAL_ACCOUNT" ] && [ -n "$RUNTIME_ACCOUNT" ] && [ "$SESSION_STATE" = online ]; then
+		config_get requested_user "$MANUAL_ACCOUNT" username ''
+		[ "${requested_user%@campus}" = "${RUNTIME_ACCOUNT%@campus}" ] || MANUAL_ACTION=switch
+	fi
+	if [ "$FORCE" = 1 ] && [ "$MANUAL_ACTION" != login ]; then
+		: >"$STATE_DIR/paused-$UPLINK_ID"
+		if [ "$portal_rc" != 0 ] || ! validate_network_identity "$SELECTED_PROTOCOL"; then
+			write_status logout_failed '无法确认当前认证网关，自动登录已暂停' '' "$RUNTIME_ACCOUNT" 0 0 0; return 1
+		fi
+		if [ "$SESSION_STATE" != offline ]; then
+			write_phase '正在注销当前账号'
+			if ! logout_protocol "$SELECTED_PROTOCOL"; then
+				write_status logout_failed '注销结果待确认，自动登录已暂停；请刷新后重试' "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0; return 1
+			fi
+		fi
+		if [ "$MANUAL_ACTION" = logout ]; then
+			write_status logged_out '已注销，自动登录已暂停；点击登录可恢复' "$SELECTED_PROTOCOL" '' 0 0 0; return 0
+		fi
+		rm -f "$STATE_DIR/paused-$UPLINK_ID"; SESSION_STATE=offline; explicit_auth=1
+	elif [ "$FORCE" = 1 ]; then
+		rm -f "$STATE_DIR/paused-$UPLINK_ID"
+		if [ "$SESSION_STATE" = online ] && [ -z "$MANUAL_ACCOUNT" ]; then online_check && internet_ok=1; fi
 	fi
 	if [ "$SESSION_STATE" = online ] && [ "$explicit_auth" = 0 ]; then
 		if [ "$internet_ok" = 1 ]; then
@@ -1060,9 +1114,14 @@ run_once_impl() {
 	case "$rc" in
 		0)
 			log_message notice "$SELECTED_PROTOCOL 认证网关已接受账号 $SELECTED_ACCOUNT"
-			if [ "$CFG_POST_LOGIN_DELAY" -gt 0 ]; then sleep "$CFG_POST_LOGIN_DELAY"; fi
+			write_status login_accepted '网关已受理登录，正在复核联网' "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 0
+			write_phase '正在复核 IPv4 / IPv6 联网'
+			online_check; rc=$?
 			read_portal_session "$SELECTED_PROTOCOL"
-			if online_check && [ "$SESSION_STATE" != offline ]; then
+			if [ "$rc" != 0 ] && [ "$SESSION_STATE" != online ] && [ "$CFG_POST_LOGIN_DELAY" -gt 0 ]; then
+				sleep "$CFG_POST_LOGIN_DELAY"; online_check; rc=$?; read_portal_session "$SELECTED_PROTOCOL"
+			fi
+			if [ "$rc" = 0 ] && [ "$SESSION_STATE" != offline ]; then
 				write_status "online" "认证网关已受理登录，外网连接正常" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
 			elif [ "$SESSION_STATE" = online ]; then
 				write_status authenticated_limited "认证会话有效，外网探测暂未通过；保留当前登录" "$SELECTED_PROTOCOL" "${OBSERVED_ACCOUNT:-$SELECTED_ACCOUNT}" 0 0 0
@@ -1108,10 +1167,11 @@ run_once_impl() {
 }
 
 run_once_locked() {
-	local rc FORCE="$FORCE" MANUAL_ACCOUNT="$MANUAL_ACCOUNT" EVENT="$EVENT"
+	local rc first FORCE="$FORCE" MANUAL_ACCOUNT="$MANUAL_ACCOUNT" MANUAL_ACTION="$MANUAL_ACTION" EVENT="$EVENT"
 	acquire_lock || return 75
 	if [ -f "$STATE_DIR/manual-$UPLINK_ID" ]; then
-		MANUAL_ACCOUNT="$(cat "$STATE_DIR/manual-$UPLINK_ID")"
+		first="$(sed -n '1p' "$STATE_DIR/manual-$UPLINK_ID")"
+		case "$first" in login|logout|switch) MANUAL_ACTION="$first"; MANUAL_ACCOUNT="$(sed -n '2p' "$STATE_DIR/manual-$UPLINK_ID")";; *) MANUAL_ACCOUNT="$first";; esac
 		[ -z "$MANUAL_ACCOUNT" ] || valid_section "$MANUAL_ACCOUNT" || { release_lock; return 2; }
 		FORCE=1; EVENT=manual
 		rm -f "$STATE_DIR/manual-$UPLINK_ID"
@@ -1124,6 +1184,9 @@ run_once_locked() {
 	WORK_DIR=""
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; SOURCE_LOCK_HELD=0; fi
 	release_lock
+	# A manual request arriving during a periodic check runs immediately after
+	# that check, instead of waiting another full daemon interval.
+	if [ -f "$STATE_DIR/manual-$UPLINK_ID" ]; then run_once_locked; return $?; fi
 	return "$rc"
 }
 
@@ -1152,6 +1215,7 @@ main() {
 	. "$LIB_DIR/mwan.sh" || return 2
 	. "$LIB_DIR/routing.sh" || return 2
 	case "$command" in
+		setup) prepare_router_identity && { load_configuration && prepare_log_destination; }; return $?;;
 		status)
 			load_configuration || return 2
 			if [ -n "$section" ]; then select_uplink "$section" || return 2; print_status;
@@ -1164,18 +1228,19 @@ main() {
 			prune_uplink_routes
 			prune_mwan_rules
 			return $? ;;
-		check-config|daemon|once|manual) ;;
+		check-config|daemon|once|manual|logout|switch) ;;
 		*) usage >&2; return 2 ;;
 	esac
 	validate_configuration || return 2
 	if [ -n "$section" ]; then select_uplink "$section" || return 2; fi
 	MANUAL_ACCOUNT="${3:-}"
-	[ -z "$MANUAL_ACCOUNT" ] || { valid_section "$MANUAL_ACCOUNT" && [ "$command" = manual ]; } || return 2
+	[ -z "$MANUAL_ACCOUNT" ] || { valid_section "$MANUAL_ACCOUNT" && { [ "$command" = manual ] || [ "$command" = switch ]; }; } || return 2
+	[ "$command" != switch ] || [ -n "$MANUAL_ACCOUNT" ] || return 2
 	if [ "$command" = "check-config" ]; then
 		printf 'Configuration is valid (enabled=%s, accounts=%s).\n' "$CFG_ENABLED" "$(printf '%s\n' $ACCOUNT_SECTIONS | sed '/^$/d' | wc -l)"
 		return 0
 	fi
-	[ "$CFG_ENABLED" = "1" ] || [ "$command" = manual ] || {
+	[ "$CFG_ENABLED" = "1" ] || [ "$command" = manual ] || [ "$command" = logout ] || [ "$command" = switch ] || {
 		printf 'bjut-autologin is disabled in UCI.\n' >&2
 		return 3
 	}
@@ -1183,10 +1248,13 @@ main() {
 		daemon) EVENT="periodic"; run_daemon ;;
 		once) EVENT="${BJUT_EVENT:-manual_once}"; if [ -n "$section" ]; then run_once_locked; else run_all_uplinks; fi ;;
 		manual) EVENT="manual"; FORCE=1; FORCE_COMMAND=manual; if [ -n "$section" ]; then run_once_locked; else run_all_uplinks; fi ;;
+		logout|switch) [ -n "$section" ] || return 2; EVENT=manual; FORCE=1; MANUAL_ACTION="$command"; run_once_locked;;
 	esac
 }
 
 [ ! -r "$LIB_DIR/uplinks.sh" ] || . "$LIB_DIR/uplinks.sh"
+. "$LIB_DIR/logging.sh" || exit 2
+. "$LIB_DIR/session-actions.sh" || exit 2
 
 if [ "${BJUT_SOURCE_ONLY:-0}" != "1" ]; then
 	main "$@"

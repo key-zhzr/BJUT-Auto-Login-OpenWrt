@@ -3,7 +3,7 @@
 - 上游仓库：`https://github.com/key-zhzr/BJUT-Auto-Login`
 - 审查/迁移基线：`adc028125e46890527a293cd59ffc67366b7222c`
 - 上游提交时间：`2026-08-30T02:22:48+08:00`
-- 初始迁移版本：`0.2.0`；当前路由端版本：`0.3.0`
+- 初始迁移版本：`0.2.0`；当前路由端版本：`0.1.6-r10`
 
 主要对应：
 
@@ -16,7 +16,7 @@
 | `network_trust.rs::campus_wifi_kind` | 精确 `bjut_wifi` 与扫描所得宿舍 SSID 族规则 |
 | `PortalRouteContext` / `reqwest::Client::interface` | `ubus` 固定逻辑接口与 `curl --interface`、`--resolve` |
 
-没有迁移计费/充值、桌面托盘、通知、更新器和 Tauri UI；它们不参与路由器维持校园网认证，会增加固件体积、常驻占用和攻击面。
+路由端已增加独立计费实现和 App 协作。充值、桌面托盘、通知及 Tauri 运行时仍保留在 App，不安装到路由器。
 
 ## 0.3.0 同步
 
@@ -27,6 +27,12 @@
 - 自动合并工作流见 `.github/workflows/openwrt-upstream.yml`，合并检查脚本见 `openwrt/scripts/sync_upstream.py`。
 
 自动同步指 Git 历史与可直接合并的源码更新。桌面 Rust 的新认证逻辑不会自动转换成 shell；涉及后端、安全或冲突的修改会进入待审查分支。工作流任务摘要提供差异链接，确认后手动合并。合并前需要移植相关逻辑并通过离线测试。
+
+## 共享计费界面
+
+`src/router-billing-tools.ts` 是 App 与 LuCI 的账户服务、设备及账号安全控件来源。主项目的 `scripts/build-router-billing-ui.mjs <路由仓库路径>` 生成路由包中的 `billing-tools.js`，生成文件一并提交，路由器无需 Node。不要直接修改生成文件。
+
+自动同步在合并后按锁文件安装开发依赖（禁用安装脚本）、生成共享界面，再运行路由端检查；任一环节失败便中止合并。共享界面与生成器的变化同样进入待审查分支。其他协议和平台代码仍需逐项移植，不会自动转换语言。
 
 ## 独立仓库初始化
 

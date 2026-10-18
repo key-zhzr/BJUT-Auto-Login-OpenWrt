@@ -47,6 +47,7 @@ billing_request() {
 		if [ "$method" = POST ]; then
 			set -- "$@" --header 'Content-Type: application/x-www-form-urlencoded' --header 'Origin: https://jfself.bjut.edu.cn'
 		fi
+		[ "${BILLING_AJAX:-0}" != 1 ] || set -- "$@" --header 'X-Requested-With: XMLHttpRequest' --header 'Accept: application/json,text/plain,*/*;q=0.8'
 		code="$( { printf 'url = "%s"\n' "$url"; [ "$method" != POST ] || printf 'data = "%s"\n' "$data"; } |
 			bound_curl ipv4 "$@" --config - 2>"$WORK_DIR/curl-error")"
 		rc=$?
@@ -119,6 +120,13 @@ billing_publish_overview() {
 	[ "${#actual}" -le 256 ] || return 1
 	[ "${BILLING_CURRENT:-0}" != 1 ] || BILLING_ACCOUNT="$actual"
 	[ "$actual" = "$BILLING_ACCOUNT" ] || return 1
+	BILLING_VERIFIED=1
+	cp "$WORK_DIR/billing-body" "$BILLING_JOB/dashboard.html"
+	if [ -n "${BILLING_OPERATION:-}" ]; then
+		[ "$actual" = "$(json_file_value "$BILLING_JOB/request.json" '@.expectedAccount')" ] || { billing_progress error 100 '认证账号已变化，未提交操作，请重新查询'; return 1; }
+		billing_apply_action "$BILLING_OPERATION"; return $?
+	fi
+	if [ -n "${BILLING_MODULE:-}" ]; then billing_module "$BILLING_MODULE"; return $?; fi
 	balance="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney' 2>/dev/null)"
 	flow="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow' 2>/dev/null)"
 	package="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName' 2>/dev/null)"
@@ -203,9 +211,11 @@ billing_worker() {
 	account_id="$(json_file_value "$BILLING_JOB/request.json" '@.account')"
 	action="$(json_file_value "$BILLING_JOB/request.json" '@.action')"
     BILLING_RECORD_KIND="$(json_file_value "$BILLING_JOB/request.json" '@.kind')"
+	BILLING_MODULE="$(json_file_value "$BILLING_JOB/request.json" '@.module')"
+	BILLING_OPERATION="$(json_file_value "$BILLING_JOB/request.json" '@.operation')"
 	code="$(json_file_value "$BILLING_JOB/request.json" '@.code')"
 	load_configuration && select_uplink "$uplink" || return 1
-	BILLING_CURRENT=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
+	BILLING_CURRENT=0; BILLING_VERIFIED=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
 	if [ "$account_id" = current ]; then
 		BILLING_CURRENT=1
 		order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
@@ -254,6 +264,7 @@ billing_worker() {
 	else
 		billing_progress loading 10 "正在查询当前认证账号"
 		if billing_current_session; then password=""; return 0; fi
+        [ -z "$BILLING_OPERATION" ] || [ "$BILLING_VERIFIED" != 1 ] || return 1
 		# A different selected account must never inherit the current account's
 		# cookies. An unavailable discovery must not reuse an old current login.
 		if [ "$account_id" = current ] || [ "$BILLING_SSO_ATTEMPTED" = 1 ]; then rm -f "$BILLING_CACHE/cookies"; fi
@@ -263,6 +274,7 @@ billing_worker() {
 		billing_progress loading 20 "正在连接计费系统"
 		billing_request '/Self/login/?302=LI' || { billing_progress error 100 "无法通过所选上游访问计费系统"; return 1; }
 		if billing_publish_overview; then return 0; fi
+        [ -z "$BILLING_OPERATION" ] || [ "$BILLING_VERIFIED" != 1 ] || return 1
 	fi
 	BILLING_CURRENT=0; BILLING_ACCESS="已保存账号"
 	checkcode="$(billing_extract input checkcode)" || { billing_progress error 100 "计费登录页发生变化，请更新后重试"; return 1; }
@@ -290,6 +302,7 @@ billing_worker() {
 	fi
 	billing_progress loading 85 "正在读取用量与在线设备"
 	if billing_publish_overview; then return 0; fi
+        [ -z "$BILLING_OPERATION" ] || [ "$BILLING_VERIFIED" != 1 ] || return 1
 	needs="$(billing_extract captcha)" || needs=0
 	if [ "$needs" = 1 ]; then
 		cp "$WORK_DIR/billing-body" "$BILLING_CACHE/login.html"
@@ -410,3 +423,5 @@ billing_publish_records() {
  json_dump >"$WORK_DIR/record-result"
  { sed 's/}[[:space:]]*$/,"rows":[/' "$WORK_DIR/record-result"; comma='';while IFS= read -r value;do printf '%s' "$comma";comma=,;printf '%s' "$value" | sed 's/^{[[:space:]]*"row"[[:space:]]*:[[:space:]]*//;s/}[[:space:]]*$//';done <"$list";printf ']}\n'; } >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
 }
+
+. "$LIB_DIR/billing-services.sh"

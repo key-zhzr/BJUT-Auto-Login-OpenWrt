@@ -1,8 +1,9 @@
 'use strict';
 'require view';
 'require rpc';
+'require bjut-autologin.client as client';
 'require bjut-autologin.workbench as bjut';
-const status = rpc.declare({object:'bjut-autologin',method:'status',expect:{}});
+const status=function(){return client.call('status',{});};
 return view.extend({
 	handleSave:null,handleSaveApply:null,handleReset:null,
 	load:function() { return status(); },
@@ -17,6 +18,7 @@ return view.extend({
 		}
 		async function refresh() { try { draw(await status()); } catch(error) { message.textContent=String(error.message || error); } }
 		draw(data);
-		return E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-actions'},[message,E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),content]);
+		const root=E('div',{'class':'bjut-workbench'},[bjut.style(),E('div',{'class':'bj-actions'},[message,E('button',{'class':'btn',type:'button',click:refresh},_('刷新'))]),content]);
+        client.watch(root,refresh,2);return root;
 	}
 });

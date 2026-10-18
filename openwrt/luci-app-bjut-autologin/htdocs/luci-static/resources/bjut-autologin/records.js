@@ -1,10 +1,10 @@
 'use strict';
 'require baseclass';
 'require rpc';
-'require poll';
-const begin=rpc.declare({object:'bjut-autologin',method:'billing_records',params:['uplink','account','owner','kind','start_date','end_date','year','page'],expect:{}});
-const result=rpc.declare({object:'bjut-autologin',method:'billing_poll',params:['ticket','owner'],expect:{}});
-const captcha=rpc.declare({object:'bjut-autologin',method:'billing_captcha',params:['ticket','owner','code','refresh'],expect:{}});
+'require bjut-autologin.client as client';
+const begin=function(uplink,account,owner,kind,start_date,end_date,year,page){return client.call('billing_records',{uplink:uplink,account:account,owner:owner,kind:kind,start_date:start_date,end_date:end_date,year:year,page:page});};
+const result=function(ticket,owner){return client.call('billing_poll',{ticket:ticket,owner:owner});};
+const captcha=function(ticket,owner,code,refresh){return client.call('billing_captcha',{ticket:ticket,owner:owner,code:code,refresh:refresh});};
 const kinds=[['usage','上网明细'],['monthly','月账单'],['payments','缴费记录'],['operations','操作记录'],['stopLogs','停机记录'],['reopenLogs','复机记录'],['packageLogs','套餐变更']];
 const labels={loginTime:'登录时间',logoutTime:'下线时间',time:'在线时长（分钟）',flow:'流量（MB）',costMoney:'费用（元）',internetUpFlow:'互联网上传',internetDownFlow:'互联网下载',chinanetUpFlow:'校园网上传',chinanetDownFlow:'校园网下载',userIp:'IPv4',userIp1:'IPv6',macAddress:'MAC',nasIp:'网关',nasPort:'端口',startAt:'开始日期',endAt:'结束日期',package:'套餐',baseFee:'基本费（元）',usageFee:'用量费（元）',durationMinutes:'在线分钟',flowMb:'流量（MB）',billedAt:'结算时间',paidAt:'缴费时间',type:'类型',amount:'金额（元）',terminal:'终端',note:'备注',operatedAt:'操作时间',description:'说明',unused:'其他',fldoperatedate:'操作日期',fldoperateid:'操作',fldadminid:'操作员',fldmemo:'备注',fldnewvalue:'内容',fldchangedate:'变更日期',fldexcutedate:'生效日期',flddefaultname1:'原套餐',flddefaultname2:'新套餐',fldstate:'状态',fldstatedate:'状态日期',fldextend:'备注'};
 return baseclass.extend({
@@ -43,7 +43,8 @@ return baseclass.extend({
    if(item.state==='ready'){const columns=item.columns || [],body=(item.rows || []).map(function(row){return E('tr',{},columns.map(function(key,i){return E('td',{},String(row[i] || '--'));}));});job.card.append(E('div',{'class':'bj-table-scroll'},E('table',{'class':'bj-table'},[E('thead',{},E('tr',{},columns.map(function(key){return E('th',{},_(labels[key] || '其他'));}))),E('tbody',{},body)])));if(!body.length)job.card.append(E('p',{},_('暂无记录。')));
     const page=item.page || 1,pages=Math.max(1,Math.ceil((item.total || 0)/100)),prev=button('上一页',function(){void load(job.target,page-1);}),next=button('下一页',function(){void load(job.target,page+1);});prev.disabled=page<=1;next.disabled=page>=pages;job.card.append(E('div',{'class':'bj-actions'},[E('span',{},(item.total || 0)+' '+_('条')+' · '+page+' / '+pages),prev,next,button('导出本页',function(){exportPage(item);})]));}
   });}
-  poll.add(async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;const current=generation;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);if(current!==generation)return;job.item=response.result || response;job.running=job.item.state==='loading';}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}}finally{polling=false;}},2);
-  return E('section',{'class':'bj-enter'},[controls,message,rows]);
+  const root=E('section',{'class':'bj-enter'});
+  client.watch(root,async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;const current=generation;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);if(current!==generation)return;job.item=response.result || response;job.running=job.item.state==='loading';}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}}finally{polling=false;}},1);
+  root.append(controls,message,rows);return root;
  }
 });

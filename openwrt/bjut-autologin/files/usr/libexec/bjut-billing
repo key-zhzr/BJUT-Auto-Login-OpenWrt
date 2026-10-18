@@ -6,12 +6,15 @@ BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$LIB_DIR/mwan.sh" || exit 1
 . "$LIB_DIR/billing.sh" || exit 1
 . "$LIB_DIR/routing.sh" || exit 1
+. "$LIB_DIR/workbench.sh" || exit 1
+uci_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
 case "$1" in ''|*[!0-9a-f]*) exit 2 ;; esac
 [ "${#1}" = 32 ] || exit 2
 lock="$STATE_DIR/billing/$1/lock"
 mkdir "$lock" 2>/dev/null || exit 75
+printf '%s' "$$" >"$STATE_DIR/billing/$1/worker-pid"
 CACHE_LOCK=""
-trap 'rm -rf -- "$lock"; [ -z "$CACHE_LOCK" ] || rm -rf -- "$CACHE_LOCK"; cleanup_runtime' 0
+trap '[ "$(json_file_value "$STATE_DIR/billing/$1/result.json" "@.state")" = captcha ] || rm -f "$STATE_DIR/billing/$1/action.json"; rm -rf -- "$lock"; [ -z "$CACHE_LOCK" ] || rm -rf -- "$CACHE_LOCK"; cleanup_runtime' 0
 billing_worker "$1"
 result=$?
 if [ "$result" != 0 ] && [ "$(json_file_value "$STATE_DIR/billing/$1/result.json" '@.state')" = loading ]; then

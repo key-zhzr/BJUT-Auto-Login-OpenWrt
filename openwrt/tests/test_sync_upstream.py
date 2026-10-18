@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('sync_upstream', Path(__file__).resolve().parents[1] / 'scripts/sync_upstream.py')
 sync = importlib.util.module_from_spec(spec)
@@ -94,6 +95,25 @@ class SyncTests(unittest.TestCase):
 
     def test_no_changes_is_noop(self):
         self.assertEqual(sync.synchronize(self.repo, 'upstream-main', False)['state'], 'unchanged')
+
+    def test_shared_billing_generator_failure_aborts_the_merge(self):
+        self.write('scripts/build-router-billing-ui.mjs', 'fixture generator\n')
+        self.write('src/router-billing-tools.ts', 'fixture source\n')
+        self.commit('shared view fixture'); self.main = self.git('rev-parse', 'HEAD')
+        self.upstream('website.txt', 'changed upstream page\n')
+        original_run=subprocess.run
+        def fail_generator(command, **kwargs):
+            if command[:2]==['npm','ci']:
+                self.assertIn('--ignore-scripts',command)
+                return subprocess.CompletedProcess(command,0)
+            if command[0]=='node':raise subprocess.CalledProcessError(1,command)
+            return original_run(command,**kwargs)
+        with patch.object(sync.subprocess,'run',side_effect=fail_generator):
+            with self.assertRaisesRegex(RuntimeError,'could not be regenerated'):
+                sync.synchronize(self.repo,'upstream-main',True)
+        self.assertEqual(self.git('rev-parse','HEAD'),self.main)
+        self.assertEqual(self.git('status','--porcelain'),'')
+        self.assertIn('src/router-billing-tools.ts',sync.sensitive(['src/router-billing-tools.ts']))
 
 
 class ReviewPublicationTests(unittest.TestCase):
