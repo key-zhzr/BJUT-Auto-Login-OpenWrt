@@ -58,6 +58,7 @@ def validate_javascript():
     program = "const fs=require('fs'); new Function(fs.readFileSync(process.argv[1], 'utf8'));"
     for source in sources:
         run(["node", "-e", program, source])
+    run(["node", OPENWRT / "tests/test_luci_module_contract.cjs"])
 
 
 def validate_shell():

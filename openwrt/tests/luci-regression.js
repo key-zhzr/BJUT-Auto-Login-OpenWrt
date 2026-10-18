@@ -77,8 +77,19 @@ const rpc = { getBaseURL: () => '/mock-ubus', getSessionID: () => L.env.sessioni
 const request = { post: async (_url, body, _options) => ({ ok: true, json: () => ({ jsonrpc: '2.0', id: body.id, result: [0, awaited.get(body.id)] }) }) };
 const awaited = new Map();
 request.post = async (_url, body, _options) => { const result = await server(body.params[2], body.params[3]); awaited.set(body.id, result); return { ok: true, json: () => ({ jsonrpc: '2.0', id: body.id, result: [0, result] }) }; };
-const modules = { baseclass: { extend: (object) => object }, view: { extend: (object) => object }, rpc, request, E, _, L, ui: { showModal: () => { }, hideModal: () => { }, addNotification: () => { } } };
-async function load(name, path) { const source = await (await fetch('../luci-app-bjut-autologin/htdocs/luci-static/resources/' + path + '.js')).text(); modules[name] = new Function(...Object.keys(modules), source)(...Object.values(modules)); return modules[name]; }
+// LuCI validates module factories and imports an instance of the returned class.
+// An identity mock of extend() hides invalid native-class exports until deployment.
+class LuCIBase {
+    static extend(methods) { class Module extends this {} Object.assign(Module.prototype, methods); return Module; }
+}
+const modules = { baseclass: LuCIBase, view: LuCIBase, rpc, request, E, _, L, ui: { showModal: () => { }, hideModal: () => { }, addNotification: () => { } } };
+async function load(name, path) {
+    const source = await (await fetch('../luci-app-bjut-autologin/htdocs/luci-static/resources/' + path + '.js')).text();
+    const Module = new Function(...Object.keys(modules), source)(...Object.values(modules));
+    if (!(Module?.prototype instanceof LuCIBase)) throw new TypeError(path + ' factory yields invalid constructor');
+    modules[name] = new Module();
+    return modules[name];
+}
 const bjut = await load('bjut', 'bjut-autologin/workbench');
 await load('client', 'bjut-autologin/client');
 await load('records', 'bjut-autologin/records');

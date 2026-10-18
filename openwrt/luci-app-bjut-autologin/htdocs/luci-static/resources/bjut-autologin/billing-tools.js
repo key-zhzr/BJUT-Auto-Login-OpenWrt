@@ -285,4 +285,6 @@ class RouterBillingTools {
     }
 }
 
-return RouterBillingTools;
+return baseclass.extend({
+ create: function(root, options) { return new RouterBillingTools(root, options); }
+});
