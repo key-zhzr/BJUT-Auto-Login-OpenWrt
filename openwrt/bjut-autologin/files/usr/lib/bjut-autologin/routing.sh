@@ -122,22 +122,36 @@ ensure_family_route() {
 	ROUTE_RESULT=managed
 }
 
+acquire_route_lock() {
+	local lock="$STATE_DIR/route-lock.pid" candidate owner started
+	candidate="$(mktemp "$STATE_DIR/route-owner.XXXXXX")" || return 1
+	printf '%s\n' "$$" >"$candidate" || { rm -f "$candidate"; return 1; }
+	[ ! -d "$lock" ] || { rm -f "$candidate"; return 1; }
+	started="$(date +%s)"
+	# A hard link publishes the PID and lock atomically. With mkdir + a later
+	# PID write, simultaneous uplinks could mistake the uninitialized lock for
+	# an abandoned one, or stop retrying after another waiter acquired it.
+	while ! ln "$candidate" "$lock" 2>/dev/null; do
+		[ ! -d "$lock" ] || { rm -f "$candidate"; return 1; }
+		owner="$(cat "$lock" 2>/dev/null)"
+		if is_uint "$owner" && ! kill -0 "$owner" 2>/dev/null && mkdir "$STATE_DIR/route-recover.lock" 2>/dev/null; then
+			owner="$(cat "$lock" 2>/dev/null)"
+			if is_uint "$owner" && ! kill -0 "$owner" 2>/dev/null; then rm -f "$lock"; fi
+			rmdir "$STATE_DIR/route-recover.lock" 2>/dev/null || true
+		fi
+		if [ "$(($(date +%s)-started))" -ge 5 ]; then rm -f "$candidate"; return 1; fi
+		sleep 0.05 2>/dev/null || sleep 1
+	done
+	rm -f "$candidate"
+}
+
 ensure_uplink_routes() {
-	local owner attempts=0
-	if ! mkdir "$STATE_DIR/route-lock" 2>/dev/null; then
-		owner="$(cat "$STATE_DIR/route-lock/pid" 2>/dev/null)"
-		if is_uint "$owner" && kill -0 "$owner" 2>/dev/null; then
-			while [ -d "$STATE_DIR/route-lock" ] && [ "$attempts" -lt 5 ]; do sleep 1; attempts=$((attempts + 1)); done
-			[ ! -d "$STATE_DIR/route-lock" ] || { ROUTE4=busy; ROUTE6=busy; return 1; }
-		else rm -rf "$STATE_DIR/route-lock"; fi
-		mkdir "$STATE_DIR/route-lock" 2>/dev/null || return 1
-	fi
-	printf '%s' "$$" >"$STATE_DIR/route-lock/pid"
+	if ! acquire_route_lock; then ROUTE4=busy; ROUTE6=busy; return 1; fi
 	ensure_family_route 4 "$DEVICE" "$LOCAL_IPV4" "$NETWORK_JSON4" || ROUTE_RESULT=failed
 	ROUTE4="$ROUTE_RESULT"
 	ensure_family_route 6 "$DEVICE6" "$LOCAL_IPV6" "$NETWORK_JSON6" || ROUTE_RESULT=failed
 	ROUTE6="$ROUTE_RESULT"
-	rm -rf -- "$STATE_DIR/route-lock"
+	[ "$(cat "$STATE_DIR/route-lock.pid" 2>/dev/null)" != "$$" ] || rm -f "$STATE_DIR/route-lock.pid"
 }
 
 prune_uplink_routes() (

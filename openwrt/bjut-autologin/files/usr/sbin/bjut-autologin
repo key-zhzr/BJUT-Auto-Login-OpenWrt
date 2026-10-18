@@ -1016,7 +1016,10 @@ run_once_impl() {
 		return 75
 	fi
 	write_phase "正在确认出口路由"
-	ensure_uplink_routes
+	if ! ensure_uplink_routes; then
+		write_status busy '出口路由正在被其他上游更新，请稍候重试' "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+		return 75
+	fi
 	sync_mwan_rules || log_message error "mwan3 出口规则更新失败，请核对路由设置"
 	load_runtime_state
 	if ! curl_supports_ifhost && { [ "$CFG_MWAN3" != 1 ] || [ ! -r "$MWAN_WRAPPER" ]; }; then

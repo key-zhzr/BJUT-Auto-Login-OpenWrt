@@ -134,4 +134,32 @@ class RouterRevision10Tests(unittest.TestCase):
         self.assertEqual(process.stdout.readline().strip(),'ready');start=time.monotonic();stdout,stderr=process.communicate(timeout=10)
         self.assertEqual(process.returncode,0,stderr);self.assertLess(time.monotonic()-start,1.5)
 
+    def test_route_lock_waits_for_its_owner_and_recovers_after_exit(self):
+        environment=self.environment('online',BJUT_SOURCE_ONLY='1',BJUT_SELF=str(base.SCRIPT))
+        lock=self.state/'route-lock.pid';entered=self.state/'route-entered'
+        script=r''' . "$BJUT_SELF";. "$LIB_DIR/routing.sh"
+ensure_family_route(){ printf 'entered\n' >>"$STATE_DIR/route-entered";ROUTE_RESULT=managed; }
+printf 'ready\n';ensure_uplink_routes || exit 1;printf '%s:%s' "$ROUTE4" "$ROUTE6"
+'''
+        holder=subprocess.Popen(['sh','-c','sleep 10'])
+        lock.write_text(str(holder.pid))
+        worker=subprocess.Popen(['sh','-c',script],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        try:
+            self.assertEqual(worker.stdout.readline().strip(),'ready')
+            time.sleep(.2)
+            self.assertFalse(entered.exists(),'a second uplink entered an owned route update')
+            self.assertEqual(lock.read_text().strip(),str(holder.pid))
+            holder.terminate();holder.wait(timeout=2)
+            stdout,stderr=worker.communicate(timeout=6)
+            self.assertEqual(worker.returncode,0,stderr);self.assertEqual(stdout,'managed:managed')
+            self.assertFalse(lock.exists())
+            lock.write_text('99999999')
+            recovered=subprocess.run(['sh','-c',script],env=environment,capture_output=True,text=True,timeout=6)
+            self.assertEqual(recovered.returncode,0,recovered.stderr)
+            self.assertFalse(lock.exists())
+        finally:
+            for process in (holder,worker):
+                if process.poll() is None:process.terminate()
+                process.wait(timeout=3)
+
 if __name__=='__main__':unittest.main()

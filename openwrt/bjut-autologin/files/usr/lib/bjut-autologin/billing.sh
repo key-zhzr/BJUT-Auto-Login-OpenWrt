@@ -234,7 +234,7 @@ billing_worker() {
 	saved_account="$BILLING_ACCOUNT"
 	read_network_identity || { billing_progress error 100 "所选上游尚未取得校园网地址"; return 1; }
 	prepare_work_dir || return 1
-	ensure_uplink_routes
+	ensure_uplink_routes || { billing_progress error 100 '出口路由正在被其他上游更新，请稍后刷新'; return 1; }
 	sync_mwan_rules || true
 	signature="$(printf '%s\n' "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$account_id" "$BILLING_ACCOUNT" "$password" | sha256sum | awk '{print $1}')"
 	[ "${#signature}" = 64 ] || { billing_progress error 100 "请重新安装路由端以补齐所需组件"; return 1; }
