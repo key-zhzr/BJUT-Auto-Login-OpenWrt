@@ -64,6 +64,25 @@ class SyncTests(unittest.TestCase):
         self.upstream('src-tauri/src/portal.rs', 'new protocol\n')
         self.assertEqual(sync.synchronize(self.repo, 'upstream-main', False)['state'], 'review')
 
+    def test_upstream_workflow_additions_are_recorded_without_creating_actions(self):
+        self.upstream('.github/workflows/new-app.yml','name: App only\n')
+        result=sync.synchronize(self.repo,'upstream-main',False)
+        self.assertEqual(result['state'],'review')
+        self.assertFalse((self.repo/'.github/workflows/new-app.yml').exists())
+        self.assertIn('.github/workflows/new-app.yml',result['reviewFiles'])
+        self.assertEqual(len(self.git('rev-list','--parents','-n','1','HEAD').split()),3)
+        self.assertEqual(self.git('rev-parse','main'),self.main)
+
+    def test_router_workflows_survive_conflicting_upstream_changes(self):
+        path='.github/workflows/ci.yml'
+        self.write(path,'name: Router checks\npermissions: {contents: read}\n')
+        self.commit('router workflow');self.main=self.git('rev-parse','HEAD')
+        self.upstream(path,'name: App workflow\npermissions: {contents: write}\n')
+        result=sync.synchronize(self.repo,'upstream-main',False)
+        self.assertEqual(result['state'],'review')
+        self.assertEqual((self.repo/path).read_text(),'name: Router checks\npermissions: {contents: read}\n')
+        self.assertEqual(self.git('diff',self.main,'HEAD','--','.github/workflows'),'')
+
     def test_conflict_retains_main_and_does_not_claim_upstream_merged(self):
         self.write('src-tauri/src/portal.rs', 'router local\n')
         self.commit('local protocol'); self.main = self.git('rev-parse', 'HEAD')

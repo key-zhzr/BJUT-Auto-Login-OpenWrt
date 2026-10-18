@@ -35,6 +35,12 @@ def synchronize(repo, ref, run_checks=True):
     branch = 'codex/upstream-' + upstream[:12]
     git(repo, 'switch', '-c', branch)
     merge = git(repo, 'merge', '--no-commit', '--no-ff', upstream, check=False)
+    # The port owns its Actions. A contents-only GITHUB_TOKEN cannot publish
+    # upstream workflow edits, even on a review branch. Keep the router copies
+    # and record those upstream files for manual review without wider access.
+    retained_workflows = [path for path in changes if path.startswith('.github/workflows/')]
+    if retained_workflows:
+        git(repo, 'restore', '--source=HEAD', '--staged', '--worktree', '--', '.github/workflows')
     conflicts = git(repo, 'diff', '--name-only', '--diff-filter=U').stdout.splitlines()
     # The independent port owns the root introduction. Keep the upstream copy
     # separately instead of making every upstream README edit a false conflict.
@@ -75,7 +81,7 @@ def synchronize(repo, ref, run_checks=True):
             # Keep diagnostics in the CI log; never commit a failed merge.
             raise RuntimeError('OpenWrt validation failed; main was not changed.') from None
     (repo / 'openwrt/upstream-README.md').write_text(git(repo, 'show', upstream + ':README.md').stdout)
-    (repo / 'openwrt/UPSTREAM.lock.json').write_text(json.dumps({'upstream': upstream, 'reviewRequired': review}, indent=2) + '\n')
+    (repo / 'openwrt/UPSTREAM.lock.json').write_text(json.dumps({'upstream': upstream, 'reviewRequired': review, 'retainedWorkflows': retained_workflows}, indent=2) + '\n')
     git(repo, 'add', 'openwrt/upstream-README.md', 'openwrt/UPSTREAM.lock.json')
     git(repo, 'commit', '-m', 'chore(openwrt): merge upstream ' + upstream[:12])
     return {'state': 'review' if review else 'ready', 'upstream': upstream, 'branch': branch, 'reviewFiles': review}

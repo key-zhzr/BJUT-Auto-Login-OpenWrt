@@ -28,6 +28,8 @@
 
 自动同步指 Git 历史与可直接合并的源码更新。桌面 Rust 的新认证逻辑不会自动转换成 shell；涉及后端、安全或冲突的修改会进入待审查分支。工作流任务摘要提供差异链接，确认后手动合并。合并前需要移植相关逻辑并通过离线测试。
 
+路由仓库保留自己的 Actions 文件，不把上游 App 工作流覆盖进来。上游工作流差异会记入 `UPSTREAM.lock.json` 的 `retainedWorkflows`，仍需人工审查。这样待审查分支可由现有的仓库内容权限发布，无需扩展令牌权限。
+
 ## 共享计费界面
 
 `src/router-billing-tools.ts` 是 App 与 LuCI 的账户服务、设备及账号安全控件来源。主项目的 `scripts/build-router-billing-ui.mjs <路由仓库路径>` 生成路由包中的 `billing-tools.js`，生成文件一并提交，路由器无需 Node。不要直接修改生成文件。
