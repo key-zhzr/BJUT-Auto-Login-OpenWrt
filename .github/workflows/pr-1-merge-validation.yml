@@ -1,0 +1,25 @@
+name: PR 1 Qualcomm SDK validation
+
+on:
+  push:
+    branches: [pr-1-merge-validation-20261018]
+
+permissions:
+  contents: read
+
+jobs:
+  matrix-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify merged revision and build matrix
+        run: |
+          python3 openwrt/tests/test_package_build.py
+          python3 openwrt/scripts/package_build.py plan --format apk --platform qualcommax/ipq60xx --tag openwrt-v0.1.6-r11
+
+  ipq60xx-sdk:
+    needs: matrix-check
+    uses: ./.github/workflows/openwrt-sdk.yml
+    with:
+      matrix: '{"include":[{"version":"25.12.5","format":"apk","target":"qualcommax/ipq60xx","arch":"aarch64_cortex-a53","sdk":"qualcommax-ipq60xx-25.12.5","id":"openwrt-qualcommax-ipq60xx-25.12.5-apk"}]}'
