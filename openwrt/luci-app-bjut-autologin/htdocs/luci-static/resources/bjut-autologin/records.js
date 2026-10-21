@@ -10,23 +10,29 @@ const labels={loginTime:'登录时间',logoutTime:'下线时间',time:'在线时
 return baseclass.extend({
  render:function(getTargets){
   let jobs=[],busy=false,polling=false,generation=0;
-  function button(text,action){return E('button',{'class':'btn',type:'button',click:action},_(text));}
+  function button(text,action,className){return E('button',{'class':className || 'btn',type:'button',click:action},_(text));}
+  function field(text,input){return E('label',{},[E('span',{},_(text)),input]);}
   const kind=E('select',{'class':'cbi-input-select'},kinds.map(function(item){return E('option',{value:item[0]},_(item[1]));}));
   const now=new Date(),date=function(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
-  const start=E('input',{'class':'cbi-input-text',type:'date',value:date(new Date(now.getFullYear(),now.getMonth(),1))}),end=E('input',{'class':'cbi-input-text',type:'date',value:date(now)}),year=E('input',{'class':'cbi-input-text',type:'number',min:2000,max:2199,value:now.getFullYear()}),message=E('p',{'role':'status'},_('选择类型和日期后查询。')),rows=E('div');
-  const query=button('查询',function(){void load();});
-  function field(text,input){return E('label',{},[E('span',{},_(text)),input]);}
-  const controls=E('div',{'class':'bj-record-controls'},[field('类型',kind),field('开始日期',start),field('结束日期',end),field('年份',year),query]);
-  function fields(){const dates=['usage','payments','operations'].includes(kind.value);start.parentElement.hidden=end.parentElement.hidden=!dates;year.parentElement.hidden=kind.value!=='monthly';}
+  const start=E('input',{'class':'cbi-input-text',type:'date',value:date(new Date(now.getFullYear(),now.getMonth(),1))}),end=E('input',{'class':'cbi-input-text',type:'date',value:date(now)}),year=E('input',{'class':'cbi-input-text',type:'number',min:2000,max:2199,value:now.getFullYear()});
+  const message=E('p',{'class':'bj-record-message','role':'status'},_('选择类型和日期后查询。'));
+  const rows=E('div',{'class':'bj-record-results'});
+  const query=button('查询',function(){void load();},'btn bj-primary');
+  const range=E('div',{'class':'bj-record-range'},[field('开始日期',start),E('span',{'class':'bj-range-sep','aria-hidden':'true'},_('至')),field('结束日期',end)]);
+  const yearField=field('年份',year);
+  const controls=E('div',{'class':'bj-record-controls'},[field('类型',kind),range,yearField,query]);
+  const heading=E('div',{'class':'bj-record-heading'},[E('div',{},[E('h3',{},_('账单与办理记录')),message])]);
+  function fields(){const dates=['usage','payments','operations'].includes(kind.value);range.hidden=!dates;yearField.hidden=kind.value!=='monthly';}
   function clear(){if(busy)return;jobs=[];rows.replaceChildren();message.textContent=_('选择类型和日期后查询。');}
   kind.addEventListener('change',function(){fields();clear();});[start,end,year].forEach(function(input){input.addEventListener('change',clear);});fields();
   function state(){busy=jobs.some(function(job){return job.running;});[query,kind,start,end,year].forEach(function(input){input.disabled=busy;});message.textContent=busy?_('正在查询用量与账单…'):_('查询已完成');}
   async function load(target,page){
    if(busy)return;page=page || 1;const dates=['usage','payments','operations'].includes(kind.value);
    if(dates && (!start.value || !end.value || start.value>end.value)){message.textContent=_('请检查日期范围。');return;}
+   if(kind.value==='monthly' && (!/^\d{4}$/.test(year.value) || +year.value<2000 || +year.value>2199)){message.textContent=_('请检查年份。');return;}
    const targets=target?[target]:getTargets();if(!targets.length){message.textContent=_('请先查询计费账号。');return;}
    const current=++generation;const previous=target?jobs.filter(function(job){return job.target.uplink!==target.uplink;}):[];
-   jobs=previous.concat(targets.map(function(item){return {target:item,ticket:'',running:true,item:{state:'loading',message:_('正在准备查询'),percent:2},card:E('article',{'class':'bj-card bj-enter'})};}));rows.replaceChildren.apply(rows,jobs.map(function(job){return job.card;}));state();draw();
+   jobs=previous.concat(targets.map(function(item){return {target:item,ticket:'',running:true,item:{state:'loading',message:_('正在准备查询'),percent:2},card:E('article',{'class':'bj-record-card bj-enter'})};}));rows.replaceChildren.apply(rows,jobs.map(function(job){return job.card;}));state();draw();
    await Promise.all(jobs.filter(function(job){return job.running;}).map(async function(job){try{const response=await begin(job.target.uplink,job.target.account,L.env.sessionid,kind.value,dates?start.value:'',dates?end.value:'',kind.value==='monthly'?year.value:'',String(page));if(current!==generation)return;if(!response.ticket)throw new Error(response.message || _('查询未开始'));job.ticket=response.ticket;}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}
   }
   function exportPage(item){
@@ -38,13 +44,15 @@ return baseclass.extend({
    async function answer(refresh){if(job.running || (!refresh && !input.value.trim()))return;job.running=true;state();try{const response=await captcha(job.ticket,L.env.sessionid,input.value.trim(),refresh);if(response.state==='error')throw new Error(response.message);job.item={state:'loading',message:_('正在核对验证码'),percent:40};draw();}catch(error){job.running=false;message.textContent=String(error.message || error);state();}}
    job.card.append(image,input,E('div',{'class':'bj-actions'},[button('换一张',function(){void answer(true);}),button('继续',function(){void answer(false);})]));
   }
-  function draw(){const seen=new Set();jobs.forEach(function(job){const item=job.item;if(item.state==='ready' && item.account && seen.has(item.account)){job.card.hidden=true;return;}if(item.state==='ready' && item.account)seen.add(item.account);job.card.hidden=false;const stamp=JSON.stringify(item);if(job.card.dataset.result===stamp)return;job.card.dataset.result=stamp;job.card.replaceChildren(E('strong',{},item.account?_('账号')+' '+item.account:job.target.title),E('p',{},item.message || _('等待查询')));
+  function draw(){const seen=new Set();jobs.forEach(function(job){const item=job.item;if(item.state==='ready' && item.account && seen.has(item.account)){job.card.hidden=true;return;}if(item.state==='ready' && item.account)seen.add(item.account);job.card.hidden=false;const stamp=JSON.stringify(item);if(job.card.dataset.result===stamp)return;job.card.dataset.result=stamp;job.card.replaceChildren(E('h3',{},item.account?_('账号')+' '+item.account:job.target.title),E('p',{'class':'bj-billing-status'},item.message || _('等待查询')));
    if(item.state==='loading')job.card.append(E('progress',{max:100,value:item.percent || 2}));if(item.state==='captcha')showCaptcha(job);
    if(item.state==='ready'){const columns=item.columns || [],body=(item.rows || []).map(function(row){return E('tr',{},columns.map(function(key,i){return E('td',{},String(row[i] || '--'));}));});job.card.append(E('div',{'class':'bj-table-scroll'},E('table',{'class':'bj-table'},[E('thead',{},E('tr',{},columns.map(function(key){return E('th',{},_(labels[key] || '其他'));}))),E('tbody',{},body)])));if(!body.length)job.card.append(E('p',{},_('暂无记录。')));
-    const page=item.page || 1,pages=Math.max(1,Math.ceil((item.total || 0)/100)),prev=button('上一页',function(){void load(job.target,page-1);}),next=button('下一页',function(){void load(job.target,page+1);});prev.disabled=page<=1;next.disabled=page>=pages;job.card.append(E('div',{'class':'bj-actions'},[E('span',{},(item.total || 0)+' '+_('条')+' · '+page+' / '+pages),prev,next,button('导出本页',function(){exportPage(item);})]));}
+    const page=item.page || 1,pages=Math.max(1,Math.ceil((item.total || 0)/100)),prev=button('上一页',function(){void load(job.target,page-1);}),next=button('下一页',function(){void load(job.target,page+1);});prev.disabled=page<=1;next.disabled=page>=pages;
+    const pager=E('div',{'class':'bj-record-pager'},[E('span',{},(item.total || 0)+' '+_('条')+' · '+page+' / '+pages),prev,next]);
+    job.card.append(E('div',{'class':'bj-record-footer'},[pager,button('导出本页',function(){exportPage(item);})]));}
   });}
-  const root=E('section',{'class':'bj-enter'});
+  const root=E('section',{'class':'bj-card bj-record-panel bj-enter'});
   client.watch(root,async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;const current=generation;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);if(current!==generation)return;job.item=response.result || response;job.running=job.item.state==='loading';}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}}finally{polling=false;}},1);
-  root.append(controls,message,rows);return root;
+  root.append(heading,controls,rows);return root;
  }
 });
