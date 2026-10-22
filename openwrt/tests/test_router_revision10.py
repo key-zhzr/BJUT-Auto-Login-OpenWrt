@@ -43,11 +43,11 @@ class RouterRevision10Tests(unittest.TestCase):
                 self.assertEqual(len(result['questions']),3);self.assertEqual(result['FLDMINLENGTH'],8)
             if module=='devices':
                 self.assertEqual(result['mauth'],'1');self.assertEqual(value['sessions'][0]['sessionIndex'],0)
-                self.assertEqual(result['macs']['rows'][0][1],'aabbccddeeff')
+                self.assertEqual(result['macs']['rows'][0][1],'AA-BB-CC-DD-EE-FF')
             if module=='history':
                 self.assertEqual(len(result['history']['rows']),1)
                 self.assertEqual(result['history']['columns'][5:9],['durationMinutes','flowMb','billingMode','amount'])
-                self.assertEqual(result['history']['rows'][0][5:9],['60','42','3','0'])
+                self.assertEqual(result['history']['rows'][0][5:9],['60','42','包月','0'])
             forbidden=self.rpc('billing_poll',{'ticket':ticket,'owner':'2'*32},**env)
             self.assertEqual(json.loads(forbidden.stdout)['state'],'error')
 
