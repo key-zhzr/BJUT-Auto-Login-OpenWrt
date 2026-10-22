@@ -28,13 +28,13 @@ static const char *tag_end(const char *s)
 
 static int emit_text(const char *a, const char *b, int strip)
 {
-    int inside = 0, space = 0;
+    int inside = 0, space = 0, written = 0;
     for (; a < b; a++) {
         if (strip && *a == '<') { inside = 1; continue; }
         if (strip && *a == '>') { inside = 0; space = 1; continue; }
         if (inside) continue;
         if (strip && isspace((unsigned char)*a)) { space = 1; continue; }
-        if (space) { putchar(' '); space = 0; }
+        if (space) { if (written) putchar(' '); space = 0; }
         if (*a == '&') {
             const char *semi = memchr(a, ';', (size_t)(b - a));
             if (semi && semi - a < 10) {
@@ -46,12 +46,26 @@ static int emit_text(const char *a, const char *b, int strip)
                 else if (n == 4 && !strncmp(a, "&lt;", n)) value = '<';
                 else if (n == 4 && !strncmp(a, "&gt;", n)) value = '>';
                 else if (n == 6 && !strncmp(a, "&nbsp;", n)) value = ' ';
-                if (value) { putchar(value); a = semi; continue; }
+                if (value) { putchar(value); written=1; a = semi; continue; }
             }
         }
         putchar((unsigned char)*a);
+        written=1;
     }
     return ferror(stdout) ? 1 : 0;
+}
+
+static int status_label(const char *a, const char *b)
+{
+    char text[64]; size_t n=0; int tag=0;
+    for (;a<b && n+1<sizeof(text);a++) {
+        if (*a=='<') {tag=1;continue;} if (*a=='>') {tag=0;continue;} if(tag)continue;
+        if (isspace((unsigned char)*a) || *a==':') continue;
+        if (b-a>=3 && (!memcmp(a,"　",3) || !memcmp(a,"：",3))) {a+=2;continue;}
+        if (b-a>=6 && !strncmp(a,"&nbsp;",6)) {a+=5;continue;}
+        text[n++]=*a;
+    }
+    text[n]=0;return !strcmp(text,"状态");
 }
 
 static int attr(const char *tag, const char *wanted, const char **a, const char **b)
@@ -229,6 +243,31 @@ static int extract(const char *html, const char *op, const char *name)
         return 1;
     }
     if (!strcmp(op, "user-json")) return user_json(html);
+    if (!strcmp(op, "dashboard-metric") && *name) {
+        while ((p = next_tag(p, "dl"))) {
+            end = find_ci(p, "</dl>");
+            if (!end) return 1;
+            const char *label = strstr(p, name), *dt = next_tag(p, "dt");
+            if (label && label < end && dt && dt < end) {
+                a = tag_end(dt); b = find_ci(dt, "</dt>");
+                return a && b && b < end && b-a <= 1024 ? emit_text(a+1,b,1) : 1;
+            }
+            p = end+5;
+        }
+        return 1;
+    }
+    if (!strcmp(op, "cycle")) {
+        p = strstr(html,"计费周期");
+        if (!p) return 1;
+        end = p + (strlen(p)>1600 ? 1600 : strlen(p));
+        int count=0; const char *first=NULL;
+        for (;p+10<=end;p++) {
+            int valid=p[4]=='-' && p[7]=='-';
+            for (int i=0;i<10;i++) if (i!=4 && i!=7 && !isdigit((unsigned char)p[i])) valid=0;
+            if (valid) { if (++count==2) {fwrite(first,1,10,stdout);fputs(" 至 ",stdout);fwrite(p,1,10,stdout);return 0;} first=p;p+=9; }
+        }
+        return 1;
+    }
     if (!strcmp(op, "metric") && *name) {
         while ((p = next_tag(p, "dt"))) {
             end = find_ci(p, "</dt>"); a = tag_end(p);
@@ -300,7 +339,7 @@ static int extract(const char *html, const char *op, const char *name)
             end = find_ci(p, "</label>");
             if (!end) return 1;
             a = tag_end(p);
-            if (a && strstr(a, "状") && strstr(a, "状") < end && strstr(a, "态") && strstr(a, "态") < end) {
+            if (a && status_label(a+1,end)) {
                 p = end + 8;
                 while (isspace((unsigned char)*p)) p++;
                 if (strncasecmp(p, "<div", 4)) return 1;

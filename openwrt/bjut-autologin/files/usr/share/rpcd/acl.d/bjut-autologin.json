@@ -9,6 +9,9 @@
           "ports",
           "logs",
           "settings",
+          "billing_cached",
+          "maintenance_info",
+          "maintenance_poll",
           "billing_poll",
           "dashboard"
         ]
@@ -21,6 +24,7 @@
           "sync_accounts",
           "account_set",
           "save_settings",
+          "maintenance_start",
           "billing_start",
           "billing_captcha",
           "account_save",

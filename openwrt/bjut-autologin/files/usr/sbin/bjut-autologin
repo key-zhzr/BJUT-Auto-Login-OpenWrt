@@ -49,6 +49,7 @@ PROBE6=unknown
 SESSION_STATE=unknown
 MANUAL_ACCOUNT=""
 MANUAL_ACTION=login
+OPERATION_ID=''
 CONFIG_LOADED=0
 MAIN_SECTION=""
 ACCOUNT_SECTIONS=""
@@ -286,6 +287,18 @@ load_main_section() {
 	config_get CFG_LOG_DIRECTORY "$1" log_directory /tmp/bjut-autologin-log
 	config_get_bool CFG_LOG_WEB "$1" log_web 0
 	config_get CFG_LOG_MAX_KB "$1" log_max_kb 256
+	config_get_bool CFG_PUSHPLUS_ENABLED "$1" pushplus_enabled 0
+	config_get CFG_PUSHPLUS_TOKEN "$1" pushplus_token ""
+	config_get CFG_PUSHPLUS_TOPIC "$1" pushplus_topic ""
+	config_get_bool CFG_PUSHPLUS_ONLINE "$1" pushplus_online 1
+	config_get_bool CFG_PUSHPLUS_FAILURE "$1" pushplus_failure 1
+	config_get CFG_PUSHPLUS_DELAY "$1" pushplus_delay 60
+	config_get CFG_PUSHPLUS_INTERVAL "$1" pushplus_interval 3600
+	config_get_bool CFG_BILLING_BACKGROUND "$1" billing_background 0
+	config_get CFG_BILLING_INTERVAL "$1" billing_interval 21600
+	config_get_bool CFG_BILLING_ALERTS "$1" billing_alerts 1
+	config_get CFG_BALANCE_THRESHOLD "$1" balance_threshold 5
+	config_get CFG_FLOW_THRESHOLD "$1" flow_threshold 5
 }
 
 collect_account_section() {
@@ -436,19 +449,23 @@ write_status() {
 	json_add_int next_attempt "$next_attempt"
 	json_add_int failures "$failures"
 	json_add_int offline_count "$offline_count"
-	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE"
+	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE" || return 1
 	log_message info "检测完成：${message}；IPv4=${PROBE4}，IPv6=${PROBE6}，会话=$SESSION_STATE${account:+，账号=$account}"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then cp "$STATE_FILE" "$SOURCE_STATE.$$" && mv -f "$SOURCE_STATE.$$" "$SOURCE_STATE"; fi
+	operation_complete "$state" "$message"
+	account_release
+	pushplus_observe "$state" "$message" "$protocol" "$account" "$now"
 }
 
 write_phase() {
 	log_message debug "$1"
+	operation_update running "$1"
 	printf '%s %s\n%s\n' "$$" "$(date +%s)" "$1" >"$STATE_DIR/phase-$UPLINK_ID.$$" &&
 		mv -f "$STATE_DIR/phase-$UPLINK_ID.$$" "$STATE_DIR/phase-$UPLINK_ID"
 }
 
 print_status_file() (
-	local file="$1" section="$2" pid started message="" checking=0
+ local file="$1" section="$2" pid started message="" checking=0 age updated now valid stale=0 operation key value
 	. "$JSHN_SH"
 	if [ -s "$file" ]; then json_load "$(cat "$file")" || return 1; else
 		json_init; json_add_string id "$section"; json_add_string state stopped
@@ -464,6 +481,15 @@ print_status_file() (
 	if [ -s "$STATE_DIR/manual-$section" ]; then checking=1; message='操作已排队，即将处理'; fi
 	json_add_int checking "$checking"
 	json_add_string check_message "$message"
+	updated="$(json_file_value "$file" '@.updated_at')"; now="$(date +%s)"; age=0; valid=$(( ${CFG_INTERVAL:-20}*3+30 ))
+	if is_uint "$updated" && [ "$now" -ge "$updated" ]; then age=$((now-updated)); [ "$age" -le "$valid" ] || stale=1; else stale=1; fi
+	json_add_int age_seconds "$age"; json_add_int stale "$stale"; json_add_int valid_for "$valid"
+	operation="$(operation_status "$section")"
+	json_add_object operation
+	for key in id action account state phase created_at updated_at deadline duration; do
+	 value="$(network_json_value "$operation" "@.$key")"; [ -z "$value" ] || json_add_string "$key" "$value"
+	done
+	json_close_object
 	json_dump
 )
 
@@ -948,8 +974,8 @@ login_protocol() {
 }
 
 try_accounts() {
-	local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed
-	order="$ACCOUNT_SECTIONS"
+ local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed capacity=0
+	order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
 	[ -z "$MANUAL_ACCOUNT" ] || order="$MANUAL_ACCOUNT"
 	for section in $order; do
 		case " $ACCOUNT_SECTIONS " in *" $section "*) ;; *) continue ;; esac
@@ -964,12 +990,14 @@ try_accounts() {
 		account_protocol="$(protocol_internal "$account_protocol")"
 		[ -n "$username" ] && [ -n "$password" ] || continue
 		[ "$account_protocol" = "auto" ] || [ "$account_protocol" = "$protocol" ] || continue
+		if ! account_reserve "$section"; then capacity=1; password=''; log_message notice "账号 $username 已达到并发上限，尝试备用账号"; continue; fi
 		attempted=1
 		masked="$(mask_username "$username")"
 		log_message notice "正在通过 $(protocol_name "$protocol") 尝试账号 $masked"
 		login_protocol "$protocol" "$username" "$password"
 		rc=$?
 		password=""
+		[ "$rc" = 0 ] || account_release
 		case "$rc" in
 			0) SELECTED_ACCOUNT="$masked"; return 0 ;;
 			10) log_message notice "账号 $masked 被认证网关拒绝，尝试下一个账号" ;;
@@ -977,6 +1005,7 @@ try_accounts() {
 			*) return 11 ;;
 		esac
 	done
+	[ "$capacity" != 1 ] || return 14
 	[ "$attempted" = "1" ] && return 10
 	return 12
 }
@@ -1044,6 +1073,9 @@ run_once_impl() {
 		[ "${requested_user%@campus}" = "${RUNTIME_ACCOUNT%@campus}" ] || MANUAL_ACTION=switch
 	fi
 	if [ "$FORCE" = 1 ] && [ "$MANUAL_ACTION" != login ]; then
+		if [ "$MANUAL_ACTION" = switch ] && ! account_reserve "$MANUAL_ACCOUNT"; then
+			write_status account_busy '所选账号已达到并发上限，保留当前登录' "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0; return 1
+		fi
 		: >"$STATE_DIR/paused-$UPLINK_ID"
 		if [ "$portal_rc" != 0 ] || ! validate_network_identity "$SELECTED_PROTOCOL"; then
 			write_status logout_failed '无法确认当前认证网关，自动登录已暂停' '' "$RUNTIME_ACCOUNT" 0 0 0; return 1
@@ -1055,6 +1087,7 @@ run_once_impl() {
 			fi
 		fi
 		if [ "$MANUAL_ACTION" = logout ]; then
+			account_release
 			write_status logged_out '已注销，自动登录已暂停；点击登录可恢复' "$SELECTED_PROTOCOL" '' 0 0 0; return 0
 		fi
 		rm -f "$STATE_DIR/paused-$UPLINK_ID"; SESSION_STATE=offline; explicit_auth=1
@@ -1160,6 +1193,8 @@ run_once_impl() {
 			write_status "no_account" "没有适用于已检测协议的已启用账号" "$SELECTED_PROTOCOL" "" 0 0 "$offline_count"
 			return 1
 			;;
+		14)
+			write_status account_busy '适用账号均已达到并发上限，请选择其他账号或调整上限' "$SELECTED_PROTOCOL" '' 0 0 "$offline_count"; return 1;;
 		*)
 			failures=$((RUNTIME_FAILURES + 1))
 			delay="$(calculate_backoff "$failures")"
@@ -1170,14 +1205,22 @@ run_once_impl() {
 }
 
 run_once_locked() {
-	local rc first FORCE="$FORCE" MANUAL_ACCOUNT="$MANUAL_ACCOUNT" MANUAL_ACTION="$MANUAL_ACTION" EVENT="$EVENT"
+ local rc first deadline FORCE="$FORCE" MANUAL_ACCOUNT="$MANUAL_ACCOUNT" MANUAL_ACTION="$MANUAL_ACTION" EVENT="$EVENT" OPERATION_ID=''
 	acquire_lock || return 75
 	if [ -f "$STATE_DIR/manual-$UPLINK_ID" ]; then
 		first="$(sed -n '1p' "$STATE_DIR/manual-$UPLINK_ID")"
 		case "$first" in login|logout|switch) MANUAL_ACTION="$first"; MANUAL_ACCOUNT="$(sed -n '2p' "$STATE_DIR/manual-$UPLINK_ID")";; *) MANUAL_ACCOUNT="$first";; esac
 		[ -z "$MANUAL_ACCOUNT" ] || valid_section "$MANUAL_ACCOUNT" || { release_lock; return 2; }
 		FORCE=1; EVENT=manual
+		OPERATION_ID="$(sed -n '3p' "$STATE_DIR/manual-$UPLINK_ID")"
 		rm -f "$STATE_DIR/manual-$UPLINK_ID"
+		if [ -n "$OPERATION_ID" ]; then
+			deadline="$(json_file_value "$STATE_DIR/operation-$UPLINK_ID.json" '@.deadline')"
+			if is_uint "$deadline" && [ "$deadline" -le "$(date +%s)" ]; then operation_update timeout '排队超时，未继续提交认证'; release_lock; return 1; fi
+		fi
+	fi
+	if [ -z "$OPERATION_ID" ] && [ "$(json_file_value "$STATE_DIR/operation-$UPLINK_ID.json" '@.state')" = verifying ]; then
+		OPERATION_ID="$(json_file_value "$STATE_DIR/operation-$UPLINK_ID.json" '@.id')"
 	fi
 	prepare_work_dir || { release_lock; return 1; }
 	run_once_impl
@@ -1187,6 +1230,11 @@ run_once_locked() {
 	WORK_DIR=""
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; SOURCE_LOCK_HELD=0; fi
 	release_lock
+	if [ "$rc" = 75 ] && [ -n "$OPERATION_ID" ]; then
+		operation_update queued '等待出口检查结束'
+		printf '%s\n%s\n%s\n' "$MANUAL_ACTION" "$MANUAL_ACCOUNT" "$OPERATION_ID" >"$STATE_DIR/manual-$UPLINK_ID"
+		return 75
+	fi
 	# A manual request arriving during a periodic check runs immediately after
 	# that check, instead of waiting another full daemon interval.
 	if [ -f "$STATE_DIR/manual-$UPLINK_ID" ]; then run_once_locked; return $?; fi
@@ -1201,6 +1249,7 @@ run_daemon() {
 			log_message error "检查循环异常退出，代码 ${rc:-1}"
 		fi
 		rc=0
+		billing_monitor_start
 		sleep "$CFG_INTERVAL" &
 		SLEEP_PID=$!
 		wait "$SLEEP_PID" 2>/dev/null || true
@@ -1258,6 +1307,11 @@ main() {
 [ ! -r "$LIB_DIR/uplinks.sh" ] || . "$LIB_DIR/uplinks.sh"
 . "$LIB_DIR/logging.sh" || exit 2
 . "$LIB_DIR/session-actions.sh" || exit 2
+. "$LIB_DIR/pushplus.sh" || exit 2
+. "$LIB_DIR/operations.sh" || exit 2
+. "$LIB_DIR/coordination.sh" || exit 2
+. "$LIB_DIR/billing-monitor.sh" || exit 2
+. "$LIB_DIR/maintenance.sh" || exit 2
 
 if [ "${BJUT_SOURCE_ONLY:-0}" != "1" ]; then
 	main "$@"

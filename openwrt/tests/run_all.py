@@ -65,6 +65,8 @@ def validate_shell():
     paths = [
         CORE / "files/usr/sbin/bjut-autologin",
         CORE / "files/usr/libexec/bjut-billing",
+        CORE / "files/usr/libexec/bjut-billing-monitor",
+        CORE / "files/usr/libexec/bjut-maintenance",
         CORE / "files/usr/libexec/rpcd/bjut-autologin",
         *sorted((CORE / "files/usr/lib/bjut-autologin").glob("*.sh")),
         CORE / "files/etc/init.d/bjut-autologin",
@@ -195,6 +197,8 @@ def main():
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
     run([sys.executable, "openwrt/tests/test_multi_uplink.py"])
     run([sys.executable, "-m", "unittest", "discover", "-s", "openwrt/tests", "-p", "test_router_revision10.py"])
+    run([sys.executable, "openwrt/tests/test_pushplus.py"])
+    run([sys.executable, "openwrt/tests/test_collaboration.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

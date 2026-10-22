@@ -21,19 +21,23 @@ billing_choices() {
  json_close_array
 }
 billing_table() {
- local name="$1" file="$2" fields="$3" prefix='@' index=0 column value row
+ local name="$1" file="$2" fields="$3" prefix='@' index=0 column value row formatted
  json_add_object "$name"; json_add_array columns
  for column in $fields; do json_add_string '' "$column"; done; json_close_array
  json_add_array rows
  if [ -s "$file" ]; then
+  billing_normalize_json "$file" "$file.normalized" || { json_close_array;json_close_object;return 1; }
+  file="$file.normalized"
   [ -z "$(json_file_value "$file" '@.rows')" ] || prefix='@.rows'
   [ -z "$(json_file_value "$file" '@.data')" ] || prefix='@.data'
-  while [ "$index" -lt 100 ]; do
+  while [ "$index" -lt 5000 ]; do
    row="$(json_file_value "$file" "$prefix[$index]")"; [ -n "$row" ] || break
    json_add_array ''; column=0
    for key in $fields; do
-    value="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null)"
-    [ -n "$value" ] || value="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e "@[$column]" 2>/dev/null)"
+    value="$(billing_row_value "$row" "$key" "$column")"
+    case "$key" in loginTime|logoutTime|lastLoginAt)
+     case "$value" in ''|*[!0-9]*) ;; *) if [ "${#value}" -gt 10 ] && formatted="$(printf '%s' "$value" | "$CODEC_BIN" timestamp-date 2>/dev/null)";then value="$formatted";fi;; esac;;esac
+    case "$key" in mac|macAddress) value="$(billing_format_mac "$value")";; billingMode) case "$value" in 1) value=时长;;2) value=流量;;3) value=包月;;esac;; esac
     [ "${#value}" -le 256 ] || value=''
     json_add_string '' "$value"; column=$((column+1))
    done
@@ -69,8 +73,8 @@ billing_module() {
    ;;
   devices)
    billing_page mac /Self/service/myMac || true
-   billing_request '/Self/service/getMacList?pageSize=100&pageNumber=1&sortName=2&sortOrder=DESC' && cp "$WORK_DIR/billing-body" "$BILLING_JOB/macs.json"
-   billing_request /Self/dashboard/getOnlineList && cp "$WORK_DIR/billing-body" "$BILLING_JOB/online.json"
+   billing_request '/Self/service/getMacList?pageSize=100&pageNumber=1&sortName=2&sortOrder=DESC' && cp "$WORK_DIR/billing-body" "$BILLING_JOB/macs.json" || { billing_progress error 100 '设备列表暂时无法读取';return 1; }
+   if billing_request /Self/dashboard/getOnlineList; then billing_capture_online || true; fi
    if billing_request /Self/dashboard/refreshMauthType; then mauth="$(billing_extract mauth)"; fi
    json_init;json_add_string mauth "$mauth"
    billing_table macs "$BILLING_JOB/macs.json" 'online mac device lastLoginAt lastIp'
@@ -86,7 +90,7 @@ billing_module() {
    done
    ;;
   history)
-   billing_request /Self/dashboard/getLoginHistory && cp "$WORK_DIR/billing-body" "$BILLING_JOB/history.json"
+   billing_request /Self/dashboard/getLoginHistory && cp "$WORK_DIR/billing-body" "$BILLING_JOB/history.json" || { billing_progress error 100 '最近上网记录暂时无法读取';return 1; }
    json_init;billing_table history "$BILLING_JOB/history.json" 'loginTime logoutTime ip ipv6 mac durationMinutes flowMb billingMode amount'
    ;;
   *) return 1;;

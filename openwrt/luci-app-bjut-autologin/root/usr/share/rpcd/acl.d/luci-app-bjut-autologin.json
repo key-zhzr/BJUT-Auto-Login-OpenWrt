@@ -17,6 +17,9 @@
           "ports",
           "logs",
           "settings",
+          "billing_cached",
+          "maintenance_info",
+          "maintenance_poll",
           "billing_poll",
           "dashboard"
         ]
@@ -33,6 +36,8 @@
           "billing_start",
           "billing_captcha",
           "save_settings",
+          "maintenance_start",
+          "pushplus_test",
           "account_save",
           "account_delete",
           "account_move",

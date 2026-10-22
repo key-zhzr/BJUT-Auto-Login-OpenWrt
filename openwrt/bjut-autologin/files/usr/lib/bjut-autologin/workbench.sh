@@ -41,16 +41,23 @@ workbench_settings() {
  local section key value comma="" network i=0 dump
  printf '{"service":'
  json_init
- for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb; do
+ for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
   case "$key" in
+   billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
    enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
    managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";; log_target) value="$CFG_LOG_TARGET";; log_directory) value="$CFG_LOG_DIRECTORY";; log_web) value="$CFG_LOG_WEB";; log_max_kb) value="$CFG_LOG_MAX_KB";;
    max_backoff) value="$CFG_MAX_BACKOFF";; credential_cooldown) value="$CFG_CREDENTIAL_COOLDOWN";; post_login_delay) value="$CFG_POST_LOGIN_DELAY";;
+   pushplus_enabled) value="$CFG_PUSHPLUS_ENABLED";; pushplus_online) value="$CFG_PUSHPLUS_ONLINE";; pushplus_failure) value="$CFG_PUSHPLUS_FAILURE";;
+   pushplus_delay) value="$CFG_PUSHPLUS_DELAY";; pushplus_interval) value="$CFG_PUSHPLUS_INTERVAL";; pushplus_topic) value="$CFG_PUSHPLUS_TOPIC";;
    *) config_get value "$MAIN_SECTION" "$key" "";;
   esac
   [ "$key" != login_type ] || value="$(protocol_name "$value")"
   json_add_string "$key" "$value"
  done
+ # Only expose whether a token exists. A blank replacement keeps it unchanged.
+ json_add_string pushplus_token ''
+ value=0; [ -z "$CFG_PUSHPLUS_TOKEN" ] || value=1
+ json_add_string pushplus_has_token "$value"
  json_dump; printf ',"uplinks":['; comma=""
  for section in $UPLINK_SECTIONS; do
   [ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || continue
@@ -89,6 +96,7 @@ workbench_commit() {
  cp "$original" "$stage/$package" && cp "$original" "$stage/original" || { rm -rf "$stage"; return 1; }
  for key in "$@"; do
   value="$(request_value "$key")"
+  [ "$key" != pushplus_token ] || [ -n "$value" ] || continue
   [ "$key" != login_type ] || value="$(protocol_internal "$value")"
   { printf 'set %s.%s.%s=' "$package" "$section" "$key"; uci_quote "$value"; printf '\n'; } |
    "$UCI_BIN" -q -c "$stage" batch || { result=1; break; }
@@ -115,7 +123,7 @@ workbench_validate_field() {
  case "$value" in *'
 '*|*"$(printf '\r')"*) return 1;; esac
  case "$key" in
-  enabled|managed_routes|mwan3|strict_network|log_web) case "$value" in 0|1) return 0;; esac;;
+  enabled|managed_routes|mwan3|strict_network|log_web|pushplus_enabled|pushplus_online|pushplus_failure|billing_background|billing_alerts) case "$value" in 0|1) return 0;; esac;;
   interval) is_uint "$value" && [ "$value" -ge 5 ] && [ "$value" -le 3600 ]; return $?;;
   timeout) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 30 ]; return $?;;
   offline_confirmations) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 10 ]; return $?;;
@@ -127,6 +135,13 @@ workbench_validate_field() {
   log_target) case "$value" in system|file) return 0;; esac;;
   log_directory) valid_log_directory "$value"; return $?;;
   log_max_kb) valid_range "$value" 64 4096; return $?;;
+  pushplus_token) valid_pushplus_token "$value"; return $?;;
+  pushplus_topic) valid_pushplus_topic "$value"; return $?;;
+  pushplus_delay) valid_range "$value" 10 3600; return $?;;
+  pushplus_interval) valid_range "$value" 60 86400; return $?;;
+  billing_interval) valid_range "$value" 900 86400; return $?;;
+  balance_threshold|flow_threshold) printf '%s' "$value" | grep -Eq '^[0-9]{1,6}([.][0-9]{1,3})?$'; return $?;;
+  max_sessions) valid_range "$value" 0 32; return $?;;
   transport) case "$value" in auto|wifi|ethernet) return 0;; esac;;
   login_type) case "$value" in auto|type1|type2|type3|bjut-sushe|bjut_wifi|lgn) return 0;; esac;;
   compatibility) case "$value" in secure|legacy_http) return 0;; esac;;
@@ -142,17 +157,31 @@ workbench_validate_field() {
 }
 
 workbench_save_settings() {
- local key value keys interval backoff
+ local key value keys interval backoff push_enabled push_token
  json_load "$(cat "$REQUEST")" || { reply error "设置内容无效"; return; }; json_get_keys keys
  [ -n "$keys" ] || { reply error "没有要保存的设置"; return; }
  for key in $keys; do
-  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
  done
  interval="$(request_value interval)"; interval="${interval:-$CFG_INTERVAL}"
  backoff="$(request_value max_backoff)"; backoff="${backoff:-$CFG_MAX_BACKOFF}"
  [ "$interval" -le "$backoff" ] || { reply error "最大重试间隔不能小于检测间隔"; return; }
+ push_enabled="$(request_value pushplus_enabled)"; push_enabled="${push_enabled:-$CFG_PUSHPLUS_ENABLED}"
+ push_token="$(request_value pushplus_token)"; push_token="${push_token:-$CFG_PUSHPLUS_TOKEN}"
+ [ "$push_enabled" != 1 ] || { [ -n "$push_token" ] && valid_pushplus_token "$push_token"; } || { reply error '请填写有效的 PushPlus 令牌'; return; }
  workbench_commit "$MAIN_SECTION" $keys
+}
+
+workbench_pushplus_test() {
+ local rc
+ pushplus_ready || { reply error '请先保存并启用 PushPlus 设置'; return; }
+ pushplus_queue_test; rc=$?
+ case "$rc" in
+  0) reply ready '测试消息已排队，请查看 PushPlus 和运行日志';;
+  2) reply error '请等待一分钟后再发送测试消息';;
+  *) reply error '无法准备测试消息，请稍后重试';;
+ esac
 }
 
 configuration_lock() {
@@ -205,9 +234,11 @@ workbench_set() {
  { printf 'set %s.%s.%s=' "$package" "$1" "$2"; uci_quote "$3"; printf '\n'; } | "$UCI_BIN" -q -c "$stage" batch
 }
 workbench_account_save() {
- local account username password enabled login_type stage package original new=0 item existing count=0
+ local account username password enabled login_type stage package original new=0 item existing count=0 max_sessions
  account="$(request_value account)"; username="$(request_value username)"; password="$(request_value password)"
  enabled="$(request_value enabled)"; login_type="$(request_value login_type)"
+ max_sessions="$(request_value max_sessions)"
+ [ -z "$max_sessions" ] || workbench_validate_field max_sessions "$max_sessions" || { reply error '并发上限应为 0 至 32，0 表示不限'; return; }
  case "$username" in ''|*[!A-Za-z0-9_@.,-]*) reply error "账号格式无效"; return;; esac
  [ "${#username}" -le 256 ] && [ "${#password}" -le 4096 ] || { reply error "账号或密码过长"; return; }
  case "$password" in *'
@@ -222,6 +253,7 @@ workbench_account_save() {
  workbench_stage || return
  if [ "$new" = 1 ]; then "$UCI_BIN" -q -c "$stage" set "$package.$account=account" || { rm -rf "$stage"; return 1; }; fi
  workbench_set "$account" username "$username" && workbench_set "$account" enabled "$enabled" && workbench_set "$account" login_type "$(protocol_internal "$login_type")" || { rm -rf "$stage"; return 1; }
+ [ -z "$max_sessions" ] || workbench_set "$account" max_sessions "$max_sessions" || { rm -rf "$stage"; return 1; }
  [ -z "$password" ] || workbench_set "$account" password "$password" || { rm -rf "$stage"; return 1; }
  password=""; workbench_finish
 }

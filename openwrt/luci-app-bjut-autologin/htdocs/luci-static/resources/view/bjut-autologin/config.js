@@ -2,8 +2,13 @@
 'require view';
 'require form';
 'require uci';
+'require rpc';
+'require ui';
 'require tools.widgets as widgets';
 'require bjut-autologin.workbench as bjut';
+'require bjut-autologin.maintenance as maintenance';
+
+const testPushPlus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_test' });
 
 return view.extend({
 	load: function() {
@@ -130,6 +135,54 @@ return view.extend({
 		o = s.option(form.Flag, 'mwan3', _('兼容 mwan3'));
 		o.default = o.enabled; o.rmempty = false;
 		o.description = _('为所选出口添加专用规则，保留其他流量的分流设置。');
+
+		o = s.option(form.Flag, 'pushplus_enabled', _('PushPlus 消息推送'));
+		o.default = '0'; o.rmempty = false;
+		o.description = _('接收登录成功、恢复联网和上游异常提醒。');
+		o = s.option(form.Value, 'pushplus_token', _('PushPlus 令牌'));
+		o.password = true; o.depends('pushplus_enabled', '1'); o.rmempty = false; o.retain = true;
+		o.description = _('填写 PushPlus 的用户令牌或消息令牌。');
+		o.validate = function(section, value) {
+			return /^[A-Za-z0-9_-]{1,256}$/.test(value) ? true : _('请填写有效的 PushPlus 令牌');
+		};
+		o = s.option(form.Value, 'pushplus_topic', _('群组编码（可选）'));
+		o.depends('pushplus_enabled', '1'); o.retain = true;
+		o.description = _('留空时仅发送给自己。');
+		o.validate = function(section, value) {
+			return /^[A-Za-z0-9_-]{0,64}$/.test(value) ? true : _('请填写有效的群组编码');
+		};
+		o = s.option(form.Flag, 'pushplus_online', _('登录与恢复提醒'));
+		o.depends('pushplus_enabled', '1'); o.default = '1'; o.rmempty = false; o.retain = true;
+		o = s.option(form.Flag, 'pushplus_failure', _('异常提醒'));
+		o.depends('pushplus_enabled', '1'); o.default = '1'; o.rmempty = false; o.retain = true;
+		o = s.option(form.Value, 'pushplus_delay', _('异常持续时间（秒）'));
+		o.depends('pushplus_enabled', '1'); o.default = '60'; o.datatype = 'range(10,3600)'; o.rmempty = false; o.retain = true;
+		o.description = _('短暂断网不提醒；账号被拒绝等明确错误会立即提醒。');
+		o = s.option(form.Value, 'pushplus_interval', _('重复提醒间隔（秒）'));
+		o.depends('pushplus_enabled', '1'); o.default = '3600'; o.datatype = 'range(60,86400)'; o.rmempty = false; o.retain = true;
+		o = s.option(form.Button, '_pushplus_test', _('测试推送'));
+		o.depends('pushplus_enabled', '1'); o.inputtitle = _('发送测试消息'); o.inputstyle = 'action';
+		o.description = _('请先保存并应用设置。');
+		o.onclick = async function() {
+			try {
+				const result = await testPushPlus();
+				ui.addNotification(null, E('p', {}, result.message || _('无法发送测试消息')), result.state === 'ready' ? 'info' : 'error');
+			} catch (error) { ui.addNotification(null, E('p', {}, String(error)), 'error'); }
+		};
+
+		o = s.option(form.Flag, 'billing_background', _('后台计费检查'));
+		o.default = '0'; o.rmempty = false;
+		o.description = _('定期检查各账号余额和流量，App 关闭后也可运行。');
+		o = s.option(form.Value, 'billing_interval', _('计费检查间隔（秒）'));
+		o.depends('billing_background','1'); o.default='21600'; o.datatype='range(900,86400)'; o.rmempty=false; o.retain=true;
+		o = s.option(form.Flag, 'billing_alerts', _('用量不足时通过 PushPlus 提醒'));
+		o.depends('billing_background','1'); o.default='1'; o.rmempty=false; o.retain=true;
+		o = s.option(form.Value, 'balance_threshold', _('余额提醒线（元）'));
+		o.depends('billing_background','1'); o.default='5'; o.datatype='ufloat'; o.rmempty=false; o.retain=true;
+		o = s.option(form.Button, '_maintenance', _('路由器备份与更新'));
+		o.inputtitle=_('打开'); o.inputstyle='action'; o.onclick=function(){return maintenance.show();};
+		o = s.option(form.Value, 'flow_threshold', _('流量提醒线（GB）'));
+		o.depends('billing_background','1'); o.default='5'; o.datatype='ufloat'; o.rmempty=false; o.retain=true;
 
 		s = m.section(form.GridSection, 'uplink', _('上游接口'));
 		s.anonymous = false; s.addremove = true; s.sortable = true;

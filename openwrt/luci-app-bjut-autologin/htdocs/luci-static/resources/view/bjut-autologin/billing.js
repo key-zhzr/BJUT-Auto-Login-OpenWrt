@@ -36,7 +36,7 @@ return view.extend({
   }
   function draw(job){const item=job.item,stamp=JSON.stringify(item);if(job.card.dataset.result===stamp)return;job.card.dataset.result=stamp;bjut.resize(job.card,function(){job.card.replaceChildren(E('h3',{},job.title),E('p',{'class':'router-billing-status'},item.message || _('等待查询')));
    if(item.state==='loading')job.card.append(E('progress',{max:100,value:item.percent || 2}));
-   if(item.account)job.card.append(row('账号',item.account),row('余额',number(item.balance,'元')),row('总流量',number(item.totalFlow,'GB',1024)),row('剩余流量',number(item.remainingFlow,'GB',1024)),row('状态',item.accountStatus),row('套餐',item.package));
+   if(item.account)job.card.append(row('账号',item.account),row('余额',item.balanceText || number(item.balance,'元')),row('总流量',number(item.totalFlow,'GB',1024)),row('剩余流量',item.remainingFlowText || number(item.remainingFlow,'GB',1024)),row('状态',item.accountStatus),row('套餐',item.package));
    if(item.state==='captcha')showCaptcha(job);
    });
   }

@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+BJUT_SOURCE_ONLY=1
+BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
+. "$BJUT_SELF" || exit 1
+load_configuration || exit 1
+lock="$STATE_DIR/billing-monitor.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+ owner="$(cat "$lock/pid" 2>/dev/null)"
+ is_uint "$owner" && kill -0 "$owner" 2>/dev/null && exit 0
+ rm -rf "$lock"; mkdir "$lock" || exit 1
+fi
+printf '%s' "$$" >"$lock/pid"
+trap 'rm -rf "$lock"; cleanup_runtime' 0
+billing_monitor_run

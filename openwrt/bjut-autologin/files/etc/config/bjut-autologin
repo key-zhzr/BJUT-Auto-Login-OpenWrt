@@ -21,6 +21,18 @@ config service 'main'
 	option log_directory '/tmp/bjut-autologin-log'
 	option log_web '0'
 	option log_max_kb '256'
+	option pushplus_enabled '0'
+	option pushplus_token ''
+	option pushplus_topic ''
+	option pushplus_online '1'
+	option pushplus_failure '1'
+	option pushplus_delay '60'
+	option pushplus_interval '3600'
+	option billing_background '0'
+	option billing_interval '21600'
+	option billing_alerts '1'
+	option balance_threshold '5'
+	option flow_threshold '5'
 
 # Add one or more account sections. They are tried in file order. Keep this
 # file mode 0600 because UCI stores the password as plain text.
@@ -46,3 +58,5 @@ config service 'main'
 #	option network 'wan24'
 #	option network6 'wan26'
 #	list accounts 'student_b'
+
+# Optional unattended billing checks (does not recharge or change services).

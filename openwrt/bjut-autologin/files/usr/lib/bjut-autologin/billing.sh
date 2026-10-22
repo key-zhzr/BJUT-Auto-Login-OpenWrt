@@ -113,7 +113,7 @@ billing_need_captcha() {
 }
 
 billing_publish_overview() {
-	local user actual status balance flow package used total
+	local user actual status balance flow package used total balance_text flow_text used_text total_text reason detail cycle unlimited=0
 	user="$(billing_extract user-json)" || return 1
 	actual="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.userName' 2>/dev/null)"
 	case "$actual" in ''|*[!A-Za-z0-9_@.,-]*) return 1 ;; esac
@@ -127,13 +127,27 @@ billing_publish_overview() {
 		billing_apply_action "$BILLING_OPERATION"; return $?
 	fi
 	if [ -n "${BILLING_MODULE:-}" ]; then billing_module "$BILLING_MODULE"; return $?; fi
-	balance="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney' 2>/dev/null)"
-	flow="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow' 2>/dev/null)"
+	# Same precedence and units as App parse_dashboard(): rendered dt metrics
+	# first, embedded leftMoney/leftFlow (MB) only when the metric is absent.
+	balance_text="$(billing_extract dashboard-metric '账户余额')"
+	if [ -z "$balance_text" ]; then
+		balance_text="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney' 2>/dev/null | billing_number | awk 'NF{v=sprintf("%.4f",$0);sub(/0+$/,"",v);sub(/[.]$/,"",v);printf "%s",v}')"
+	fi
+	balance="$(printf '%s' "$balance_text" | billing_number)"
+	case "$balance_text" in *元*) ;; *) [ -z "$balance" ] || balance_text="$balance 元";; esac
+	flow_text="$(billing_extract dashboard-metric '可用流量')"
+	[ -n "$flow_text" ] || flow_text="$(billing_extract dashboard-metric '剩余流量')"
+	[ -n "$flow_text" ] || flow_text="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow' 2>/dev/null | billing_number)"
+	case "$flow_text:$(printf '%s' "$flow_text" | billing_number | awk '{if($0+0<0)printf "negative"}')" in *无限*|*不限*|*:negative) unlimited=1; flow=''; flow_text=无限;;
+		*) flow="$(printf '%s' "$flow_text" | billing_flow_mb)"; [ -z "$flow" ] || flow_text="$(awk -v n="$flow" 'BEGIN{printf "%.2f GB",n/1024}')";; esac
 	package="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName' 2>/dev/null)"
+	detail="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.extend' 2>/dev/null)"
 	status="$(billing_extract status)"
+	reason="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.stopReason' 2>/dev/null)"; [ "$status" != 正常 ] || reason=''
+	cycle="$(billing_extract cycle)"
     if [ -n "${BILLING_RECORD_KIND:-}" ]; then billing_publish_records "$actual"; return $?; fi
-    used="$(billing_extract metric '已用流量' | billing_flow_mb)"
-    total="$(billing_extract metric '总流量' | billing_flow_mb)"
+    used_text="$(billing_extract dashboard-metric '已用流量')"; used="$(printf '%s' "$used_text" | billing_flow_mb)"
+    total_text="$(billing_extract dashboard-metric '总流量')"; total="$(printf '%s' "$total_text" | billing_flow_mb)"
     if [ -z "$total" ] && [ -n "$used" ] && [ -n "$flow" ]; then total="$(awk -v left="$flow" -v used="$used" 'BEGIN {if(left+0>=0)printf "%.3f",left+used}')"; fi
 	# Only allowlisted account metrics are returned. In particular the embedded
 	# dashboard userPassword field never leaves the worker.
@@ -143,6 +157,13 @@ billing_publish_overview() {
 	json_add_string account "$actual"; json_add_string uplink "$UPLINK_ID"
 	json_add_string access "${BILLING_ACCESS:-已保存账号}"
 	json_add_string balance "$balance"; json_add_string remainingFlow "$flow"; json_add_string totalFlow "$total"; json_add_string usedFlow "$used"
+	json_add_string balanceText "${balance_text:---}"; json_add_string remainingFlowText "${flow_text:---}"
+	json_add_string usedFlowText "${used_text:---}"; json_add_int remainingFlowUnlimited "$unlimited"
+	json_add_string statusReason "$reason"; json_add_string packageDetail "$detail"; json_add_string billingCycle "$cycle"
+	json_add_array warnings
+	[ -n "$balance_text" ] || json_add_string '' '控制台没有返回账户余额'
+	[ -n "$flow_text" ] || json_add_string '' '控制台没有返回剩余流量'
+	json_close_array
 	json_add_string accountStatus "$status"; json_add_string package "$package"
 	json_add_int updatedAt "$(date +%s)"
 	json_dump >"$BILLING_JOB/overview.json"
@@ -154,14 +175,7 @@ billing_publish_overview() {
 		# An HTTP-200 login page/error object is not an empty session list.
 		# Some portal versions return a literal null for an empty list, which
 		# jsonfilter builds differ on accepting as a root value.
-		if [ "$(tr -d ' \011\012\015' <"$WORK_DIR/billing-body")" = null ]; then
-			printf '[]' >"$BILLING_JOB/online.json"
-		elif "$JSONFILTER_BIN" -i "$WORK_DIR/billing-body" -e '@' >"$BILLING_JOB/online.json" 2>/dev/null; then
-			case "$(tr -d ' \011\012\015' <"$BILLING_JOB/online.json")" in
-				'['*|'{'*'"rows":['*|'{'*'"data":['*) ;;
-				*) rm -f "$BILLING_JOB/online.json" ;;
-			esac
-		else rm -f "$BILLING_JOB/online.json"; fi
+		billing_capture_online || true
 	fi
 	cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
 
@@ -314,7 +328,59 @@ billing_worker() {
 
 
 billing_flow_mb() {
- awk '{v=$0;gsub(/[ \t\r\n]/,"",v);if(v !~ /^[0-9]+([.][0-9]+)?/)exit; n=v+0;if(v~/[Tt][Ii]?[Bb]/)n*=1048576;else if(v~/[Gg][Ii]?[Bb]/)n*=1024;else if(v~/[Kk][Ii]?[Bb]/)n/=1024;printf "%.3f",n}'
+ awk '{v=$0;if(v~/无限|不限/)exit;if(!match(v,/-?[0-9]+([.][0-9]+)?/))exit;n=substr(v,RSTART,RLENGTH)+0;if(n<0)exit;if(v~/[Tt][Bb]/)n*=1048576;else if(v~/[Gg][Bb]/)n*=1024;else if(v~/[Kk][Bb]/)n/=1024;printf "%.3f",n;exit}'
+}
+
+billing_number() { awk '{if(match($0,/-?[0-9]+([.][0-9]+)?/)){printf "%s",substr($0,RSTART,RLENGTH);exit}}'; }
+
+billing_normalize_json() {
+ local input="$1" output="$2" raw
+ raw="$(cat "$input")"; raw="${raw#$(printf '\357\273\277')}"
+ case "$(printf '%s' "$raw" | tr -d ' \011\012\015')" in ''|null) printf 'null' >"$output"; return 0;; esac
+ printf '%s' "$raw" | "$JSONFILTER_BIN" -e '@' >"$output.unwrapped" 2>/dev/null || return 1
+ case "$(tr -d ' \011\012\015' <"$output.unwrapped")" in null) printf 'null' >"$output"; return 0;; esac
+ # jsonfilter unwraps a JSON string. Validate the nested document once, as App does.
+ "$JSONFILTER_BIN" -i "$output.unwrapped" -e '@' >"$output" 2>/dev/null
+}
+
+billing_row_value() (
+ local row="$1" wanted="$2" column="$3" value keys key lower type
+ case "$row" in
+  '['*) printf '%s' "$row" | "$JSONFILTER_BIN" -e "@[$column]" 2>/dev/null; return;;
+  '{'*) ;;
+  *) return 1;;
+ esac
+ . "$JSHN_SH"; json_load "$row" && json_get_keys keys || return 1
+ lower="$(printf '%s' "$wanted" | tr A-Z a-z)"
+ for key in $keys; do
+  if [ "$(printf '%s' "$key" | tr A-Z a-z)" = "$lower" ]; then
+   case "$key" in *[!A-Za-z0-9_]*) return 1;; esac
+   json_get_type type "$key"
+   case "$type" in object|array) return 1;; null) printf '%s' '--';return;; esac
+   printf '%s' "$row" | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null; return
+  fi
+ done
+)
+
+billing_capture_online() {
+ local source="$BILLING_JOB/online.json" prefix='@' rows index=0 row id
+ billing_normalize_json "$WORK_DIR/billing-body" "$source" || { rm -f "$source";return 1; }
+ [ "$(cat "$source")" != null ] || printf '[]' >"$source"
+ rows="$(json_file_value "$source" '@.rows')"
+ case "$rows" in '['*) prefix='@.rows';; *) rows="$(json_file_value "$source" '@.data')";case "$rows" in '['*) prefix='@.data';; *) rows="$(cat "$source")";; esac;; esac
+ case "$rows" in '['*) ;; *) rm -f "$source";return 1;; esac
+ while [ "$index" -le 500 ]; do
+  row="$(json_file_value "$source" "$prefix[$index]")";[ -n "$row" ] || return 0
+  id="$(json_file_value "$source" "$prefix[$index].sessionId")"
+  if [ "$index" = 500 ] || [ -z "$id" ] || [ "$id" = null ] || [ "${#id}" -gt 256 ];then rm -f "$source";return 1;fi
+  index=$((index+1))
+ done
+}
+
+billing_format_mac() {
+ local value compact
+ value="$1"; compact="$(printf '%s' "$value" | tr -cd '0-9a-fA-F' | tr a-f A-F)"
+ if [ "${#compact}" = 12 ]; then printf '%s' "$compact" | sed 's/../&-/g;s/-$//'; else printf '%s' "$value"; fi
 }
 
 billing_validate_records() {
@@ -349,8 +415,8 @@ billing_record_fetch() {
  [ -z "$start" ] || url="$url&startTime=$start&endTime=$end"
  [ -z "$year" ] || url="$url&year=$year"
  billing_request "$url" || return 1
- "$JSONFILTER_BIN" -i "$WORK_DIR/billing-body" -e '@' >/dev/null 2>&1 || return 1
- RECORD_SOURCE="$WORK_DIR/records.json"; cp "$WORK_DIR/billing-body" "$RECORD_SOURCE"
+ RECORD_SOURCE="$WORK_DIR/records.json"; billing_normalize_json "$WORK_DIR/billing-body" "$RECORD_SOURCE" || return 1
+ [ "$(cat "$RECORD_SOURCE")" != null ] || printf '{"rows":[],"total":0}' >"$RECORD_SOURCE"
  RECORD_PREFIX='@.rows'
  prefix="$(json_file_value "$RECORD_SOURCE" '@.rows')"; case "$prefix" in '['*) valid=1;; esac
  if [ "$valid" = 0 ]; then prefix="$(json_file_value "$RECORD_SOURCE" '@.data')"; case "$prefix" in '['*) RECORD_PREFIX='@.data'; valid=1;; esac; fi
@@ -367,8 +433,33 @@ billing_record_fetch() {
  [ -z "$(json_file_value "$RECORD_SOURCE" "$RECORD_PREFIX[$expected]")" ]
 }
 
+billing_summary_spec() {
+ case "$BILLING_RECORD_KIND" in
+  usage) printf '%s\n' 'COSTMONEY|计费金额(元)' 'COU|记录数' 'FLOW|使用流量(MB)' 'TIME|使用时长(分钟)';;
+  monthly) printf '%s\n' 'USEBASEMONEY|基本月租(元)' 'USEDMONEY|时长/流量计费(元)' 'USETIME|使用时长(分钟)' 'USEFLOW|使用流量(MB)';;
+  payments) printf '%s\n' 'MONEY|金额(元)';;
+ esac
+}
+
+billing_summary_collect() {
+ local key label summary value previous summed
+ summary="$(json_file_value "$RECORD_SOURCE" '@.summary')"
+ billing_summary_spec >"$WORK_DIR/summary-spec"
+ while IFS='|' read -r key label;do
+  [ -n "$key" ] || continue
+  value="$(billing_row_value "$summary" "$key" 0)"
+  if [ -z "$value" ];then
+   [ "$RECORD_COUNT" = 0 ] || : >"$WORK_DIR/summary-$key-missing"
+   continue
+  fi
+  previous="$(cat "$WORK_DIR/summary-$key" 2>/dev/null)"
+  # Match App's decimal sums without accumulating binary fractional errors.
+  summed="$(awk -v a="${previous:-0}" -v b="$value" 'function scaled(v, parts,n){if(v!~/^-?[0-9]+([.][0-9]+)?$/)return "bad";split(v,parts,".");if(length(parts[2])>6)return "bad";n=int(v)*1000000;return n+(v<0?-1:1)*(substr(parts[2]"000000",1,6)+0)} BEGIN{x=scaled(a);y=scaled(b);if(x=="bad"||y=="bad"||x+y>9000000000000000||x+y< -9000000000000000)exit 1;s=sprintf("%.6f",(x+y)/1000000);sub(/0+$/,"",s);sub(/[.]$/,"",s);printf "%s",s}')" && printf '%s' "$summed" >"$WORK_DIR/summary-$key" || : >"$WORK_DIR/summary-$key-missing"
+ done <"$WORK_DIR/summary-spec"
+}
+
 billing_publish_records() {
- local actual="$1" start end year page first last cursor stop from to offset=0 total=0 page_from page_to page_index global index key value column row_position list row_bytes window_count formatted
+ local actual="$1" start end year page first last cursor stop from to offset=0 total=0 page_from page_to page_index global index key value column row_position list row_bytes window_count formatted mac nas_ip nas_port access_method label
  start="$(json_file_value "$BILLING_JOB/request.json" '@.start_date')"; end="$(json_file_value "$BILLING_JOB/request.json" '@.end_date')"; year="$(json_file_value "$BILLING_JOB/request.json" '@.year')"; page="$(json_file_value "$BILLING_JOB/request.json" '@.page')"
  billing_validate_records "$BILLING_RECORD_KIND" "$start" "$end" "$year" "$page" && billing_record_spec "$BILLING_RECORD_KIND" || { billing_progress error 100 '记录查询内容无效'; return 1; }
  BILLING_REFERER="https://jfself.bjut.edu.cn$RECORD_PAGE"
@@ -383,6 +474,7 @@ billing_publish_records() {
   case "$BILLING_RECORD_KIND" in usage|payments|operations) start="$(printf '%s' "$stop" | "$CODEC_BIN" days-date)";end="$(printf '%s' "$cursor" | "$CODEC_BIN" days-date)";; esac
   billing_progress loading "$((30+60*(last-cursor)/(last-first+1)))" '正在读取用量与账单'
   billing_record_fetch 1 "$start" "$end" "$year" || { billing_progress error 100 '记录查询失败，请稍后重试'; return 1; }
+  billing_summary_collect
   window_count="$RECORD_COUNT";total=$((total+RECORD_COUNT));page_from=1;page_to=0
   if [ "$RECORD_COUNT" -gt 0 ] && [ "$to" -ge "$offset" ] && [ "$from" -lt "$((offset+RECORD_COUNT))" ]; then
    [ "$from" -le "$offset" ] || page_from=$(((from-offset)/100+1))
@@ -393,21 +485,34 @@ billing_publish_records() {
    [ "$page_index" = 1 ] || billing_record_fetch "$page_index" "$start" "$end" "$year" || { billing_progress error 100 '部分记录暂时无法查询'; return 1; }
    [ "$RECORD_COUNT" = "$window_count" ] || { billing_progress error 100 '查询期间记录发生变化，请重新查询'; return 1; }
    index=0
-   while [ "$index" -lt 100 ]; do
+ while [ "$index" -lt 100 ]; do
     row_position="$RECORD_PREFIX[$index]"; row_bytes="$(json_file_value "$RECORD_SOURCE" "$row_position")"; [ -n "$row_bytes" ] || break
     global=$((offset+(page_index-1)*100+index))
     if [ "$global" -ge "$from" ] && [ "$global" -le "$to" ]; then
-     json_init;json_add_array row;column=0
+     json_init;json_add_array row;column=0;mac='';nas_ip='';nas_port=''
      for key in $RECORD_FIELDS; do
-      case "$row_bytes" in '['*) value="$(json_file_value "$RECORD_SOURCE" "$row_position[$column]")";; *) value="$(json_file_value "$RECORD_SOURCE" "$row_position.$key")";; esac
+      case "$row_bytes" in '['*|'{'*) ;; *) billing_progress error 100 '记录包含无法识别的条目'; return 1;; esac
+      value="$(billing_row_value "$row_bytes" "$key" "$column")"
       case "$key" in
-       loginTime|logoutTime|startAt|endAt|billedAt|paidAt|operatedAt|fldoperatedate|fldchangedate|fldexcutedate|fldstatedate|fldnewvalue)
+       loginTime|logoutTime|startAt|endAt|billedAt|paidAt|operatedAt|fldoperatedate|fldchangedate|fldexcutedate|fldstatedate)
         case "$value" in ''|*[!0-9]*) ;; *)
-         if formatted="$(printf '%s' "$value" | "$CODEC_BIN" timestamp-date 2>/dev/null)"; then value="$formatted"; fi;;
+         if [ "${#value}" -gt 10 ] && formatted="$(printf '%s' "$value" | "$CODEC_BIN" timestamp-date 2>/dev/null)"; then value="$formatted"; fi;;
         esac;;
       esac
+      case "$key" in *mac*|*Mac*|*MAC*) value="$(billing_format_mac "$value")";; esac
+      case "$key" in macAddress) mac="$value";;nasIp) nas_ip="$value";;nasPort) nas_port="$value";;esac
+      if [ "$BILLING_RECORD_KIND" = usage ];then
+       case "$key" in internetUpFlow|internetDownFlow|chinanetUpFlow|chinanetDownFlow|nasIp|nasPort) column=$((column+1));continue;;esac
+      fi
       [ "${#value}" -le 512 ] || value='内容较长';json_add_string '' "$value";column=$((column+1))
      done
+     if [ "$BILLING_RECORD_KIND" = usage ];then
+      access_method=未知
+      if [ "$mac:$nas_ip:$nas_port" = '00-00-00-00-00-00:0.0.0.0:0' ];then access_method='lgn（有线）'
+      elif [ "$nas_ip" = 10.21.251.3 ];then access_method=bjut_wifi
+      elif [ "$nas_ip" = 10.21.221.97 ];then access_method=bjut-sushe;fi
+      json_add_string '' "$access_method"
+     fi
      json_close_array;json_dump >>"$list"
     fi
     index=$((index+1))
@@ -417,7 +522,19 @@ billing_publish_records() {
   offset="$total";cursor=$((stop-1))
  done
  json_init;json_add_string state ready;json_add_int percent 100;json_add_string message '用量与账单已更新';json_add_string account "$actual";json_add_string kind "$BILLING_RECORD_KIND";json_add_int total "$total";json_add_int page "$page"
- json_add_array columns;for key in $RECORD_FIELDS;do json_add_string '' "$key";done;json_close_array
+ json_add_array columns;for key in $RECORD_FIELDS;do
+  if [ "$BILLING_RECORD_KIND" = usage ];then case "$key" in internetUpFlow|internetDownFlow|chinanetUpFlow|chinanetDownFlow|nasIp|nasPort) continue;;esac;fi
+  json_add_string '' "$key"
+ done
+ [ "$BILLING_RECORD_KIND" != usage ] || json_add_string '' accessMethod
+ json_close_array
+ json_add_object summary
+ billing_summary_spec >"$WORK_DIR/summary-spec"
+ while IFS='|' read -r key label;do
+  [ -s "$WORK_DIR/summary-$key" ] && [ ! -e "$WORK_DIR/summary-$key-missing" ] || continue
+  json_add_string "$label" "$(cat "$WORK_DIR/summary-$key")"
+ done <"$WORK_DIR/summary-spec"
+ json_close_object
  # Rows were constructed exclusively from the selected columns, including for
  # positional server tables. Private fields and session identifiers stay local.
  json_dump >"$WORK_DIR/record-result"
