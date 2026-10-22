@@ -1,4 +1,19 @@
 {
-  "upstream": "877242391d5897216324eaebf5aae6a580b1f777",
-  "reviewRequired": []
+  "upstream": "3945e37f0f01f703cf738e68d186bedf40109ca4",
+  "reviewRequired": [
+    ".github/workflows/ci.yml",
+    "scripts/build-router-billing-ui.mjs",
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/config_model.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/network_inventory.rs",
+    "src-tauri/src/network_inventory/windows_inventory.rs",
+    "src-tauri/src/portal_auth.rs",
+    "src-tauri/src/router_control.rs",
+    "src/router-billing-tools.ts"
+  ],
+  "retainedWorkflows": [
+    ".github/workflows/ci.yml"
+  ]
 }
