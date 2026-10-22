@@ -75,6 +75,6 @@ opkg --force-downgrade install /tmp/openwrt-*__luci-app-bjut-autologin_0.1.6-*.i
 
 APK 仍使用对应固件的包管理器安装。安装后执行 `bjut-autologin version`，应显示 `0.1.6`；LuCI 包也使用相同版本。
 
-当前源码修订号为 12，SDK 生成的安装包标记为 `0.1.6-r12`。`openwrt-v0.1.6-r12` 标签用于独立发布本次修订，保留此前 Release。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的逻辑。
+当前源码修订号为 13，SDK 生成的安装包标记为 `0.1.6-r13`。`openwrt-v0.1.6-r13` 标签用于独立发布本次修订，保留此前 Release。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的逻辑。
 
-r12 修复 LuCI 计费组件加载失败，App 协作接口不变。更新后若浏览器仍显示旧报错，请强制刷新页面。
+r13 包含 r12 的 LuCI 计费组件加载修复，并更新计费概览、账单筛选与移动端布局，配色跟随 LuCI 页面。App 协作接口不变。更新后若浏览器仍显示旧界面，请强制刷新页面。

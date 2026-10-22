@@ -1,6 +1,6 @@
 # LuCI UI 开发与调试指引
 
-更新于 2026-10-20；按路由端 `dd557f1` / 0.1.6-r12 核对。App 侧配套说明在主项目的 `docs/ui-development.md`。
+更新于 2026-10-22；界面基于路由端 `e327f17`，当前安装包版本 0.1.6-r13。App 侧配套说明在主项目的 `docs/ui-development.md`。
 
 ## 1. 本机目录与离线启动
 
@@ -180,6 +180,6 @@ python3 openwrt/tests/test_sync_upstream.py
 
 完整检查需要 Python 3、Node、Dash、OpenSSL、C 编译器及 ASan/UBSan，可能运行数分钟。它们不替代浏览器中的“检查刷新与功能”，也不替代真实 LuCI 主题中的六页验收。更多见 [测试方法](TESTING.md)。
 
-安装包/SDK 构建见 [编译说明](BUILDING.md)：当前两个包共同使用 0.1.6-r12，APK 先于 IPK 编译。这里的 APK 是 OpenWrt 包，不是 Android App；纯 UI 修改不需要自行更换公开标签或发布版本。
+安装包/SDK 构建见 [编译说明](BUILDING.md)：当前两个包共同使用 0.1.6-r13，APK 先于 IPK 编译。这里的 APK 是 OpenWrt 包，不是 Android App；纯 UI 修改不需要自行更换公开标签或发布版本。
 
 交接时列出改动文件、App 共享源与生成物是否都已更新、执行过的检查、实机是否实际部署、截图和剩余限制。不要把旧验收图或 mock 成功结果描述为新代码已经在实际路由器/手机验证。
