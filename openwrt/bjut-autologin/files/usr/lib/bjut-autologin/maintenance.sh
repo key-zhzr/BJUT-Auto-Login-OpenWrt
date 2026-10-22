@@ -149,6 +149,26 @@ maintenance_download_pair() {
  cp "$manifest" "$directory/manifest.json"
 }
 
+maintenance_is_newer() {
+ local manifest="$1" index=0 package name version
+ while [ "$index" -lt 2 ];do
+  package="$(json_file_value "$manifest" "@.files[$index].package")"
+  if [ "$package" = bjut-autologin ];then
+   name="$(json_file_value "$manifest" "@.files[$index].name")"
+   if [ "$MAINT_FORMAT" = apk ];then version="${name##*__bjut-autologin-}";version="${version%.apk}"
+   else version="${name##*__bjut-autologin_}";version="${version%%_*}";fi
+   awk -v previous="$MAINT_INSTALLED" -v next_version="$version" 'BEGIN{
+    sub(/-r/,"-",previous);sub(/-r/,"-",next_version)
+    if(previous!~/^[0-9]+[.][0-9]+[.][0-9]+-[0-9]+$/ || next_version!~/^[0-9]+[.][0-9]+[.][0-9]+-[0-9]+$/)exit 1
+    split(previous,a,/[.-]/);split(next_version,b,/[.-]/)
+    for(i=1;i<=4;i++){if(b[i]+0>a[i]+0)exit 0;if(b[i]+0<a[i]+0)exit 1}exit 1
+   }';return $?
+  fi
+  index=$((index+1))
+ done
+ return 1
+}
+
 maintenance_simulate() {
  local directory="$1"
  maintenance_verify_pair "$directory" || return 1
@@ -207,6 +227,7 @@ maintenance_worker() {
    [ -n "$tag" ] || return 1
    MAINT_TAG="$tag"; maintenance_progress loading '正在核对平台和安装包' 15
    maintenance_manifest "$tag" "$MAINT_JOB/manifest.json" || { maintenance_progress error '此平台暂未提供匹配的安装包' 100; return 1; }
+   maintenance_is_newer "$MAINT_JOB/manifest.json" || { maintenance_progress ready '当前版本无需更新' 100;return 0; }
    if [ "$action" = check ]; then maintenance_progress ready '已找到匹配的更新，请准备安装包后再安装' 100; return; fi
    maintenance_progress loading '正在下载并校验两个配套安装包' 30
    maintenance_download_pair "$MAINT_JOB/manifest.json" "$tag" "$MAINT_JOB/packages" || return 1

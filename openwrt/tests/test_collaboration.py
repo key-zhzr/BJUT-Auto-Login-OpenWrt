@@ -171,5 +171,17 @@ printf '%s' '{"rows":[{}]}' >"$RECORD_SOURCE";billing_summary_collect
         result=self.shell(script,TEST_WORK=str(work),TEST_SOURCE=str(source))
         self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(result.stdout,'0.2')
 
+    def test_package_update_never_offers_same_or_older_versions_as_upgrade(self):
+        manifest=self.temp/'manifest.json'
+        for fmt,installed,name,newer in [
+            ('apk','0.1.6-r13','openwrt-mediatek-filogic-25.12.5-apk__bjut-autologin-0.1.6-r14.apk',True),
+            ('apk','0.1.6-r14','openwrt-mediatek-filogic-25.12.5-apk__bjut-autologin-0.1.6-r13.apk',False),
+            ('ipk','0.1.6-14','openwrt-mediatek-filogic-24.10.8-ipk__bjut-autologin_0.1.6-14_aarch64_cortex-a53.ipk',False),
+            ('ipk','0.1.6-14','openwrt-mediatek-filogic-24.10.8-ipk__bjut-autologin_0.1.7-1_aarch64_cortex-a53.ipk',True),
+        ]:
+            manifest.write_text(json.dumps({'files':[{'package':'bjut-autologin','name':name}]}))
+            result=self.shell('MAINT_FORMAT="$TEST_FORMAT";MAINT_INSTALLED="$TEST_INSTALLED";maintenance_is_newer "$TEST_MANIFEST"',TEST_FORMAT=fmt,TEST_INSTALLED=installed,TEST_MANIFEST=str(manifest))
+            self.assertEqual(result.returncode==0,newer,(name,result.stderr))
+
 
 if __name__=='__main__':unittest.main()
