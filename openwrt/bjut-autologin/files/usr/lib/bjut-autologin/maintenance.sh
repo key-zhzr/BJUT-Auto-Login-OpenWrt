@@ -42,6 +42,7 @@ maintenance_info() (
 
 maintenance_progress() (
  local state="$1" message="$2" percent="$3" file="$MAINT_JOB/result.json"
+ . "$JSHN_SH"
  json_init; json_add_string state "$state"; json_add_string message "$message"; json_add_int percent "$percent"
  [ -z "${MAINT_TAG:-}" ] || json_add_string release "$MAINT_TAG"
  [ -z "${MAINT_BACKUP:-}" ] || json_add_string backup "$MAINT_BACKUP"

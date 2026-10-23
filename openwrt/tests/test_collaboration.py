@@ -183,5 +183,15 @@ printf '%s' '{"rows":[{}]}' >"$RECORD_SOURCE";billing_summary_collect
             result=self.shell('MAINT_FORMAT="$TEST_FORMAT";MAINT_INSTALLED="$TEST_INSTALLED";maintenance_is_newer "$TEST_MANIFEST"',TEST_FORMAT=fmt,TEST_INSTALLED=installed,TEST_MANIFEST=str(manifest))
             self.assertEqual(result.returncode==0,newer,(name,result.stderr))
 
+    def test_standalone_backup_worker_publishes_terminal_result(self):
+        env=self.config();ticket='c'*32;job=self.state/'maintenance'/ticket;job.mkdir(parents=True)
+        (job/'request.json').write_text('{"action":"backup"}')
+        release=self.temp/'release';release.write_text("DISTRIB_ARCH='aarch64_cortex-a53'\n")
+        ubus=self.temp/'board.sh';ubus.write_text('#!/bin/sh\nprintf \'%s\' \'{"release":{"target":"mediatek/filogic"}}\'\n');ubus.chmod(0o755)
+        result=subprocess.run(['sh',str(base.CORE/'files/usr/libexec/bjut-maintenance'),ticket],env=self.environment('online',BJUT_SELF=str(base.SCRIPT),BJUT_UBUS=str(ubus),BJUT_RELEASE_FILE=str(release),BJUT_DATA_DIR=str(self.temp/'private'),**env),capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        result=json.loads((job/'result.json').read_text());self.assertEqual(result['state'],'ready');self.assertEqual(result['message'],'路由配置已备份')
+        self.assertTrue((self.temp/'private/maintenance'/result['backup']/'config').exists())
+
 
 if __name__=='__main__':unittest.main()

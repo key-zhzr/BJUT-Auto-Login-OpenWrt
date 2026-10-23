@@ -4,6 +4,7 @@ BJUT_SOURCE_ONLY=1
 BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$BJUT_SELF" || exit 1
 load_configuration || exit 1
+. "$JSHN_SH"
 valid_ticket() { case "$1" in ''|*[!0-9a-f]*) return 1;; esac; [ "${#1}" = 32 ]; }
 valid_ticket "$1" || exit 2
 lock="$STATE_DIR/maintenance/$1/lock"
