@@ -19,7 +19,7 @@ prepare_router_identity() {
   printf '%s\n' "$identity" >"$temporary" && chmod 0600 "$temporary" && mv -f "$temporary" "$directory/router-id" || return 1
  fi
  temporary="$(mktemp "$web/.well-known/bjut.XXXXXX")" || return 1
- printf '{"product":"BJUT-Auto-Login-OpenWrt","apiVersion":1,"version":"%s","revision":15,"name":"BJUT 路由器","apiPath":"/ubus","routerId":"%s","features":["dashboard","network_binding","uplink_actions","billing_actions"]}\n' "$VERSION" "$identity" >"$temporary" && chmod 0644 "$temporary" && mv -f "$temporary" "$web/.well-known/bjut-autologin.json"
+ printf '{"product":"BJUT-Auto-Login-OpenWrt","apiVersion":1,"version":"%s","revision":16,"name":"BJUT 路由器","apiPath":"/ubus","routerId":"%s","features":["dashboard","network_binding","uplink_actions","billing_actions"]}\n' "$VERSION" "$identity" >"$temporary" && chmod 0644 "$temporary" && mv -f "$temporary" "$web/.well-known/bjut-autologin.json"
 }
 prepare_file_log() {
  local directory="${CFG_LOG_DIRECTORY:-/tmp/bjut-autologin-log}" path link old owner="${BJUT_DATA_DIR:-/etc/bjut-autologin}/web-log-target"

@@ -27,8 +27,8 @@ function darkHost() {
 
 const polishCss = `
 html.bj-host-dark{color-scheme:dark}
-.bjut-workbench{--bj-bg:#eef2f7;--bj-card:#fff;--bj-text:#172033;--bj-muted:#64748b;--bj-border:#dbe3ed;--bj-blue:#3b82f6;--bj-ok:#10b981;--bj-error:#ef4444;background:none}
-html.bj-host-dark .bjut-workbench{--bj-bg:#111a2c;--bj-card:#1b273b;--bj-text:#f8fafc;--bj-muted:#94a3b8;--bj-border:#334155;--bj-blue:#60a5fa;--bj-ok:#34d399;--bj-error:#f87171;color-scheme:dark}
+.bjut-workbench{--bj-bg:#eef2f7;--bj-card:#fff;--bj-text:#172033;--bj-muted:#64748b;--bj-border:#dbe3ed;--bj-blue:#3b82f6;--bj-action:#2563eb;--bj-action-text:#fff;--bj-ok:#10b981;--bj-error:#ef4444;background:none}
+html.bj-host-dark .bjut-workbench{--bj-bg:#111a2c;--bj-card:#1b273b;--bj-text:#f8fafc;--bj-muted:#94a3b8;--bj-border:#334155;--bj-blue:#60a5fa;--bj-action:#60a5fa;--bj-action-text:#0b1220;--bj-ok:#34d399;--bj-error:#f87171;color-scheme:dark}
 .bjut-workbench h2{font-size:24px;line-height:1.25;margin:4px 0 14px}
 .bjut-workbench h3{font-size:17px;line-height:1.35}
 .bjut-workbench h4{font-size:14px;margin:18px 0 10px}
@@ -48,8 +48,8 @@ html.bj-host-dark .bjut-workbench .bj-card{box-shadow:0 8px 24px rgba(0,0,0,.18)
 .bjut-workbench .btn:active:not(:disabled){transform:translateY(1px)}
 .bjut-workbench .btn:disabled{opacity:.5;cursor:not-allowed}
 .bjut-workbench .btn.btn-sm{min-height:32px;padding:6px 12px;font-size:12.8px}
-.bjut-workbench .btn.bj-primary{background:var(--bj-blue);border-color:var(--bj-blue);color:#fff}
-.bjut-workbench .btn.bj-primary:hover:not(:disabled){background:var(--bj-blue);border-color:var(--bj-blue);filter:brightness(.94)}
+.bjut-workbench .btn.bj-primary{background:var(--bj-action);border-color:var(--bj-action);color:var(--bj-action-text)}
+.bjut-workbench .btn.bj-primary:hover:not(:disabled){background:var(--bj-action);border-color:var(--bj-action);filter:brightness(.94)}
 html.bj-host-dark .bjut-workbench .btn.bj-primary{color:#0b1220}
 .bjut-workbench :is(input:not([type=checkbox]):not([type=radio]),select){min-height:40px;padding:8px 12px;border:1px solid var(--bj-border);border-radius:10px;background:var(--bj-card);color:var(--bj-text);font:inherit;font-size:13px;max-width:100%}
 .bjut-workbench :is(input,select):focus-visible,.bjut-workbench .btn:focus-visible{outline:2px solid var(--bj-blue);outline-offset:2px}
@@ -86,6 +86,11 @@ html.bj-host-dark .bjut-workbench .bj-tabs .active{background:rgba(96,165,250,.1
 .bjut-workbench .bj-form input,.bjut-workbench .bj-form select{width:100%;min-width:0}
 .bjut-workbench .bj-device{margin-top:10px}
 .bjut-workbench .bj-account-name{font-size:16px}
+.bj-account-order{display:grid;gap:8px;max-width:100%}
+.bj-account-order-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center}
+.bj-account-order-row label{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere;margin:0}
+.bj-account-order-row .btn{min-height:30px;padding:4px 10px}
+.bj-account-order-row .btn:not(:disabled){color:inherit}
 .bjut-workbench .bj-record-panel{margin:0;padding:20px}
 .bjut-workbench .bj-record-panel .bj-record-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .bjut-workbench .bj-record-panel .bj-record-heading h3{margin:0}
@@ -152,7 +157,7 @@ function portGrid(actions) {
    catch(error){note.textContent=String(error.message || error);}
    finally{button.disabled=false;}
   }
-  const login=E('button',{'class':'btn cbi-button-action bj-login',type:'button',click:function(){void act('login',login);}},_('登录'));
+  const login=E('button',{'class':'btn bj-primary bj-login',type:'button',click:function(){void act('login',login);}},_('登录'));
   const change=E('button',{'class':'btn',type:'button',click:function(){void act('switchAccount',change);}},_('切换账号'));
   const logout=E('button',{'class':'btn',type:'button',click:function(){void act('logout',logout);}},_('注销'));
   const details=E('details',{'class':'bj-details'},[E('summary',{},_('网络详情')),slot('network','p'),slot('address4','p'),slot('address6','p'),slot('message','p')]);

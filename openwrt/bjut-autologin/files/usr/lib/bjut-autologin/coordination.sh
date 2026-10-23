@@ -57,3 +57,23 @@ account_reserve() {
 }
 
 account_release() { rm -f "$STATE_DIR/reservation-$UPLINK_ID"; }
+
+account_credentials_signature() {
+ printf '%s\n' "$1" "$2" "$3" "${DEVICE:-}" "${DEVICE6:-}" "${LOCAL_IPV4:-}" "${LOCAL_IPV6:-}" "${SSID:-}" "${BSSID:-}" | sha256sum | awk '{print $1}'
+}
+account_clear_rejection() { rm -f "$STATE_DIR/rejected-$UPLINK_ID-$1"; }
+account_rejection_active() {
+ local file="$STATE_DIR/rejected-$UPLINK_ID-$1" expiry signature now
+ [ -s "$file" ] || return 1
+ read -r expiry signature <"$file" || return 1
+ now="$(date +%s)"
+ if ! is_uint "$expiry" || [ "$expiry" -le "$now" ] || [ "$((expiry-now))" -gt 86400 ] ||
+  [ "$signature" != "$(account_credentials_signature "$2" "$3" "$4")" ];then account_clear_rejection "$1";return 1;fi
+ REJECTION_WAIT=$((expiry-now))
+ return 0
+}
+account_reject() {
+ local file="$STATE_DIR/rejected-$UPLINK_ID-$1" signature
+ signature="$(account_credentials_signature "$2" "$3" "$4")" || return 1
+ printf '%s %s\n' "$(($(date +%s)+CFG_CREDENTIAL_COOLDOWN))" "$signature" >"$file.$$" && mv -f "$file.$$" "$file"
+}

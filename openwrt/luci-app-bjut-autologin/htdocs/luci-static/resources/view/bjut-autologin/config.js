@@ -7,6 +7,7 @@
 'require tools.widgets as widgets';
 'require bjut-autologin.workbench as bjut';
 'require bjut-autologin.maintenance as maintenance';
+'require bjut-autologin.account-order as accountOrder';
 
 const testPushPlus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_test' });
 
@@ -198,9 +199,15 @@ return view.extend({
 		o.value('auto', _('自动')); o.value('ethernet', _('有线')); o.value('wifi', _('Wi-Fi')); o.default = 'auto';
 		o = s.option(form.ListValue, 'login_type', _('认证方式'));
 		o.value('auto', _('自动')); o.value('type1', 'bjut-sushe'); o.value('type2', 'bjut_wifi'); o.value('type3', 'lgn'); o.default = 'auto';
-		o = s.option(form.MultiValue, 'accounts', _('自动登录账号'));
-		uci.sections('bjut-autologin', 'account', function(account) { o.value(account['.name'], account.username || account['.name']); });
-		o.description = _('留空使用所有已启用账号；选定后仅使用这些账号，按账号页顺序尝试。');
+		const accountChoices=[];
+		uci.sections('bjut-autologin', 'account', function(account) { accountChoices.push({id:account['.name'],user:account.username || account['.name'],enabled:account.enabled!=='0'}); });
+		const OrderedAccounts=form.Value.extend({
+			renderWidget:function(section_id,option_index,cfgvalue){return accountOrder.create(accountChoices,cfgvalue,this.cbid(section_id),this.readonly || this.map.readonly);},
+			formvalue:function(section_id){const root=this.map.findElement('id',this.cbid(section_id));return root?accountOrder.read(root):this.cfgvalue(section_id);},
+			textvalue:function(section_id){const names=accountOrder.ids(this.cfgvalue(section_id)).map(function(id){const account=accountChoices.find(function(item){return item.id===id;});return account?account.user:id;});return names.length?names.join(' → '):_('跟随账号管理');}
+		});
+		o = s.option(OrderedAccounts, 'accounts', _('自动登录顺序'));
+		o.description = _('勾选账号并用箭头调整此接口的顺序；不选则跟随账号管理。');
 		o = s.option(form.Value, 'expected_ssid', _('SSID')); o.modalonly = true;
 		o = s.option(form.Value, 'expected_bssid', _('BSSID')); o.modalonly = true;
 

@@ -693,20 +693,36 @@ response_has_result() {
 
 parse_login_response() {
 	local result message
+	LOGIN_FAILURE_MESSAGE=''
 	http_success || return 11
 	load_jsonp || return 11
 	result="$(jsonp_value '@.result')"
 	case "$result" in
 		1) return 0 ;;
 		0)
-			message="$(jsonp_value '@.msg') $(jsonp_value '@.msga')"
+			LOGIN_FAILURE_MESSAGE="$(jsonp_value '@.msg') $(jsonp_value '@.msga') $(jsonp_value '@.message')"
+			message="$(printf '%s' "$LOGIN_FAILURE_MESSAGE" | tr 'A-Z' 'a-z')"
 			case "$message" in
-				*已经在线*|*已在线*|*already*online*) return 13 ;;
-				*密码*错误*|*密码*不正确*|*密码*无效*|*password*error*|*password*wrong*|*incorrect*password*|*invalid*password*|*账号*错误*|*账户*错误*|*账号*不存在*|*用户*不存在*|*欠费*|*余额不足*|*停机*) return 10 ;;
-				*) return 11 ;;
+				*已经在线*|*已在线*|*already*online*|*has*been*online*|*ip_already_online*|*same*ip*online*) return 13 ;;
+				*密码*错误*|*密码*不正确*|*密码*无效*|*password*error*|*password*wrong*|*incorrect*password*|*invalid*password*|*ldap*auth*error*|*userid*error*|*账号*错误*|*账户*错误*|*账号*不存在*|*用户*不存在*|*欠费*|*余额不足*|*停机*|*流量*用尽*|*流量*耗尽*|*流量*用完*|*流量*不足*|*流量*超*|*超*流量*|*traffic*exceed*|*quota*|*账号*禁用*|*账户*禁用*|*账号*过期*) return 10 ;;
+				*验证码*|*captcha*|*频繁*|*稍后*|*繁忙*|*超时*|*timeout*|*busy*|*try*again*|*temporar*|*rate*limit*|*too*many*requests*|*server*error*|*service*unavailable*|*network*error*|*invalid*request*|*invalid*parameter*|*ip*锁定*|*ip*lock*|*系统*|*服务器*|*参数*) return 11 ;;
+				# A valid result=0 explicitly rejects this submission, including
+				# opaque RADIUS codes. Missing, unknown and malformed results still
+				# stop traversal, as do environmental/challenge failures above.
+				*) return 10 ;;
 			esac ;;
 		*) return 11 ;;
 	esac
+}
+
+login_failure_message() {
+	# Credentials are provided through the shell's builtin printf, never argv
+	# or an environment variable. Only a bounded, single-line reason is logged.
+	printf '%s\n' "$1" "$2" "$3" | awk '
+	 function hide(s,key,at,out){out="";if(key=="")return s;while((at=index(s,key))>0){out=out substr(s,1,at-1) "[已隐藏]";s=substr(s,at+length(key))}return out s}
+	 NR==1{user=$0;next} NR==2{secret=$0;next}
+	 {line=hide(hide($0,secret),user);gsub(/[\001-\037\177]/," ",line);out=out " " line}
+	 END{gsub(/ +/," ",out);sub(/^ /,"",out);sub(/ $/,"",out);if(length(out)>240)print "网关返回了较长的拒绝说明";else print out}'
 }
 
 
@@ -974,7 +990,8 @@ login_protocol() {
 }
 
 try_accounts() {
- local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed capacity=0
+ local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed capacity=0 wait_time
+	ACCOUNT_RETRY_AFTER=''
 	order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
 	[ -z "$MANUAL_ACCOUNT" ] || order="$MANUAL_ACCOUNT"
 	for section in $order; do
@@ -990,19 +1007,30 @@ try_accounts() {
 		account_protocol="$(protocol_internal "$account_protocol")"
 		[ -n "$username" ] && [ -n "$password" ] || continue
 		[ "$account_protocol" = "auto" ] || [ "$account_protocol" = "$protocol" ] || continue
+		if [ -z "$MANUAL_ACCOUNT" ] && account_rejection_active "$section" "$protocol" "$username" "$password"; then
+			attempted=1
+			if [ -z "$ACCOUNT_RETRY_AFTER" ] || [ "$REJECTION_WAIT" -lt "$ACCOUNT_RETRY_AFTER" ];then ACCOUNT_RETRY_AFTER="$REJECTION_WAIT";fi
+			log_message info "账号 $(mask_username "$username") 暂不可用，跳过本次自动登录（${REJECTION_WAIT} 秒后可重试）"
+			password='';continue
+		fi
 		if ! account_reserve "$section"; then capacity=1; password=''; log_message notice "账号 $username 已达到并发上限，尝试备用账号"; continue; fi
 		attempted=1
 		masked="$(mask_username "$username")"
 		log_message notice "正在通过 $(protocol_name "$protocol") 尝试账号 $masked"
-		login_protocol "$protocol" "$username" "$password"
+		LOGIN_FAILURE_MESSAGE='';login_protocol "$protocol" "$username" "$password"
 		rc=$?
+		LOGIN_FAILURE_MESSAGE="$(login_failure_message "$username" "$password" "$LOGIN_FAILURE_MESSAGE")"
+		if [ "$rc" = 10 ];then
+			account_reject "$section" "$protocol" "$username" "$password" || log_message warning '无法保存账号冷却状态'
+			[ -n "$ACCOUNT_RETRY_AFTER" ] && [ "$ACCOUNT_RETRY_AFTER" -le "$CFG_CREDENTIAL_COOLDOWN" ] || ACCOUNT_RETRY_AFTER="$CFG_CREDENTIAL_COOLDOWN"
+		fi
 		password=""
 		[ "$rc" = 0 ] || account_release
 		case "$rc" in
-			0) SELECTED_ACCOUNT="$masked"; return 0 ;;
-			10) log_message notice "账号 $masked 被认证网关拒绝，尝试下一个账号" ;;
+			0) account_clear_rejection "$section";SELECTED_ACCOUNT="$masked"; return 0 ;;
+			10) log_message notice "账号 $masked 被认证网关拒绝：${LOGIN_FAILURE_MESSAGE:-网关未提供原因}；尝试下一个账号" ;;
 			13) return 13 ;;
-			*) return 11 ;;
+			*) [ -z "$LOGIN_FAILURE_MESSAGE" ] || log_message warning "认证暂未完成：$LOGIN_FAILURE_MESSAGE";return 11 ;;
 		esac
 	done
 	[ "$capacity" != 1 ] || return 14
@@ -1185,7 +1213,7 @@ run_once_impl() {
 			fi
 			return 0 ;;
 		10)
-			write_status "auth_rejected" "所有适用账号均被认证网关明确拒绝；已进入凭据冷却期" "$SELECTED_PROTOCOL" "" 0 1 "$offline_count" "$CFG_CREDENTIAL_COOLDOWN"
+			write_status "auth_rejected" "所有适用账号暂不可用；等待冷却后重试" "$SELECTED_PROTOCOL" "" 0 1 "$offline_count" "${ACCOUNT_RETRY_AFTER:-$CFG_CREDENTIAL_COOLDOWN}"
 			log_message error "$SELECTED_PROTOCOL 的所有适用账号均被认证网关拒绝"
 			return 1
 			;;

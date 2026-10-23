@@ -138,6 +138,7 @@ case "$url" in
 			type2_success|type2_rotate)
 				if [ "$scenario" = "type2_rotate" ] && printf '%s' "$url" | grep -q 'DDDDD=25000001'; then
 					code=200; body='dr1003({"result":0,"msga":"password error"});'
+					[ -z "${MOCK_FIRST_REJECTION_BODY:-}" ] || body="$MOCK_FIRST_REJECTION_BODY"
 				else
 					code=200; body='dr1003({"result":1,"msg":"ok"});'; : >"$success_marker"
 				fi
@@ -190,6 +191,7 @@ case "$url" in
 			type1_already_online) code=200; body='dr1005({"result":0,"msg":"用户已在线"});' ;;
 			type1_success|type1_pinned|type3_success|type3_secondary|type3_no_ipv6|type3_foreign_ipv6)
 				code=200; body='dr1005({"result":1,"msg":"ok"});'; : >"$success_marker"
+                if [ -n "${MOCK_FIRST_REJECTION_BODY:-}" ] && printf '%s' "$url" | grep -q '25000001';then body="$MOCK_FIRST_REJECTION_BODY";rm -f "$success_marker";fi
                 fixture_encoded="$(printf '%s' "$url" | sed -n 's/.*user_account=\([^&]*\).*/\1/p')"
                 if printf '%s' "$scenario" | grep -q '^type3_'; then
                     printf '%s' "$fixture_encoded" | python3 -c 'import sys; s=sys.stdin.read(); print("".join(chr(int(s[i:i+2],16)^0x16) for i in range(0,len(s),2)).removeprefix(",0,"))' >"$state_dir/login_account.$device"
