@@ -52,7 +52,7 @@ return baseclass.extend({
     job.card.append(E('div',{'class':'bj-record-footer'},[pager,button('导出本页',function(){exportPage(item);})]));}
   });}
   const root=E('section',{'class':'bj-card bj-record-panel bj-enter'});
-  client.watch(root,async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;const current=generation;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);if(current!==generation)return;job.item=response.result || response;job.running=job.item.state==='loading';}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}}finally{polling=false;}},1);
+  client.watch(root,async function(){if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;const current=generation;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);if(current!==generation)return;const item=response.result || response;if(item.state==='ready' && job.target.expectedAccount && item.account!==job.target.expectedAccount)throw new Error(_('计费账号已变化，请重新查询概览。'));job.item=item;job.running=job.item.state==='loading';}catch(error){if(current===generation){job.running=false;job.item={state:'error',message:String(error.message || error)};}}}));if(current===generation){state();draw();}}finally{polling=false;}},1);
   root.append(heading,controls,rows);return root;
  }
 });

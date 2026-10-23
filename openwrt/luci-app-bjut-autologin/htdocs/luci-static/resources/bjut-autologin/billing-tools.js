@@ -59,6 +59,8 @@ class RouterBillingTools {
                     const response = await this.options.request('billing_poll', { ticket: job.ticket });
                     if (generation !== this.generation)
                         return;
+                    if (response.result?.state === 'ready' && job.target.expectedAccount && response.result.account !== job.target.expectedAccount)
+                        throw new Error('计费账号已变化，请重新查询概览。');
                     job.result = { ...response.result, sessions: response.sessions, sessionsAvailable: response.sessionsAvailable };
                     job.running = job.result.state === 'loading';
                 }

@@ -19,6 +19,8 @@ class CollaborationTests(unittest.TestCase):
     environment=multi.MultiUplinkTests.environment
     config=multi.MultiUplinkTests.config
     rpc=multi.MultiUplinkTests.rpc
+    billing=multi.MultiUplinkTests.billing
+    billing_poll=multi.MultiUplinkTests.billing_poll
 
     def shell(self,script,**overrides):
         env=self.environment('online',BJUT_SELF=str(base.SCRIPT),BJUT_SOURCE_ONLY='1',BJUT_HTML=str(self.html),BJUT_DATA_DIR=str(self.temp/'private'),**overrides)
@@ -192,6 +194,17 @@ printf '%s' '{"rows":[{}]}' >"$RECORD_SOURCE";billing_summary_collect
         self.assertEqual(result.returncode,0,result.stderr)
         result=json.loads((job/'result.json').read_text());self.assertEqual(result['state'],'ready');self.assertEqual(result['message'],'路由配置已备份')
         self.assertTrue((self.temp/'private/maintenance'/result['backup']/'config').exists())
+
+    def test_current_billing_fallback_cannot_switch_to_first_enabled_account(self):
+        env=self.config()
+        (self.state/'uplink-dorm_a.json').write_text(json.dumps({'state':'online','account':'25000002','updated_at':int(time.time())}))
+        ticket,owner=self.billing('billing_success',env,account='current')
+        result=self.billing_poll(ticket,owner,env)['result']
+        self.assertEqual(result['state'],'ready',result);self.assertEqual(result['account'],'25000002')
+        (self.state/'uplink-dorm_a.json').unlink()
+        ticket,owner=self.billing('billing_success',env,account='current')
+        result=self.billing_poll(ticket,owner,env)['result']
+        self.assertEqual(result['state'],'error',result)
 
 
 if __name__=='__main__':unittest.main()

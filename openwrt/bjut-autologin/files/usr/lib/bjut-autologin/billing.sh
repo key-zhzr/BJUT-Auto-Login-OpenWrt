@@ -218,7 +218,7 @@ billing_collect_expired() (
 )
 
 billing_worker() {
-	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid section enabled order saved_account
+	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid section enabled order saved_account observed_account candidate_account
 	BILLING_JOB="$STATE_DIR/billing/$ticket"
 	[ -s "$BILLING_JOB/request.json" ] || return 1
 	uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"
@@ -232,11 +232,13 @@ billing_worker() {
 	BILLING_CURRENT=0; BILLING_VERIFIED=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
 	if [ "$account_id" = current ]; then
 		BILLING_CURRENT=1
-		order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
-		for section in $order; do
-			config_get_bool enabled "$section" enabled 1
-			[ "$enabled" = 1 ] || continue
-			config_get BILLING_ACCOUNT "$section" username ""
+		# A failed SSO must not silently query the first enabled account. Only
+		# the last observed account on this source is a valid password fallback.
+		observed_account="$(json_file_value "$STATE_FILE" '@.account')"
+		for section in $ACCOUNT_SECTIONS; do
+			config_get candidate_account "$section" username ""
+			[ -n "$observed_account" ] && [ "${candidate_account%@campus}" = "${observed_account%@campus}" ] || continue
+			BILLING_ACCOUNT="$candidate_account"
 			config_get password "$section" password ""
 			[ -z "$BILLING_ACCOUNT" ] || [ -z "$password" ] || break
 		done
