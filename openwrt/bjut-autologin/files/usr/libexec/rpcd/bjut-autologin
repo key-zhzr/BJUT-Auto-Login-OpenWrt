@@ -48,7 +48,7 @@ accounts_list() {
 		config_get limit "$section" max_sessions 0; valid_range "$limit" 0 32 || limit=0
 		online=0
 		for item in $UPLINK_SECTIONS; do
-			[ "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.account')" != "$user" ] || online=$((online+1))
+			if [ "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.account')" = "$user" ] && account_session_active "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.state')" "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.session')";then online=$((online+1));fi
 		done
 		json_add_int maxSessions "$limit"; json_add_int onlineCount "$online"
 		printf '%s' "$comma"; comma=,; json_dump

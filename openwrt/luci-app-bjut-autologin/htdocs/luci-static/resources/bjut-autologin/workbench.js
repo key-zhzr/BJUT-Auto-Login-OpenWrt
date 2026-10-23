@@ -174,7 +174,8 @@ function portGrid(actions) {
    [['ipv4',item.internet4],['ipv6',item.internet6]].forEach(function(pair){text(entry,pair[0],(item.stale?'上次 ':'')+(pair[1]==='reachable'?'✓ ':pair[1]==='unreachable'?'× ':'— ')+(pair[0]==='ipv4'?'IPv4':'IPv6'));entry.fields[pair[0]].className='bj-path '+(item.stale?'':pair[1]==='reachable'?'ok':pair[1]==='unreachable'?'fail':'');});
    text(entry,'state',_(item.stale?'数据已过期':labels[item.state] || item.state || '等待检测'));
    const pending=entry.pending && Date.now()-entry.pending.at<15000 && entry.pending.updated===item.updated_at;
-   text(entry,'note',item.operation && item.operation.id?item.operation.phase+' · '+(item.operation.duration || 0)+' 秒':item.checking?item.check_message || _('正在检测…'):pending?entry.pending.message:item.account?_('账号')+' '+item.account:item.message || _('暂无认证账号'));
+   const phase=item.operation && item.operation.id?item.operation.phase+' · '+(item.operation.duration || 0)+' 秒':item.checking?item.check_message || _('正在检测…'):pending?entry.pending.message:'';
+   text(entry,'note',[item.account?_('账号')+' '+item.account:'',phase || (!item.account?item.message || _('暂无认证账号'):'')].filter(Boolean).join(' · '));
    text(entry,'tx','▲ '+bytes(port.txBytes));text(entry,'rx','▼ '+bytes(port.rxBytes));text(entry,'txRate',bytes(rates.tx)+'/s');text(entry,'rxRate',bytes(rates.rx)+'/s');
    text(entry,'network',[item.network,item.network6].filter(Boolean).join(' / '));text(entry,'address4','IPv4 '+(item.ipv4 || '--'));text(entry,'address6','IPv6 '+(item.ipv6 || '--'));text(entry,'message',_('认证会话')+'：'+(item.session==='online'?_('已认证'):item.session==='offline'?_('未认证'):_('待确认'))+'\n'+(item.message || '')+(item.updated_at?'\n'+new Date(item.updated_at*1000).toLocaleString():''));
   });

@@ -352,6 +352,10 @@ billing_row_value() (
   '{'*) ;;
   *) return 1;;
  esac
+ # Most tables use the documented exact keys. Avoid loading an entire shell
+ # JSON namespace for every scalar cell; retain typed validation for containers.
+ value="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e "@.$wanted" 2>/dev/null)"
+ case "$value" in ''|'{'*|'['*) ;; *) printf '%s' "$value";return;;esac
  . "$JSHN_SH"; json_load "$row" && json_get_keys keys || return 1
  lower="$(printf '%s' "$wanted" | tr A-Z a-z)"
  for key in $keys; do
