@@ -21,7 +21,7 @@ class LoginOrderTests(unittest.TestCase):
     shell=collaboration.CollaborationTests.shell
 
     def test_explicit_rejections_and_environmental_failures_are_distinct(self):
-        for message,expected in [('流量已使用完，无法登录',10),('超出流量限制',10),('账户已暂停服务',10),('RADIUS reject R[8222]',10),('',10),('验证码错误',11),('系统繁忙，请稍后再试',11),('流量查询系统错误',11),('Too many requests',11),('Server error',11),('IP地址已锁定',11),('USER ALREADY ONLINE',13)]:
+        for message,expected in [('流量已使用完，无法登录',10),('超出流量限制',10),('账户已暂停服务',10),('RADIUS reject R[8222]',10),('认证服务器拒绝 R[8222]',10),('',10),('验证码错误',11),('系统繁忙，请稍后再试',11),('流量查询系统错误',11),('流量查询超时',11),('quota server error',11),('Too many requests',11),('Server error',11),('IP地址已锁定',11),('USER ALREADY ONLINE',13)]:
             with self.subTest(message=message):
                 file=self.temp/'response';file.write_text('dr1003('+json.dumps({'result':0,'msga':message},ensure_ascii=False)+');')
                 value=self.shell('HTTP_CODE=200;HTTP_BODY="$TEST_RESPONSE";parse_login_response;printf "%s" "$?"',TEST_RESPONSE=str(file))

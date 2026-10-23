@@ -704,8 +704,8 @@ parse_login_response() {
 			message="$(printf '%s' "$LOGIN_FAILURE_MESSAGE" | tr 'A-Z' 'a-z')"
 			case "$message" in
 				*已经在线*|*已在线*|*already*online*|*has*been*online*|*ip_already_online*|*same*ip*online*) return 13 ;;
-				*密码*错误*|*密码*不正确*|*密码*无效*|*password*error*|*password*wrong*|*incorrect*password*|*invalid*password*|*ldap*auth*error*|*userid*error*|*账号*错误*|*账户*错误*|*账号*不存在*|*用户*不存在*|*欠费*|*余额不足*|*停机*|*流量*用尽*|*流量*耗尽*|*流量*用完*|*流量*不足*|*流量*超*|*超*流量*|*traffic*exceed*|*quota*|*账号*禁用*|*账户*禁用*|*账号*过期*) return 10 ;;
-				*验证码*|*captcha*|*频繁*|*稍后*|*繁忙*|*超时*|*timeout*|*busy*|*try*again*|*temporar*|*rate*limit*|*too*many*requests*|*server*error*|*service*unavailable*|*network*error*|*invalid*request*|*invalid*parameter*|*ip*锁定*|*ip*lock*|*系统*|*服务器*|*参数*) return 11 ;;
+				*密码*错误*|*密码*不正确*|*密码*无效*|*password*error*|*password*wrong*|*incorrect*password*|*invalid*password*|*ldap*auth*error*|*userid*error*|*账号*错误*|*账户*错误*|*账号*不存在*|*用户*不存在*|*欠费*|*余额不足*|*停机*|*流量*用尽*|*流量*耗尽*|*流量*用完*|*流量*不足*|*流量*超额*|*流量*超限*|*流量*超出*|*流量*超过*|*超出*流量*|*超过*流量*|*traffic*exceed*|*账号*禁用*|*账户*禁用*|*账号*过期*) return 10 ;;
+				*验证码*|*captcha*|*频繁*|*稍后*|*繁忙*|*超时*|*timeout*|*busy*|*try*again*|*temporar*|*rate*limit*|*too*many*requests*|*server*error*|*service*unavailable*|*network*error*|*invalid*request*|*invalid*parameter*|*ip*锁定*|*ip*lock*|*系统*错误*|*系统*异常*|*系统*故障*|*服务器*错误*|*服务器*异常*|*服务器*故障*|*服务*不可用*|*参数*) return 11 ;;
 				# A valid result=0 explicitly rejects this submission, including
 				# opaque RADIUS codes. Missing, unknown and malformed results still
 				# stop traversal, as do environmental/challenge failures above.
