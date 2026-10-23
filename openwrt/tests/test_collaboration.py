@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline contracts for coordinated actions, billing parity and maintenance."""
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,30 @@ if [ "$1" = manual ];then exit 0;fi
         self.assertEqual(result.returncode,0,result.stderr)
         result=self.shell('load_configuration;select_uplink dorm_b;account_reserve account1',**env)
         self.assertNotEqual(result.returncode,0)
+
+    def test_parallel_uplinks_cannot_overbook_one_account_slot(self):
+        env=self.config();file=Path(env['MOCK_CONFIG_JSON']);config=json.loads(file.read_text());config['account1']['max_sessions']='1';file.write_text(json.dumps(config))
+        sections=['parallel_'+str(i) for i in range(8)]
+        script='load_configuration;UPLINK_ID="$TEST_UPLINK";UPLINK_SECTIONS="$TEST_SECTIONS";account_reserve account1'
+        with ThreadPoolExecutor(max_workers=len(sections)) as pool:
+            results=list(pool.map(lambda section:self.shell(script,TEST_UPLINK=section,TEST_SECTIONS=' '.join(sections),**env),sections))
+        self.assertEqual(sum(result.returncode==0 for result in results),1,[result.stderr for result in results])
+        self.assertEqual(len(list(self.state.glob('reservation-parallel_*'))),1)
+
+    def test_account_lock_keeps_an_unpublished_owner_and_recovers_a_dead_owner(self):
+        lock=self.state/'account-fixture.pid';lock.write_text('')
+        result=self.shell('account_lock_acquire "$TEST_LOCK"',TEST_LOCK=str(lock))
+        self.assertNotEqual(result.returncode,0);self.assertEqual(lock.read_text(),'')
+        dead=subprocess.Popen(['sh','-c','exit 0']);dead.wait();lock.write_text(str(dead.pid))
+        result=self.shell('account_lock_acquire "$TEST_LOCK"',TEST_LOCK=str(lock))
+        self.assertEqual(result.returncode,0,result.stderr);self.assertNotEqual(lock.read_text().strip(),str(dead.pid))
+
+    def test_account_reservation_failure_does_not_grant_a_slot(self):
+        env=self.config();file=Path(env['MOCK_CONFIG_JSON']);config=json.loads(file.read_text());config['account1']['max_sessions']='1';file.write_text(json.dumps(config))
+        result=self.shell('load_configuration;select_uplink dorm_a;mv(){ return 1; };account_reserve account1',**env)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(list(self.state.glob('reservation-*')))
+        self.assertFalse(list(self.state.glob('account-*.pid')))
 
     def test_maintenance_checks_architecture_hash_and_fixed_download_origin(self):
         directory=self.temp/'packages';directory.mkdir()
