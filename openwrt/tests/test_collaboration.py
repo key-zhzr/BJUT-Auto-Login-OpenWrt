@@ -209,5 +209,14 @@ printf '%s' '{"rows":[{}]}' >"$RECORD_SOURCE";billing_summary_collect
         result=self.billing_poll(ticket,owner,env)['result']
         self.assertEqual(result['state'],'error',result)
 
+    def test_maintenance_reads_the_aggregate_manifest_used_by_published_releases(self):
+        builds=self.temp/'builds.json';output=self.temp/'selected.json'
+        builds.write_text(json.dumps([{'target':'x86/64','arch':'x86_64','format':'apk'},{'target':'mediatek/filogic','arch':'aarch64_cortex-a53','format':'apk','source_commit':'fixture-commit','files':[{'package':'bjut-autologin'},{'package':'luci-app-bjut-autologin'}]}]))
+        script='''MAINT_TARGET=mediatek/filogic;MAINT_ARCH=aarch64_cortex-a53;MAINT_FORMAT=apk
+maintenance_fetch(){ case "$1" in */builds.json) cp "$TEST_BUILDS" "$2";; *) return 1;;esac; }
+maintenance_manifest openwrt-v0.1.6-r13 "$TEST_OUTPUT"'''
+        result=self.shell(script,TEST_BUILDS=str(builds),TEST_OUTPUT=str(output))
+        self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(output.read_text())['source_commit'],'fixture-commit')
+
 
 if __name__=='__main__':unittest.main()

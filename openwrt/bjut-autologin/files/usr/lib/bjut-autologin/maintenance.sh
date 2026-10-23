@@ -96,26 +96,22 @@ maintenance_fetch() {
 }
 
 maintenance_manifest() {
- local tag="$1" output="$2" release index=0 name prefix candidate chosen=''
+ local tag="$1" output="$2" aggregate index=0 candidate
  case "$tag" in ''|*[!A-Za-z0-9_.-]*) return 1;; esac
- release="$output.release"
- maintenance_fetch "https://api.github.com/repos/key-zhzr/BJUT-Auto-Login-OpenWrt/releases/tags/$tag" "$release" || return 1
- prefix="openwrt-$(printf '%s' "$MAINT_TARGET" | tr / -)-"
- while [ "$index" -lt 256 ]; do
-  name="$(json_file_value "$release" "@.assets[$index].name")"; [ -n "$name" ] || break
-  case "$name" in "$prefix"*"-$MAINT_FORMAT.build.json")
-   case "$name" in *[!A-Za-z0-9_.-]*) return 1;; esac
-   candidate="$output.candidate"
-   if maintenance_fetch "$MAINT_REPOSITORY/releases/download/$tag/$name" "$candidate" &&
-    [ "$(json_file_value "$candidate" '@.target')" = "$MAINT_TARGET" ] &&
-    [ "$(json_file_value "$candidate" '@.arch')" = "$MAINT_ARCH" ] &&
-    [ "$(json_file_value "$candidate" '@.format')" = "$MAINT_FORMAT" ]; then
-     cp "$candidate" "$output"; chosen=1; break
-   fi;;
-  esac
+ # Published releases contain one aggregate builds.json, not per-SDK assets.
+ aggregate="$output.builds"
+ maintenance_fetch "$MAINT_REPOSITORY/releases/download/$tag/builds.json" "$aggregate" || return 1
+ while [ "$index" -lt 64 ];do
+  candidate="$(json_file_value "$aggregate" "@[$index]")";[ -n "$candidate" ] || break
+  printf '%s' "$candidate" >"$output.candidate"
+  if [ "$(json_file_value "$output.candidate" '@.target')" = "$MAINT_TARGET" ] &&
+   [ "$(json_file_value "$output.candidate" '@.arch')" = "$MAINT_ARCH" ] &&
+   [ "$(json_file_value "$output.candidate" '@.format')" = "$MAINT_FORMAT" ];then
+   mv -f "$output.candidate" "$output";return 0
+  fi
   index=$((index+1))
  done
- [ "$chosen" = 1 ]
+ return 1
 }
 
 maintenance_download_pair() {
