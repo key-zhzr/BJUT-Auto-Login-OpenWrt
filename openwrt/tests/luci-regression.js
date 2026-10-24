@@ -68,7 +68,7 @@ async function server(method, args = {}) {
             return { result: { ...base, balance: '42.125', totalFlow: '40960', remainingFlow: '30720', accountStatus: '正常', package: '校园网套餐' }, sessionsAvailable: true, sessions: [{ sessionIndex: '0', ip: '10.126.19.139', ipv6: '2001:db8::1', mac: 'aabbccddeeff', useTime: '3600' }] };
         if (query.kind === 'records')
             return { result: { ...base, kind: args.kind || 'usage', columns: ['loginTime', 'flow'], rows: [['2026-10-18 12:00', '1024']], total: 1, page: 1 } };
-        return { result: { ...base, module: query.kind === 'action' ? undefined : query.kind, message: query.kind === 'action' ? '操作已完成' : '计费数据已更新', canStop: 1, canReopen: 0, canCancel: 1, installmentFlag: '100', useMoney: '25', packages: [{ id: '2', name: '校园网套餐 · 20 元/月' }, { id: '3', name: '校园网套餐 · 30 元/月' }], questions: [{ id: '1', name: '问题一' }, { id: '2', name: '问题二' }, { id: '3', name: '问题三' }], FLDMINLENGTH: 8, mauth: '1', macs: { columns: ['online', 'mac', 'device', 'lastLoginAt', 'lastIp'], rows: [['在线', 'aabbccddeeff', '测试设备', '2026-10-18', '10.126.19.139']] }, history: { columns: ['loginTime', 'logoutTime', 'ip', 'flow'], rows: [['2026-10-18 12:00', '2026-10-18 13:00', '10.126.19.139', '1024 MB']] } }, sessionsAvailable: true, sessions: [{ sessionIndex: '0', ip: '10.126.19.139', mac: 'aabbccddeeff', useTime: '3600' }] };
+        return { result: { ...base, module: query.kind === 'action' ? undefined : query.kind, message: query.kind === 'action' ? '操作已完成' : '计费数据已更新', canStop: 1, canReopen: 0, canCancel: 1, installmentFlag: '100', useMoney: '25', currentPackageId: '2', currentPackage: '校园网套餐', packageDetail: '每月 20 元包含 120 GB 流量，超出后按实际用量计费', packages: [{ id: '2', name: '校园网套餐', description: '每月 20 元包含 120 GB 流量，超出后按实际用量计费' }, { id: '3', name: '校园网畅享套餐', description: '每月 30 元包含 180 GB 流量，超出后按实际用量计费' }], questions: [{ id: '1', name: '问题一' }, { id: '2', name: '问题二' }, { id: '3', name: '问题三' }], FLDMINLENGTH: 8, mauth: '1', macs: { columns: ['online', 'mac', 'device', 'lastLoginAt', 'lastIp'], rows: [['在线', 'aabbccddeeff', '测试设备', '2026-10-18', '10.126.19.139']] }, history: { columns: ['loginTime', 'logoutTime', 'ip', 'flow'], rows: [['2026-10-18 12:00', '2026-10-18 13:00', '10.126.19.139', '1024 MB']] } }, sessionsAvailable: true, sessions: [{ sessionIndex: '0', ip: '10.126.19.139', mac: 'aabbccddeeff', useTime: '3600' }] };
     }
     return { state: 'ready' };
 }
@@ -150,6 +150,15 @@ document.getElementById('run-router-qa').onclick = async () => {
         await wait(() => document.getElementById('content').textContent.includes('消费限额'));
         assert(document.getElementById('content').textContent.includes('预约套餐'), '业务办理缺少套餐');
         note('通过：账户服务和消费保护');
+        const packageChoice = document.querySelector('.bj-package-option.selected');
+        assert(packageChoice?.querySelector('p')?.textContent.includes('120 GB'), '套餐说明缺失');
+        assert(packageChoice.querySelectorAll('.billing-package-badge').length === 2, '当前与下一周期标识缺失');
+        const cardBounds = packageChoice.getBoundingClientRect();
+        for (const child of packageChoice.children) {
+            const bounds = child.getBoundingClientRect();
+            assert(bounds.top >= cardBounds.top && bounds.bottom <= cardBounds.bottom, 'LuCI 主题固定按钮高度遮住了套餐说明或周期标识');
+        }
+        note('通过：LuCI 固定按钮高度下套餐说明和周期标识完整显示');
         Array.from(document.querySelectorAll('.bj-tabs button')).find(b => b.textContent === '设备与安全').click();
         await wait(() => document.getElementById('content').textContent.includes('已绑定设备'));
         note('通过：在线设备、MAC 和无感认证');
