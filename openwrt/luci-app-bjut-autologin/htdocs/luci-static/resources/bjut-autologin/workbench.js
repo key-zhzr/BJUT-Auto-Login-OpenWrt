@@ -32,6 +32,7 @@ html.bj-host-dark .bjut-workbench{--bj-bg:#111a2c;--bj-card:#1b273b;--bj-text:#f
 .bjut-workbench h2{font-size:24px;line-height:1.25;margin:4px 0 14px}
 .bjut-workbench h3{font-size:17px;line-height:1.35}
 .bjut-workbench h4{font-size:14px;margin:18px 0 10px}
+.bjut-workbench .bj-package-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;margin:12px 0}.bjut-workbench .bj-package-option{display:block;white-space:normal;text-align:left;border:1px solid var(--bj-border);border-radius:14px;padding:14px;background:var(--bj-bg);color:var(--bj-text);cursor:pointer}.bjut-workbench .bj-package-option.selected{border-color:var(--bj-blue);background:#3478f61a}.bjut-workbench .bj-package-option p{font-size:12px}.bjut-workbench .billing-package-badges{display:flex;gap:6px;flex-wrap:wrap}.bjut-workbench .billing-package-badge{border-radius:12px;background:#3478f620;color:var(--bj-blue);padding:3px 8px;font-size:11px}.bjut-workbench .billing-package-badge.next{background:#18b99122;color:var(--bj-ok)}
 .bjut-workbench .bj-billing-subtitle{margin:0 0 12px;font-size:12.5px;line-height:1.5;color:var(--bj-muted)}
 .bjut-workbench .bj-card{background:var(--bj-card);border:1px solid var(--bj-border);border-radius:16px;padding:20px;box-shadow:0 8px 24px rgba(23,43,77,.06)}
 html.bj-host-dark .bjut-workbench .bj-card{box-shadow:0 8px 24px rgba(0,0,0,.18)}
@@ -179,7 +180,7 @@ function portGrid(actions) {
    [['ipv4',item.internet4],['ipv6',item.internet6]].forEach(function(pair){text(entry,pair[0],(item.stale?'上次 ':'')+(pair[1]==='reachable'?'✓ ':pair[1]==='unreachable'?'× ':'— ')+(pair[0]==='ipv4'?'IPv4':'IPv6'));entry.fields[pair[0]].className='bj-path '+(item.stale?'':pair[1]==='reachable'?'ok':pair[1]==='unreachable'?'fail':'');});
    text(entry,'state',_(item.stale?'数据已过期':labels[item.state] || item.state || '等待检测'));
    const pending=entry.pending && Date.now()-entry.pending.at<15000 && entry.pending.updated===item.updated_at;
-   const phase=item.operation && item.operation.id?item.operation.phase+' · '+(item.operation.duration || 0)+' 秒':item.checking?item.check_message || _('正在检测…'):pending?entry.pending.message:'';
+   const phase=item.checking?item.check_message || _('正在检测…'):item.operation && ['queued','running'].includes(item.operation.state)?item.operation.phase || _('正在处理…'):pending?entry.pending.message:item.message || '';
    text(entry,'note',[item.account?_('账号')+' '+item.account:'',phase || (!item.account?item.message || _('暂无认证账号'):'')].filter(Boolean).join(' · '));
    text(entry,'tx','▲ '+bytes(port.txBytes));text(entry,'rx','▼ '+bytes(port.rxBytes));text(entry,'txRate',bytes(rates.tx)+'/s');text(entry,'rxRate',bytes(rates.rx)+'/s');
    text(entry,'network',[item.network,item.network6].filter(Boolean).join(' / '));text(entry,'address4','IPv4 '+(item.ipv4 || '--'));text(entry,'address6','IPv6 '+(item.ipv6 || '--'));text(entry,'message',_('认证会话')+'：'+(item.session==='online'?_('已认证'):item.session==='offline'?_('未认证'):_('待确认'))+'\n'+(item.message || '')+(item.updated_at?'\n'+new Date(item.updated_at*1000).toLocaleString():''));

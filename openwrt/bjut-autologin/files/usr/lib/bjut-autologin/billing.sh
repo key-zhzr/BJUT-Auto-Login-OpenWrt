@@ -3,13 +3,14 @@
 # Billing cookies and captcha state are isolated by administrator/uplink/account.
 
 billing_progress() {
-	local state="$1" percent="$2" message="$3" tmp="$BILLING_JOB/result.json.$$"
+	local state="$1" percent="$2" message="$3" tmp="${BILLING_OUTPUT:-$BILLING_JOB/result.json}.$$"
+	if [ "${BILLING_MODULE:-}" = center ] && [ -z "${BILLING_OUTPUT:-}" ] && [ "$state" = loading ];then percent=$((percent / 2));fi
 	. "$JSHN_SH"
 	json_init
 	json_add_string state "$state"
 	json_add_int percent "$percent"
 	json_add_string message "$message"
-	json_dump >"$tmp" && mv -f "$tmp" "$BILLING_JOB/result.json"
+	json_dump >"$tmp" && mv -f "$tmp" "${BILLING_OUTPUT:-$BILLING_JOB/result.json}"
 }
 
 billing_normalize_path() {
@@ -113,7 +114,7 @@ billing_need_captcha() {
 }
 
 billing_publish_overview() {
-	local user actual status balance flow package used total balance_text flow_text used_text total_text reason detail cycle unlimited=0
+	local user actual status balance flow package used total balance_text flow_text used_text total_text reason detail cycle percent=85 unlimited=0
 	user="$(billing_extract user-json)" || return 1
 	actual="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.userName' 2>/dev/null)"
 	case "$actual" in ''|*[!A-Za-z0-9_@.,-]*) return 1 ;; esac
@@ -126,7 +127,7 @@ billing_publish_overview() {
 		[ "$actual" = "$(json_file_value "$BILLING_JOB/request.json" '@.expectedAccount')" ] || { billing_progress error 100 '认证账号已变化，未提交操作，请重新查询'; return 1; }
 		billing_apply_action "$BILLING_OPERATION"; return $?
 	fi
-	if [ -n "${BILLING_MODULE:-}" ]; then billing_module "$BILLING_MODULE"; return $?; fi
+	if [ -n "${BILLING_MODULE:-}" ] && [ "$BILLING_MODULE" != center ]; then billing_module "$BILLING_MODULE"; return $?; fi
 	# Same precedence and units as App parse_dashboard(): rendered dt metrics
 	# first, embedded leftMoney/leftFlow (MB) only when the metric is absent.
 	balance_text="$(billing_extract dashboard-metric '账户余额')"
@@ -169,7 +170,8 @@ billing_publish_overview() {
 	json_dump >"$BILLING_JOB/overview.json"
 	# The UI can show the verified overview while the optional session module
 	# is still loading; one unavailable endpoint cannot hide the balance.
-	sed 's/"state"[[:space:]]*:[[:space:]]*"ready"/"state":"loading"/;s/"percent"[[:space:]]*:[[:space:]]*100/"percent":85/;s/"message"[[:space:]]*:[[:space:]]*"计费数据已更新"/"message":"正在读取在线设备"/' "$BILLING_JOB/overview.json" >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+	[ "${BILLING_MODULE:-}" != center ] || percent=44
+	sed 's/"state"[[:space:]]*:[[:space:]]*"ready"/"state":"loading"/;s/"percent"[[:space:]]*:[[:space:]]*100/"percent":'"$percent"'/;s/"message"[[:space:]]*:[[:space:]]*"计费数据已更新"/"message":"正在读取在线设备"/' "$BILLING_JOB/overview.json" >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
 	rm -f "$BILLING_JOB/online.json"
 	if billing_request /Self/dashboard/getOnlineList; then
 		# An HTTP-200 login page/error object is not an empty session list.
@@ -177,7 +179,9 @@ billing_publish_overview() {
 		# jsonfilter builds differ on accepting as a root value.
 		billing_capture_online || true
 	fi
-	cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+	if [ "${BILLING_MODULE:-}" = center ]; then billing_center_modules; else
+	 cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+	fi
 
 }
 
@@ -278,6 +282,15 @@ billing_worker() {
 	if [ "$action" = captcha ] && [ -s "$BILLING_CACHE/login.html" ]; then
 		cp "$BILLING_CACHE/login.html" "$WORK_DIR/billing-body"
 	else
+		# Reuse this account's verified cookie jar on the same physical source.
+		# The cache signature includes uplink/address/account/password; a fresh
+		# dashboard must still confirm the selected account before any action.
+		if [ "$account_id" != current ] && [ "$signature" = "$current" ] && [ -s "$BILLING_CACHE/cookies" ]; then
+			BILLING_CURRENT=0
+			billing_progress loading 10 '正在刷新计费会话'
+			if billing_request /Self/dashboard && billing_publish_overview;then password='';return 0;fi
+			[ -z "$BILLING_OPERATION" ] || [ "$BILLING_VERIFIED" != 1 ] || return 1
+		fi
 		billing_progress loading 10 "正在查询当前认证账号"
 		if billing_current_session; then password=""; return 0; fi
         [ -z "$BILLING_OPERATION" ] || [ "$BILLING_VERIFIED" != 1 ] || return 1

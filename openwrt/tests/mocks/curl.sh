@@ -75,6 +75,8 @@ case "$url" in
    */Self/login/getBrandInfo*) mime=application/json; body='{}' ;;
    */Self/service/goStop*) body="<button id='stopNow'>报停</button>";;
    */Self/service/goReopen*) body="<button id='reOpenNow' disabled>复通</button>";;
+   */Self/service/packageLog*) mime=application/json;body='{"rows":[]}'
+    [ "${MOCK_PACKAGE_RESERVATION:-0}" != 1 ] || body='{"rows":[{"fldstate":1,"flddefaultname1":"默认套餐","flddefaultname2":"新套餐"}]}' ;;
    */Self/service/package*) body="<a class='pick-card' data-package='2'>套餐：新套餐 描述：测试</a><script>post('doPackage',{csrftoken:'fixture-csrf'});</script>";;
    */Self/service/consumeProtect*) body="<input name='csrftoken' value='fixture-csrf'><script>window.user=(function(x){return x})({\"installmentFlag\":100,\"useMoney\":25});</script>";;
    */Self/setting/changePassword*) body="<input name='csrftoken' value='fixture-csrf'><script>var passwordPolicy={\"FLDMINLENGTH\":8,\"FLDREQUIREUPPER\":1,\"FLDREQUIREDIGIT\":1};</script>";;
@@ -96,7 +98,9 @@ case "$url" in
     mime=application/json; body="$(python3 "$(dirname "$0")/record_fixture.py" "$url")" ;;
    *)
     if [ -n "$fixture_user" ]; then
+     if [ -n "${MOCK_BILLING_DASHBOARD:-}" ];then body="$(cat "$MOCK_BILLING_DASHBOARD")";else
      body="<script>window.user=(function(x){return x})({\"userName\":\"$fixture_user\",\"leftMoney\":42,\"leftFlow\":1024,\"useFlag\":1,\"userPassword\":\"do not expose\",\"serviceDefault\":{\"defaultName\":\"fixture package\"}});var AJAXCSRFTOKEN='fixture-ajax';</script><label>状　　态：</label><div><span>正常</span></div><dl><dt>2 <small>GB</small></dt><dd>已用流量</dd></dl>"
+     fi
     else
      body="<script src='/Self/static/login.js'></script><script src='https://other.test/unsafe.js'></script><form method='post' action='/Self/login/verify'><input name='checkcode' value='1234'><div id='randomDiv' class='$( [ "$scenario" = billing_captcha ] || printf hide )'></div></form>"
     fi ;;

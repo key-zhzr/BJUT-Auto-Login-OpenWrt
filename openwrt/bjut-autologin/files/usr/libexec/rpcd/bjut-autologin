@@ -127,7 +127,7 @@ billing_begin() {
 	local owner uplink account ticket now old key kind start end year page module operation payload expectedAccount old_job
 	owner="$(request_value owner)"
     if [ "${1:-}" = details ]; then
-      module="$(request_value module)";case "$module" in services|devices|security|history);;*)reply error '计费模块无效';return;;esac
+      module="$(request_value module)";case "$module" in services|devices|security|history|center);;*)reply error '计费模块无效';return;;esac
     fi
     if [ "${1:-}" = action ];then
       ticket_job && [ "$(json_file_value "$BILLING_JOB/result.json" '@.state')" = ready ] || { reply error '请先完成计费查询';return; }

@@ -210,6 +210,23 @@ static int extract(const char *html, const char *op, const char *name)
     }
     if (!strcmp(op,"packages")) return choices(html,1);
     if (!strcmp(op,"questions")) return choices(html,0);
+    if (!strcmp(op,"package-scheduled")) {
+        const char *tags[]={"a","button","input"};
+        const char *keys[]={"data-package-name","data-name","title"};
+        for(int i=0;i<3;i++) {
+            p=html;
+            while((p=next_tag(p,tags[i]))) {
+                if(attr_is(p,"data-toggle","undoPackage")) {
+                    for(int k=0;k<3;k++)if(attr(p,keys[k],&a,&b) && b>a && b-a<=240) {
+                        const char *cancel=find_ci(a,"取消");
+                        if(!cancel || cancel>=b)return emit_text(a,b,1);
+                    }
+                }
+                p++;
+            }
+        }
+        return 1;
+    }
     if (!strcmp(op,"package-cancel")) {
         const char *tags[]={"a","button","input"};
         const char *keys[]={"href","action","onclick"};

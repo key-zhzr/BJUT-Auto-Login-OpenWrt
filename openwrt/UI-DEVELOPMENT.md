@@ -183,3 +183,15 @@ python3 openwrt/tests/test_sync_upstream.py
 安装包/SDK 构建见 [编译说明](BUILDING.md)：当前两个包共同使用 0.1.6-r13，APK 先于 IPK 编译。这里的 APK 是 OpenWrt 包，不是 Android App；纯 UI 修改不需要自行更换公开标签或发布版本。
 
 交接时列出改动文件、App 共享源与生成物是否都已更新、执行过的检查、实机是否实际部署、截图和剩余限制。不要把旧验收图或 mock 成功结果描述为新代码已经在实际路由器/手机验证。
+
+
+0.1.6-r17 新增协作能力 `billing_center`：`billing_details` 的 `module=center`
+在同一个经核对的账号会话中读取整页所需模块。`billing_poll.result` 仍有
+`state`、`percent`、`message`、`account`，另外返回 `overview` 和 `modules`，
+可在完成前显示已取得的数据。各模块保持原有允许字段，未输出 Cookie 或私密页面内容。
+独立模块、记录查询和操作继续兼容原接口。
+
+账户服务中的 `packages` 现在分开返回 `name` 与 `description`，并带有
+`currentPackageId`、`currentPackage`、`packageDetail`、`scheduledPackage`。
+当前套餐不在可预约列表时仍会补入展示。LuCI 控制台每个上游均显示当前检测说明，
+历史操作的耗时不会取代当前状态。

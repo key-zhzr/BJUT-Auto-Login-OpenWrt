@@ -47,7 +47,7 @@ billing_table() {
  json_close_array; json_close_object
 }
 billing_module() {
- local module="$1" user value key can_stop=0 can_reopen=0 can_cancel=0 mauth='' policy flag reason
+ local module="$1" user value key can_stop=0 can_reopen=0 can_cancel=0 mauth='' policy flag reason current_id current_name current_detail tab id label description
  user="$(billing_saved_extract dashboard user-json)"
  billing_progress loading 60 '正在读取计费模块'
  BILLING_REFERER=https://jfself.bjut.edu.cn/Self/dashboard; BILLING_AJAX=1
@@ -64,12 +64,29 @@ billing_module() {
    json_init; json_add_int canStop "$can_stop";json_add_int canReopen "$can_reopen";json_add_int canCancel "$can_cancel";json_add_string scheduledPackage "${BILLING_SCHEDULED:-}"
    json_add_int available "$( if [ -s "$BILLING_JOB/package.html" ] || [ -s "$BILLING_JOB/stop.html" ];then printf 1;else printf 0;fi )"
    for key in installmentFlag useMoney; do
-    value="$(billing_saved_extract protect user-json | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null)"
-    [ -n "$value" ] || value="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null)"
+    value="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null)"
+    [ -n "$value" ] || value="$(billing_saved_extract protect user-json | "$JSONFILTER_BIN" -e "@.$key" 2>/dev/null)"
     json_add_string "$key" "$value"
    done
-   value="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName')";json_add_string currentPackage "$value"
-   billing_choices package packages packages
+   current_id="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.id')"
+   current_name="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName')"
+   current_detail="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.extend')"
+   json_add_string currentPackageId "$current_id";json_add_string currentPackage "$current_name";json_add_string packageDetail "$current_detail"
+   json_add_array packages
+   tab="$(printf '\t')"
+   billing_saved_extract package packages >"$WORK_DIR/package-choices"
+   if [ -n "$current_id" ] && [ -n "$current_name" ] && ! awk -F '\t' -v wanted="$current_id" '$1==wanted {found=1} END{exit !found}' "$WORK_DIR/package-choices"; then
+    json_add_object '';json_add_string id "$current_id";json_add_string name "$current_name";json_add_string description "$current_detail";json_close_object
+   fi
+   while IFS="$tab" read -r id label; do
+    [ -n "$id" ] || continue
+    # Match App parse_package_options(): strip 套餐：, split 描述：.
+    description='';case "$label" in *描述：*) description="${label#*描述：}";label="${label%%描述：*}";;esac
+    label="${label#套餐：}";label="$(printf '%s' "$label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    description="$(printf '%s' "$description" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    json_add_object '';json_add_string id "$id";json_add_string name "$label";json_add_string description "$description";json_close_object
+   done <"$WORK_DIR/package-choices"
+   json_close_array
    ;;
   devices)
    billing_page mac /Self/service/myMac || true
@@ -96,7 +113,7 @@ billing_module() {
   *) return 1;;
  esac
  json_add_string state ready;json_add_string account "$BILLING_ACCOUNT";json_add_string module "$module";json_add_int percent 100;json_add_string message '计费数据已更新'
- json_dump >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+ json_dump >"${BILLING_OUTPUT:-$BILLING_JOB/result.json}.$$" && mv -f "${BILLING_OUTPUT:-$BILLING_JOB/result.json}.$$" "${BILLING_OUTPUT:-$BILLING_JOB/result.json}"
 }
 billing_ajax_token() {
  local token path
@@ -300,12 +317,41 @@ billing_reservation() {
   row="$(json_file_value "$WORK_DIR/reservation.json" "$prefix[0]")"
   state="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@.fldstate')";[ -n "$state" ] || state="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@[4]')"
   if [ -n "$state" ];then
-   [ "$state" = 1 ] || return 1
+   [ "$state" = 1 ] || { BILLING_SCHEDULED="$(billing_saved_extract "$page" package-scheduled)";[ -n "$BILLING_SCHEDULED" ] && billing_saved_extract "$page" package-cancel;return $?; }
    current="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@.flddefaultname1')";[ -n "$current" ] || current="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@[2]')"
    scheduled="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@.flddefaultname2')";[ -n "$scheduled" ] || scheduled="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@[3]')"
    [ -n "$scheduled" ] && [ "${#scheduled}" -le 256 ] && [ "$scheduled" != "$current" ] || return 1
    BILLING_SCHEDULED="$scheduled";return 0
   fi
  fi
- billing_saved_extract "$page" package-cancel
+ if billing_saved_extract "$page" package-cancel;then
+  BILLING_SCHEDULED="$(billing_saved_extract "$page" package-scheduled)"
+  [ -n "$BILLING_SCHEDULED" ] && [ "${#BILLING_SCHEDULED}" -le 256 ]
+ else return 1;fi
+}
+
+
+billing_center_publish() {
+ local percent="$1" message="$2" state="${3:-loading}" header module comma=''
+ json_init;json_add_string state "$state";json_add_int percent "$percent";json_add_string message "$message";json_add_string account "$BILLING_ACCOUNT"
+ header="$(json_dump)"
+ { printf '%s,"overview":' "${header%?}";cat "$BILLING_JOB/overview.json";printf ',"modules":{'
+  for module in services devices security history;do
+   [ -s "$BILLING_JOB/module-$module.json" ] || continue
+   printf '%s"%s":' "$comma" "$module";comma=,;cat "$BILLING_JOB/module-$module.json"
+  done
+  printf '}}\n'
+ } >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+}
+billing_center_modules() {
+ local module percent label
+ billing_center_publish 45 '账户概览已更新，正在读取账户服务'
+ for module in services devices security history;do
+  BILLING_OUTPUT="$BILLING_JOB/module-$module.json"
+  billing_module "$module" || billing_progress error 100 '此模块暂时无法读取，请稍后刷新'
+  BILLING_OUTPUT=''
+  case "$module" in services) percent=72;label='账户服务已更新，正在读取设备';;devices)percent=85;label='设备已更新，正在读取安全设置';;security)percent=94;label='安全设置已更新，正在读取近期记录';;history)percent=99;label='正在汇总计费数据';;esac
+  billing_center_publish "$percent" "$label"
+ done
+ billing_center_publish 100 '计费数据已更新' ready
 }
