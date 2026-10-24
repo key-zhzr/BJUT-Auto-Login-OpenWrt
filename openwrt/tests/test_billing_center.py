@@ -27,7 +27,8 @@ class BillingCenterTests(revision.RouterRevision10Tests):
     def test_current_package_missing_from_offered_choices_is_retained(self):
         env=self.config();dashboard=self.temp/'dashboard.html'
         dashboard.write_text('<script>(function(user){window.user=user;})({"userName":"25000001","useFlag":1,"installmentFlag":0,"useMoney":0,"serviceDefault":{"id":1,"defaultName":"默认套餐","extend":"每月赠送30GB"}});</script>')
-        value,_=self.worker('billing_details',{'uplink':'dorm_a','account':'account1','owner':'1'*32,'module':'services'},dict(env,MOCK_BILLING_DASHBOARD=str(dashboard),MOCK_PACKAGE_RESERVATION='1'))
+        context=dict(env,MOCK_BILLING_DASHBOARD=str(dashboard),MOCK_PACKAGE_RESERVATION='1')
+        value,ticket=self.worker('billing_details',{'uplink':'dorm_a','account':'account1','owner':'1'*32,'module':'services'},context)
         service=value['result']
         self.assertEqual(service['currentPackageId'],'1')
         self.assertEqual(service['currentPackage'],'默认套餐')
@@ -35,6 +36,10 @@ class BillingCenterTests(revision.RouterRevision10Tests):
         self.assertEqual(service['scheduledPackage'],'新套餐')
         self.assertEqual(service['canCancel'],1)
         self.assertEqual(service['installmentFlag'],'0','dashboard values take precedence over optional service pages')
+        rejected,_=self.worker('billing_action',{'ticket':ticket,'owner':'1'*32,'operation':'schedulePackage','payload':'{"packageId":"1"}'},context)
+        self.assertEqual(rejected['result']['state'],'error')
+        self.assertIn('当前正在使用',rejected['result']['message'])
+        self.assertNotIn('URL https://jfself.bjut.edu.cn/Self/service/doPackage\n',self.requests())
 
     def test_full_center_does_not_accept_foreign_owner(self):
         env=self.config()

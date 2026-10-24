@@ -152,6 +152,8 @@ billing_apply_action() {
    page=/Self/service/package;billing_page operation "$page" || return 1
    if [ "$action" = schedulePackage ];then
     value="$(billing_action_value packageId)";billing_form_value "$value" || return 1
+    current="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.id')"
+    [ -z "$current" ] || [ "$value" != "$current" ] || { billing_progress error 100 '当前正在使用此套餐，无需重复预约';return 1; }
     billing_saved_extract operation packages >"$WORK_DIR/allowed-packages"
     awk -F '\t' -v wanted="$value" '$1==wanted {found=1} END{exit !found}' "$WORK_DIR/allowed-packages" || { billing_progress error 100 '套餐列表已变化，请刷新后重试';return 1; }
     csrf="$(billing_saved_extract operation package-csrf)";[ -n "$csrf" ] || csrf="$(billing_saved_extract operation input csrftoken)"
