@@ -1,7 +1,16 @@
 #!/bin/sh
 # jfself online counters. Never substitute interface byte counters on failure.
+traffic_schedule_next() {
+ local next="$1"
+ is_uint "$next" || return 0
+ if ! is_uint "${TRAFFIC_NEXT_AT:-}" || [ "$next" -lt "$TRAFFIC_NEXT_AT" ];then
+  TRAFFIC_NEXT_AT="$next"
+ fi
+}
+
 traffic_collect() {
  local section user password key uplink candidate assigned ticket now result retry seen=''
+ TRAFFIC_NEXT_AT="$(($(date +%s)+60))"
  mkdir -p "$STATE_DIR/traffic" "$STATE_DIR/billing" || return 1
  for section in $ACCOUNT_SECTIONS; do
   config_get user "$section" username '';config_get password "$section" password ''
@@ -9,7 +18,10 @@ traffic_collect() {
   key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
   case "|$seen|" in *"|$key|"*) continue;;esac;seen="$seen|$key"
   now="$(date +%s)";retry="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)"
-  is_uint "$retry" && [ "$retry" -gt "$now" ] && continue
+  if is_uint "$retry" && [ "$retry" -gt "$now" ];then
+   traffic_schedule_next "$retry"
+   continue
+  fi
   uplink=''
   for candidate in $UPLINK_SECTIONS;do
    assigned="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')"
@@ -26,7 +38,10 @@ traffic_collect() {
   mkdir "$STATE_DIR/billing/$ticket" || continue
   printf '%s' "$now" >"$STATE_DIR/billing/$ticket/created"
   printf traffic | sha256sum | awk '{print $1}' >"$STATE_DIR/billing/$ticket/owner"
-  . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin;json_add_string module traffic
+  # Use the same verified dashboard parsing as the interactive overview.
+  # Embedded leftFlow may be zero while the rendered available-flow metric
+  # includes the account's current plan allowance.
+  . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin
   json_dump >"$STATE_DIR/billing/$ticket/request.json"
   /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket"
   result="$STATE_DIR/billing/$ticket/result.json"
@@ -36,11 +51,13 @@ traffic_collect() {
    traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices.json.$$" "$STATE_DIR/traffic/$key-devices.json"
    date +%s >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key-error"
    traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$(date +%s)"
-   printf '%s' "$((now+60))" >"$STATE_DIR/traffic/$key-next"
+   retry=$((now+60))
   else
    printf '%s' '查询暂未完成，请在计费中心核对账号或验证码' >"$STATE_DIR/traffic/$key-error"
-   printf '%s' "$((now+300))" >"$STATE_DIR/traffic/$key-next"
+   retry=$((now+300))
   fi
+  printf '%s' "$retry" >"$STATE_DIR/traffic/$key-next"
+  traffic_schedule_next "$retry"
   rm -rf "$STATE_DIR/billing/$ticket"
  done
 }
@@ -64,7 +81,7 @@ traffic_rows() (
 )
 
 traffic_cached() (
- local section user key at comma='' seen=''
+ local section user key at flow comma='' seen=''
  printf '{"accounts":['
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';[ -n "$user" ] || continue
@@ -72,7 +89,9 @@ traffic_cached() (
   case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
   at="$(cat "$STATE_DIR/traffic/$key-at" 2>/dev/null)";is_uint "$at" || at=0
   json_init;json_add_string account "$user";json_add_int updatedAt "$at"
-  json_add_string remainingFlow "$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlow')"
+  flow="$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlow')"
+  [ "$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlowUnlimited')" != 1 ] || flow=无限
+  json_add_string remainingFlow "$flow"
   json_add_string balance "$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.balance')"
   [ ! -s "$STATE_DIR/traffic/$key-error" ] || json_add_string error "$(cat "$STATE_DIR/traffic/$key-error")"
   printf '%s' "$comma";comma=,
@@ -92,8 +111,12 @@ traffic_order_accounts() (
   config_get user "$section" username '';key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
   at="$(cat "$STATE_DIR/traffic/$key-at" 2>/dev/null)";score=-1
   if is_uint "$at" && [ "$now" -ge "$at" ] && [ "$((now-at))" -le 180 ] && [ ! -s "$STATE_DIR/traffic/$key-error" ];then
-   value="$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlow')"
-   score="$(awk -v n="$value" 'BEGIN{if(n~/^-?[0-9]+([.][0-9]+)?$/){if(n+0<0)print "1000000000000000";else if(n+0==0)print -2;else print n}else print -1}')"
+   if [ "$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlowUnlimited')" = 1 ];then
+    score=1000000000000000
+   else
+    value="$(json_file_value "$STATE_DIR/traffic/$key-meta.json" '@.remainingFlow')"
+    score="$(awk -v n="$value" 'BEGIN{if(n~/^-?[0-9]+([.][0-9]+)?$/){if(n+0<0)print "1000000000000000";else if(n+0==0)print -2;else print n}else print -1}')"
+   fi
   fi
   printf '%s %06d %s\n' "$score" "$index" "$section";index=$((index+1))
  done | sort -k1,1nr -k2,2n | awk '{print $3}'

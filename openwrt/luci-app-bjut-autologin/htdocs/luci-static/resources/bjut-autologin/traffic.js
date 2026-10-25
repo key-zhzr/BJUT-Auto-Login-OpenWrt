@@ -7,7 +7,8 @@
 return baseclass.extend({render:function() {
  const body=E('div'),status=E('p',{'class':'bj-billing-subtitle','role':'status'},_('计费系统数据 · 每分钟更新 · 已用流量为本次在线会话累计'));
  let data={accounts:[],history:[]},stamp='',accountStamp='';
- const range=E('select',{'data-traffic-filter':'range',change:draw},[7,30,90].map(function(days){return E('option',{value:String(days),selected:days===30},days+' '+_('天'));}));
+ const range=E('select',{'data-traffic-filter':'range',change:draw},[7,30,90].map(function(days){return E('option',{value:String(days)},days+' '+_('天'));}));
+ range.value='30';
  const period=E('select',{'data-traffic-filter':'period',change:draw},[E('option',{value:'day'},_('按天')),E('option',{value:'month'},_('按月'))]);
  const account=E('select',{'data-traffic-filter':'account',change:draw},[E('option',{value:''},_('全部账号'))]);
  function selectedRows() {

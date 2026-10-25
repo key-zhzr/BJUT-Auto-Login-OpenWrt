@@ -52,12 +52,6 @@ billing_module() {
  billing_progress loading 60 '正在读取计费模块'
  BILLING_REFERER=https://jfself.bjut.edu.cn/Self/dashboard; BILLING_AJAX=1
  case "$module" in
-  traffic)
-   billing_request /Self/dashboard/getOnlineList && billing_capture_online || { billing_progress error 100 '设备流量暂时无法读取';return 1; }
-   json_init
-   json_add_string remainingFlow "$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow')"
-   json_add_string balance "$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney')"
-   ;;
   services)
    billing_page stop /Self/service/goStop || true
    billing_page reopen /Self/service/goReopen || true

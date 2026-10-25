@@ -1,6 +1,6 @@
 # LuCI UI 开发与调试指引
 
-更新于 2026-10-22；界面基于路由端 `e327f17`，当前安装包版本 0.1.6-r13。App 侧配套说明在主项目的 `docs/ui-development.md`。
+更新于 2026-10-26；当前源码修订 0.1.6-r20，安装包需核对对应构建清单。App 侧配套说明在主项目的 `docs/ui-development.md`。
 
 ## 1. 本机目录与离线启动
 
@@ -33,7 +33,7 @@ python3 -m http.server 1431 --bind 127.0.0.1 --directory openwrt
 - `tickets`：模拟计费查询、记录、账户服务和设备操作的任务结果。
 - `LuCIBase` / `load()`：检查模块工厂返回 baseclass 子类，再导入其实例。
 
-目前载入 **overview、billing、diagnostics、logs 四个视图**。账号管理和设置页使用真实 LuCI 的表单/弹窗机制，尚未被此模拟页覆盖；Argon 等主题的外壳、全局 CSS、缓存和路由器性能也未模拟。不要把四页模拟通过写成六页已经实机验收。
+目前载入 **overview、accounts、billing、diagnostics、logs、config 六个视图**。账号和设置表单使用 mock；Argon 等主题外壳、全局 CSS、缓存、真实保存与路由器性能不在模拟范围。不要把六页模拟通过写成已经实机验收。
 
 需要新增错误、长账号、空列表、加载进度或离页场景时，扩展 fixture / `server()`。这里的登录、注销、套餐等操作只改变本地模拟数据；不要把整套自动操作直接拿到真实路由器执行。
 
@@ -180,7 +180,7 @@ python3 openwrt/tests/test_sync_upstream.py
 
 完整检查需要 Python 3、Node、Dash、OpenSSL、C 编译器及 ASan/UBSan，可能运行数分钟。它们不替代浏览器中的“检查刷新与功能”，也不替代真实 LuCI 主题中的六页验收。更多见 [测试方法](TESTING.md)。
 
-安装包/SDK 构建见 [编译说明](BUILDING.md)：当前两个包共同使用 0.1.6-r13，APK 先于 IPK 编译。这里的 APK 是 OpenWrt 包，不是 Android App；纯 UI 修改不需要自行更换公开标签或发布版本。
+安装包/SDK 构建见 [编译说明](BUILDING.md)：当前两个包共同使用 0.1.6-r20，APK 先于 IPK 编译。这里的 APK 是 OpenWrt 包，不是 Android App；公开标签与发布版本仍需单独授权。
 
 交接时列出改动文件、App 共享源与生成物是否都已更新、执行过的检查、实机是否实际部署、截图和剩余限制。不要把旧验收图或 mock 成功结果描述为新代码已经在实际路由器/手机验证。
 

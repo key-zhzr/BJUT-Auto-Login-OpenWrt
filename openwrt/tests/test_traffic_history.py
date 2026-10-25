@@ -47,6 +47,57 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual([row['usedFlowMb'] for row in rows],['4.000','3.000'])
         self.assertNotIn('fixture-private',json.dumps(rows))
 
+    def test_background_metrics_use_the_same_precedence_as_billing_overview(self):
+        env=self.config()
+        dashboard=self.temp/'dashboard.html'
+        dashboard.write_text('<script>window.user=(function(x){return x})({"userName":"25000001","leftMoney":0,"leftFlow":0,"useFlag":1});</script><dl><dt>5.25 元</dt><dd>账户余额</dd></dl><dl><dt>1.5 GB</dt><dd>可用流量</dd></dl>')
+        output=self.shell('load_configuration; ACCOUNT_SECTIONS=account1; traffic_collect; traffic_cached',MOCK_SCENARIO='billing_success',MOCK_BILLING_DASHBOARD=dashboard,BJUT_HTML=self.html,BJUT_BILLING=base.CORE/'files/usr/libexec/bjut-billing',**env)
+        account=json.loads(output)['accounts'][0]
+        self.assertEqual(float(account['remainingFlow']),1536)
+        self.assertEqual(float(account['balance']),5.25)
+
+    def test_sampler_wakes_at_the_earliest_account_deadline(self):
+        env=self.config()
+        script='''load_configuration
+date() { if [ "$1" = +%s ]; then printf 1000; else command date "$@"; fi; }
+mkdir -p "$STATE_DIR/traffic"
+next=1010
+for section in $ACCOUNT_SECTIONS; do
+ config_get user "$section" username ''
+ key=$(printf '%s' "$user" | sha256sum | awk '{print $1}')
+ printf '%s' "$next" > "$STATE_DIR/traffic/$key-next"
+ next=$((next+30))
+done
+traffic_collect
+printf '%s' "$TRAFFIC_NEXT_AT"
+'''
+        self.assertEqual(self.shell(script,**env),'1010')
+
+    def test_staggered_accounts_are_not_skipped_for_another_minute(self):
+        env=self.config()
+        worker=self.temp/'billing-worker.sh'
+        worker.write_text('''mkdir -p "$BJUT_STATE_DIR/billing/$1"
+printf '{"state":"ready"}' > "$BJUT_STATE_DIR/billing/$1/result.json"
+printf '[]' > "$BJUT_STATE_DIR/billing/$1/online.json"
+printf x >> "$BJUT_STATE_DIR/traffic-worker-calls"
+''')
+        script='''load_configuration
+AT=1000
+date() { if [ "$1" = +%s ]; then printf '%s' "$AT"; else command date "$@"; fi; }
+mkdir -p "$STATE_DIR/traffic"
+next=1000
+for section in $ACCOUNT_SECTIONS; do
+ config_get user "$section" username ''
+ key=$(printf '%s' "$user" | sha256sum | awk '{print $1}')
+ printf '%s' "$next" > "$STATE_DIR/traffic/$key-next"
+ next=$((next+10))
+done
+for AT in 1000 1010 1060; do traffic_collect; printf '%s\\n' "$TRAFFIC_NEXT_AT"; done
+wc -c < "$STATE_DIR/traffic-worker-calls"
+'''
+        output=self.shell(script,BJUT_BILLING=worker,**env).split()
+        self.assertEqual(output,['1010','1060','1070','3'])
+
     def test_ipv6_only_identity_lock_and_pd_are_observed_before_lgn(self):
         env=self.config();cfg=Path(env['MOCK_CONFIG_JSON']);data=json.loads(cfg.read_text());data['dorm_a']['login_type']='type3';cfg.write_text(json.dumps(data))
         net=Path(env['MOCK_NETWORK_JSON']);networks=json.loads(net.read_text());networks['wan14']['up']=False;networks['wan16']['ipv6-prefix']=[{'address':'2001:da8:216:abcd::','mask':64}];net.write_text(json.dumps(networks))

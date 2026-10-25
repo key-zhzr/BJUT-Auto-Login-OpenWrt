@@ -31,6 +31,7 @@ test('LuCI six-page regression suite and PushPlus diagnostic states', async ({ p
   await expect(page.locator('#content > [data-qa-view="overview"]')).toBeVisible();
   const traffic = page.locator('.bj-device-usage');
   await expect(traffic).toContainText('512.50 MB');
+  await expect(traffic.locator('[data-traffic-filter="range"]')).toHaveValue('30');
   await traffic.locator('[data-traffic-filter="account"]').selectOption('25000001');
   await traffic.locator('[data-traffic-filter="period"]').selectOption('month');
   await expect(traffic.locator('.bj-traffic-history')).toContainText('每月采样新增流量');

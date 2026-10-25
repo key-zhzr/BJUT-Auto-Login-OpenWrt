@@ -16,8 +16,17 @@ trap 'traffic_history_checkpoint force;rm -rf "$lock";cleanup_runtime' 0
 trap 'exit 0' TERM INT
 while :;do
  started="$(date +%s)"
+ TRAFFIC_NEXT_AT=0
  load_configuration || exit 1
  [ "${CFG_TRAFFIC_MONITOR:-1}" != 1 ] || traffic_collect
- elapsed="$(($(date +%s)-started))";delay=$((60-elapsed));[ "$delay" -gt 0 ] || delay=1
+ finished="$(date +%s)"
+ # Accounts become due at different times. Sleeping a whole minute after a
+ # near-due account was skipped can otherwise stretch its interval to 120s.
+ if is_uint "$TRAFFIC_NEXT_AT" && [ "$TRAFFIC_NEXT_AT" -gt 0 ];then
+  delay=$((TRAFFIC_NEXT_AT-finished))
+ else
+  delay=$((60-finished+started))
+ fi
+ [ "$delay" -gt 0 ] || delay=1
  sleep "$delay" & wait "$!"
 done
