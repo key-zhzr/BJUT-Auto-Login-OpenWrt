@@ -295,6 +295,8 @@ load_main_section() {
 	config_get CFG_PUSHPLUS_DELAY "$1" pushplus_delay 60
 	config_get CFG_PUSHPLUS_INTERVAL "$1" pushplus_interval 3600
 	config_get_bool CFG_BILLING_BACKGROUND "$1" billing_background 0
+	config_get_bool CFG_TRAFFIC_MONITOR "$1" traffic_monitor 1
+	config_get_bool CFG_PREFER_FLOW "$1" prefer_remaining_flow 0
 	config_get CFG_BILLING_INTERVAL "$1" billing_interval 21600
 	config_get_bool CFG_BILLING_ALERTS "$1" billing_alerts 1
 	config_get CFG_BALANCE_THRESHOLD "$1" balance_threshold 5
@@ -437,6 +439,7 @@ write_status() {
 	json_add_string network6 "$CFG_NETWORK6"
 	json_add_string device6 "$DEVICE6"
 	json_add_string ipv6 "$LOCAL_IPV6"
+	json_add_string ipv6_pd "${IPV6_PD:-}"
 	json_add_string internet4 "$PROBE4"
 	json_add_string internet6 "$PROBE6"
 	json_add_string session "$SESSION_STATE"
@@ -540,9 +543,12 @@ read_network_identity() {
 	DEVICE=""; DEVICE6=""; LOCAL_IPV4=""; LOCAL_IPV6=""; TRANSPORT=unknown
 	SSID=""; BSSID=""; NETWORK_JSON4=""; NETWORK_JSON6=""
 	status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK" status 2>/dev/null)" || status=""
-	[ -n "$status" ] || return 1
 	up="$(network_json_value "$status" '@.up')"
-	case "$up" in 1|true) ;; *) return 1 ;; esac
+	case "$up" in 1|true) ;; *)
+		[ -n "$CFG_NETWORK6" ] || return 1
+		status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK6" status 2>/dev/null)" || return 1
+		up="$(network_json_value "$status" '@.up')";case "$up" in 1|true) ;; *)return 1;;esac
+	;;esac
 	NETWORK_JSON4="$status"
 	detected_device="$(network_json_value "$status" '@.l3_device')"
 	[ -n "$detected_device" ] || detected_device="$(network_json_value "$status" '@.device')"
@@ -557,9 +563,14 @@ read_network_identity() {
 		LOCAL_IPV4="$("$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null |
 			awk -v wanted="$CFG_SOURCE4" '{split($4,a,"/"); if(a[1] == wanted) print a[1]}')"
 	fi
-	is_campus_ipv4 "$LOCAL_IPV4" || return 2
-	if ! "$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk -v wanted="$LOCAL_IPV4" '{split($4,a,"/"); if(a[1] == wanted) found=1} END{exit !found}'; then return 1; fi
 	read_ipv6_identity
+	if is_campus_ipv4 "$LOCAL_IPV4";then
+		if ! "$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk -v wanted="$LOCAL_IPV4" '{split($4,a,"/"); if(a[1] == wanted) found=1} END{exit !found}';then return 1;fi
+	else
+		# IPv6-only LGN is permitted only on the observed campus prefix. The
+		# normal TLS + protocol probes still run before any credentials.
+		case "$(printf '%s' "$LOCAL_IPV6" | tr A-F a-f)" in 2001:da8:216:*) LOCAL_IPV4='';;*)return 2;;esac
+	fi
 
 	TRANSPORT="$CFG_TRANSPORT"
 	SSID=""
@@ -797,14 +808,16 @@ probe_type2() {
 
 lgn_request() {
 	local url="$1" host="$2" port="$3" referer="$4" gateway
-	if [ "$host" = "lgn6.bjut.edu.cn" ]; then
+	if [ "$host" = "lgn6.bjut.edu.cn" ] || [ -z "$LOCAL_IPV4" ]; then
 		for gateway in '2001:da8:216:30c9::2' '2001:da8:216:30c9::a'; do
-			http_request "$url" "$referer" "$host:$port:[$gateway]" "" "strict" ipv6 && http_success && return 0
+			if http_request "$url" "$referer" "$host:$port:[$gateway]" "" "strict" ipv6 && http_success;then
+				[ "$host" = lgn6.bjut.edu.cn ] || { LGN_SELECTED_GATEWAY="[$gateway]";LGN_SELECTED_FAMILY=ipv6; };return 0
+			fi
 		done
 	else
 		for gateway in "$LGN_GATEWAY_PRIMARY" "$LGN_GATEWAY_SECONDARY"; do
 			if http_request "$url" "$referer" "$host:$port:$gateway" "" "strict" && http_success; then
-				LGN_SELECTED_GATEWAY="$gateway"
+				LGN_SELECTED_GATEWAY="$gateway";LGN_SELECTED_FAMILY=ipv4
 				return 0
 			fi
 		done
@@ -877,6 +890,10 @@ probe_protocol() {
 
 detect_protocol() {
 	local candidates candidate rc portal_only=""
+	if [ -z "$LOCAL_IPV4" ];then
+		[ "$CFG_LOGIN_TYPE" = auto ] || [ "$CFG_LOGIN_TYPE" = type3 ] || return 1
+		probe_type3 && { SELECTED_PROTOCOL=type3;VERIFIED_PROTOCOL=type3;VERIFIED_AT="$(date +%s)";VERIFIED_IDENTITY="$(portal_identity_signature)";return 0; };return 1
+	fi
 	if [ "$CFG_LOGIN_TYPE" != "auto" ]; then
 		candidates="$CFG_LOGIN_TYPE"
 	elif [ "$TRANSPORT" = "ethernet" ]; then
@@ -956,7 +973,7 @@ type3_login() {
 	enc_ipv6="$(eportal_encrypt "$OBSERVED_IPV6")" || return 11
 	url="https://lgn.bjut.edu.cn:802/eportal/portal/login?callback=726427262623&login_method=27&user_account=$enc_account&user_password=$enc_password&wlan_user_ip=$enc_ipv4&wlan_user_ipv6=$enc_ipv6&wlan_user_mac=262626262626262626262626&wlan_vlan_id=26&wlan_ac_ip=&wlan_ac_name=&authex_enable=&jsVersion=2238243824&login_ip_type=26&terminal_type=25&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&encrypt=1&v=$(request_id)&lang=zh"
 	# Never replay credential submission on another gateway after a timeout.
-	http_request "$url" "https://lgn.bjut.edu.cn/" "lgn.bjut.edu.cn:802:$LGN_SELECTED_GATEWAY" "" "strict" || return 11
+	http_request "$url" "https://lgn.bjut.edu.cn/" "lgn.bjut.edu.cn:802:$LGN_SELECTED_GATEWAY" "" "strict" "${LGN_SELECTED_FAMILY:-ipv4}" || return 11
 	parse_login_response
 }
 
@@ -993,6 +1010,7 @@ try_accounts() {
  local protocol="$1" section enabled username password account_protocol masked rc attempted=0 order allowed capacity=0 wait_time
 	ACCOUNT_RETRY_AFTER=''
 	order="${CFG_ACCOUNT_ORDER:-$ACCOUNT_SECTIONS}"
+	if [ "${CFG_PREFER_FLOW:-0}" = 1 ] && [ -z "$CFG_ACCOUNT_ORDER" ] && [ -z "$MANUAL_ACCOUNT" ];then order="$(traffic_order_accounts "$order")";fi
 	[ -z "$MANUAL_ACCOUNT" ] || order="$MANUAL_ACCOUNT"
 	for section in $order; do
 		case " $ACCOUNT_SECTIONS " in *" $section "*) ;; *) continue ;; esac
@@ -1063,7 +1081,7 @@ run_once_impl() {
 			write_status "blocked" "上游接口 IPv4 不属于已知校园网网段，未发送凭据" "" "" 0 0 0
 			log_message error "上游接口地址不属于已知校园网网段，登录已阻止"
 		else
-			write_status "waiting_interface" "等待已配置的上游接口及 IPv4 地址" "" "" 0 0 0
+			write_status "waiting_interface" "等待已配置的上游接口及校园网地址" "" "" 0 0 0
 		fi
 		return 1
 	fi
@@ -1339,6 +1357,8 @@ main() {
 . "$LIB_DIR/operations.sh" || exit 2
 . "$LIB_DIR/coordination.sh" || exit 2
 . "$LIB_DIR/billing-monitor.sh" || exit 2
+. "$LIB_DIR/traffic.sh" || exit 2
+. "$LIB_DIR/traffic-history.sh" || exit 2
 . "$LIB_DIR/maintenance.sh" || exit 2
 
 if [ "${BJUT_SOURCE_ONLY:-0}" != "1" ]; then

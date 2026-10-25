@@ -10,14 +10,19 @@
 'require bjut-autologin.account-order as accountOrder';
 
 const testPushPlus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_test' });
+const queryPushPlusStatus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_status' });
 
 return view.extend({
 	load: function() {
-		return uci.load('bjut-autologin');
+		return Promise.all([
+			uci.load('bjut-autologin'),
+			queryPushPlusStatus().catch(function() { return {}; })
+		]);
 	},
 
-	render: function() {
+	render: function(loaded) {
 		let m, s, o;
+		const initialPushPlus = Array.isArray(loaded) && loaded[1] ? loaded[1] : {};
 
 		m = new form.Map('bjut-autologin', _('BJUT 自动登录'),
 			_('自动维护校园网登录，分别管理各条上游与账号。'));
@@ -161,15 +166,94 @@ return view.extend({
 		o.description = _('短暂断网不提醒；账号被拒绝等明确错误会立即提醒。');
 		o = s.option(form.Value, 'pushplus_interval', _('重复提醒间隔（秒）'));
 		o.depends('pushplus_enabled', '1'); o.default = '3600'; o.datatype = 'range(60,86400)'; o.rmempty = false; o.retain = true;
+		const pushplusSummary = E('strong', { 'class': 'bj-pushplus-summary' });
+		const pushplusDetail = E('p', { 'class': 'bj-pushplus-detail' });
+		let pushplusPolling = false, pushplusTimer = null;
+		async function refreshPushPlusStatus() {
+			if (pushplusPolling) return null;
+			pushplusPolling = true;
+			try {
+				const next = await queryPushPlusStatus();
+				renderPushPlusStatus(next);
+				return next;
+			} catch (error) {
+				pushplusDetail.textContent = _('状态读取失败：') + String(error.message || error);
+				return null;
+			} finally {
+				pushplusPolling = false;
+			}
+		}
+		const pushplusRefreshBtn = E('button', {
+			'class': 'btn cbi-button',
+			type: 'button',
+			click: function() { void refreshPushPlusStatus(); }
+		}, _('刷新测试状态'));
+		const pushplusBox = E('div', {
+			'class': 'bj-pushplus-status',
+			'role': 'status',
+			'data-state': 'idle'
+		}, [
+			E('div', { 'class': 'bj-actions' }, [pushplusSummary, pushplusRefreshBtn]),
+			pushplusDetail
+		]);
+		function renderPushPlusStatus(info) {
+			const data = info || {};
+			const state = data.state || 'idle';
+			const http = data.httpStatus || (state === 'accepted' ? '200' : state === 'error' ? '000' : '');
+			const code = data.apiCode || (state === 'accepted' ? '200' : '');
+			pushplusBox.setAttribute('data-state', state);
+			if (state === 'queued') {
+				pushplusSummary.textContent = _('排队中');
+				pushplusDetail.textContent = data.message || _('测试消息排队发送中，等待后台连接 PushPlus。');
+			} else if (state === 'accepted') {
+				pushplusSummary.textContent = _('已受理（HTTP ') + http + _(' / 业务码 ') + code + _(' · 已受理不等于已送达）');
+				pushplusDetail.textContent = data.message || _('PushPlus 已受理（HTTP 200 / 业务码 200）；平台异步投递，已受理不等于已送达。');
+			} else if (state === 'error') {
+				pushplusSummary.textContent = _('请求失败（HTTP ') + http + _(' / 业务码 ') + (code || _('未知')) + _('）');
+				pushplusDetail.textContent = data.message || _('推送请求失败，将在冷却后重试。');
+			} else {
+				pushplusSummary.textContent = _('未发送测试');
+				pushplusDetail.textContent = data.message || _('尚未发送测试消息；点击发送测试消息后可查看排队、HTTP/业务码或受理状态。');
+			}
+		}
+		function pollPushPlusUntilSettled(remaining) {
+			if (pushplusTimer !== null) {
+				window.clearTimeout(pushplusTimer);
+				pushplusTimer = null;
+			}
+			if (remaining <= 0) return;
+			pushplusTimer = window.setTimeout(async function() {
+				pushplusTimer = null;
+				if (!pushplusBox.isConnected) return;
+				const next = await refreshPushPlusStatus();
+				if (next && next.state === 'queued') pollPushPlusUntilSettled(remaining - 1);
+			}, 400);
+		}
+		renderPushPlusStatus(initialPushPlus);
 		o = s.option(form.Button, '_pushplus_test', _('测试推送'));
 		o.depends('pushplus_enabled', '1'); o.inputtitle = _('发送测试消息'); o.inputstyle = 'action';
 		o.description = _('请先保存并应用设置。');
 		o.onclick = async function() {
 			try {
 				const result = await testPushPlus();
+				if (result && result.testStatus) renderPushPlusStatus(result.testStatus);
+				else await refreshPushPlusStatus();
 				ui.addNotification(null, E('p', {}, result.message || _('无法发送测试消息')), result.state === 'ready' ? 'info' : 'error');
+				if (result && result.state === 'ready') pollPushPlusUntilSettled(6);
 			} catch (error) { ui.addNotification(null, E('p', {}, String(error)), 'error'); }
 		};
+		const PushPlusStatusControl = form.Value.extend({
+			renderWidget: function() { return pushplusBox; },
+			formvalue: function() { return null; }
+		});
+		o = s.option(PushPlusStatusControl, '_pushplus_status', _('测试推送状态'));
+		o.depends('pushplus_enabled', '1');
+		o.description = _('显示排队、请求失败的 HTTP 与业务码、或平台已受理状态（异步投递，已受理不等于最终送达）。');
+
+		o = s.option(form.Flag, 'prefer_remaining_flow', _('优先使用余量充足的账号'));
+		o.default='0';o.rmempty=false;o.description=_('仅在未指定独立顺序时使用新鲜计费数据排序。');
+		o = s.option(form.Flag, 'traffic_monitor', _('设备流量统计'));
+		o.default='1';o.rmempty=false;o.description=_('每分钟从计费系统读取各设备已用流量。');
 
 		o = s.option(form.Flag, 'billing_background', _('后台计费检查'));
 		o.default = '0'; o.rmempty = false;

@@ -1,0 +1,12 @@
+{
+  "name": "bjut-openwrt-luci-browser-tests",
+  "private": true,
+  "version": "0.1.6",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

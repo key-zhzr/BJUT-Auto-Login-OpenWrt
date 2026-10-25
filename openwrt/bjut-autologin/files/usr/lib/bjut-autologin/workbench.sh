@@ -2,22 +2,62 @@
 # SPDX-License-Identifier: MIT
 # Named, bounded App operations. Never expose saved passwords or arbitrary UCI.
 
-port_metric() {
- local value
- valid_device_name "$1" || { printf '0'; return; }
- value="$(cat "$SYS_NET/$1/$2" 2>/dev/null)"
+read_port_metric() {
+ local value=""
+ if valid_device_name "$1" && [ -r "$SYS_NET/$1/$2" ]; then
+  IFS= read -r value <"$SYS_NET/$1/$2" 2>/dev/null || true
+ fi
  is_uint "$value" || value=0
- printf '%s' "$value"
+ PORT_METRIC="$value"
 }
 
+port_metric() {
+ read_port_metric "$1" "$2"
+ printf '%s' "$PORT_METRIC"
+}
+
+print_status_file() (
+ local file="$1" section="$2" raw="" pid started message="" checking=0 age updated now valid stale=0 operation key value
+ . "$JSHN_SH"
+ if [ -s "$file" ]; then
+  IFS= read -r raw <"$file" 2>/dev/null || raw="$(cat "$file")"
+  json_load "$raw" || return 1
+ else
+  json_init; json_add_string id "$section"; json_add_string state stopped
+  json_add_string message "等待检测"
+ fi
+ if [ -r "$STATE_DIR/phase-$section" ]; then
+  read -r pid started <"$STATE_DIR/phase-$section"
+  if is_uint "$pid" && is_uint "$started" && kill -0 "$pid" 2>/dev/null && [ "$(($(date +%s) - started))" -lt 180 ]; then
+   checking=1; message="$(sed -n '2p' "$STATE_DIR/phase-$section")"
+  fi
+ fi
+ # Keep the last completed result visible while a new check is running.
+ if [ -s "$STATE_DIR/manual-$section" ]; then checking=1; message='操作已排队，即将处理'; fi
+ json_add_int checking "$checking"
+ json_add_string check_message "$message"
+ updated=""; [ ! -s "$file" ] || updated="$(json_file_value "$file" '@.updated_at')"
+ now="$(date +%s)"; age=0; valid=$(( ${CFG_INTERVAL:-20}*3+30 ))
+ if is_uint "$updated" && [ "$now" -ge "$updated" ]; then age=$((now-updated)); [ "$age" -le "$valid" ] || stale=1; else stale=1; fi
+ json_add_int age_seconds "$age"; json_add_int stale "$stale"; json_add_int valid_for "$valid"
+ operation="$(operation_status "$section")"
+ json_add_object operation
+ if [ -n "$operation" ] && [ "$operation" != '{}' ]; then
+  for key in id action account state phase created_at updated_at deadline duration; do
+   value="$(network_json_value "$operation" "@.$key")"; [ -z "$value" ] || json_add_string "$key" "$value"
+  done
+ fi
+ json_close_object
+ json_dump
+)
+
 workbench_ports() {
- local section file device network comma="" status
+ local section file device network comma="" status link_up speed rx tx
  printf '{"ports":['
  for section in $UPLINK_SECTIONS; do
   file="$STATE_DIR/uplink-$section.json"
   [ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || file="$STATE_DIR/status.json"
-  device="$(json_file_value "$file" '@.device')"
-  network="$(json_file_value "$file" '@.network')"
+  device=""; [ ! -s "$file" ] || device="$(json_file_value "$file" '@.device')"
   if ! valid_device_name "$device"; then
    config_get device "$section" device ""
    config_get network "$section" network ""
@@ -27,23 +67,27 @@ workbench_ports() {
    fi
   fi
   valid_device_name "$device" || device=""
+  read_port_metric "$device" carrier; link_up="$PORT_METRIC"
+  read_port_metric "$device" speed; speed="$PORT_METRIC"
+  read_port_metric "$device" statistics/rx_bytes; rx="$PORT_METRIC"
+  read_port_metric "$device" statistics/tx_bytes; tx="$PORT_METRIC"
   json_init; json_add_string uplink "$section"; json_add_string device "$device"
-  json_add_int linkUp "$(port_metric "$device" carrier)"
-  json_add_string speedMbps "$(port_metric "$device" speed)"
-  json_add_string rxBytes "$(port_metric "$device" statistics/rx_bytes)"
-  json_add_string txBytes "$(port_metric "$device" statistics/tx_bytes)"
+  json_add_int linkUp "$link_up"
+  json_add_string speedMbps "$speed"
+  json_add_string rxBytes "$rx"
+  json_add_string txBytes "$tx"
   printf '%s' "$comma"; comma=,; json_dump
  done
  printf ']}\n'
 }
 
 workbench_settings() {
- local section key value comma="" network i=0 dump
+ local section key value comma="" network dump
  printf '{"service":'
  json_init
- for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
+ for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
   case "$key" in
-   billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
+   prefer_remaining_flow) value="$CFG_PREFER_FLOW";; traffic_monitor) value="$CFG_TRAFFIC_MONITOR";; billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
    enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
    managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";; log_target) value="$CFG_LOG_TARGET";; log_directory) value="$CFG_LOG_DIRECTORY";; log_web) value="$CFG_LOG_WEB";; log_max_kb) value="$CFG_LOG_MAX_KB";;
    max_backoff) value="$CFG_MAX_BACKOFF";; credential_cooldown) value="$CFG_CREDENTIAL_COOLDOWN";; post_login_delay) value="$CFG_POST_LOGIN_DELAY";;
@@ -70,12 +114,13 @@ workbench_settings() {
  done
  printf '],"networks":['; comma=""
  dump="$("$UBUS_BIN" -S call network.interface dump 2>/dev/null)"
- while [ "$i" -lt 64 ]; do
-  network="$(network_json_value "$dump" "@.interface[$i].interface")"; [ -n "$network" ] || break
-  if valid_device_name "$network"; then json_init; json_add_string id "$network"; printf '%s' "$comma"; comma=,; json_dump; fi
-  i=$((i+1))
- done
- printf ']}\n'
+ if [ -n "$dump" ]; then
+  for network in $("$JSONFILTER_BIN" -s "$dump" -e '@.interface[*].interface' 2>/dev/null); do
+   if valid_device_name "$network"; then json_init; json_add_string id "$network"; printf '%s' "$comma"; comma=,; json_dump; fi
+  done
+ fi
+ printf '],"pushplus":'; pushplus_test_status
+ printf '}\n'
 }
 
 workbench_logs() {
@@ -123,7 +168,7 @@ workbench_validate_field() {
  case "$value" in *'
 '*|*"$(printf '\r')"*) return 1;; esac
  case "$key" in
-  enabled|managed_routes|mwan3|strict_network|log_web|pushplus_enabled|pushplus_online|pushplus_failure|billing_background|billing_alerts) case "$value" in 0|1) return 0;; esac;;
+  enabled|managed_routes|mwan3|strict_network|log_web|pushplus_enabled|pushplus_online|pushplus_failure|prefer_remaining_flow|traffic_monitor|billing_background|billing_alerts) case "$value" in 0|1) return 0;; esac;;
   interval) is_uint "$value" && [ "$value" -ge 5 ] && [ "$value" -le 3600 ]; return $?;;
   timeout) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 30 ]; return $?;;
   offline_confirmations) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 10 ]; return $?;;
@@ -161,7 +206,7 @@ workbench_save_settings() {
  json_load "$(cat "$REQUEST")" || { reply error "设置内容无效"; return; }; json_get_keys keys
  [ -n "$keys" ] || { reply error "没有要保存的设置"; return; }
  for key in $keys; do
-  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
  done
  interval="$(request_value interval)"; interval="${interval:-$CFG_INTERVAL}"
@@ -173,12 +218,20 @@ workbench_save_settings() {
  workbench_commit "$MAIN_SECTION" $keys
 }
 
+workbench_pushplus_status() {
+ pushplus_test_status
+}
+
 workbench_pushplus_test() {
  local rc
  pushplus_ready || { reply error '请先保存并启用 PushPlus 设置'; return; }
  pushplus_queue_test; rc=$?
  case "$rc" in
-  0) reply ready '测试消息已排队，请查看 PushPlus 和运行日志';;
+  0)
+   printf '{"state":"ready","message":"测试消息已加入发送队列；PushPlus 异步投递，已受理不等于已送达，可查看测试状态","testStatus":'
+   pushplus_test_status | tr -d '\n'
+   printf '}\n'
+   ;;
   2) reply error '请等待一分钟后再发送测试消息';;
   *) reply error '无法准备测试消息，请稍后重试';;
  esac

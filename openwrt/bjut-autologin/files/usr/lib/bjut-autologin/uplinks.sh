@@ -61,7 +61,7 @@ read_ipv6_identity() {
 	local status detected address
 	DEVICE6="$DEVICE"
 	NETWORK_JSON6="$NETWORK_JSON4"
-	LOCAL_IPV6=""
+	LOCAL_IPV6=""; IPV6_PD=""
 	if [ -n "$CFG_NETWORK6" ]; then
 		status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK6" status 2>/dev/null)" || return 0
 		case "$(network_json_value "$status" '@.up')" in true|1) ;; *) return 0 ;; esac
@@ -73,6 +73,9 @@ read_ipv6_identity() {
 		DEVICE6="${CFG_DEVICE6:-$DEVICE}"
 	fi
 	valid_device_name "$DEVICE6" && [ -d "$SYS_NET/$DEVICE6" ] || return 0
+	address="$(network_json_value "$NETWORK_JSON6" '@["ipv6-prefix"][0].address')"
+	local mask="$(network_json_value "$NETWORK_JSON6" '@["ipv6-prefix"][0].mask')"
+	if is_uint "$mask" && [ "$mask" -le 128 ] && printf '%s' "$address" | "$CODEC_BIN" validate-ipv6 >/dev/null 2>&1;then IPV6_PD="$address/$mask";fi
 	if command_exists "$IP_BIN"; then
 		LOCAL_IPV6="$("$IP_BIN" -6 -o addr show dev "$DEVICE6" scope global 2>/dev/null |
 			awk '$0 !~ /tentative|deprecated|dadfailed/ {split($4,a,"/"); if (a[1] ~ /^[23]/) {print a[1]; exit}}')"
@@ -265,7 +268,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
-	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","uplink_actions","billing_actions","operations","account_limits","billing_background","billing_center","maintenance"],"uplinks":[' "$(date +%s)" "$VERSION"
+	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","billing_center","maintenance"],"uplinks":[' "$(date +%s)" "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"
@@ -300,8 +303,13 @@ run_all_uplinks() {
 acquire_source_lock() {
  local key owner
  # Validated identity is unique without an optional BusyBox applet or hash.
- valid_device_name "$DEVICE" && is_campus_ipv4 "$LOCAL_IPV4" || return 1
- key="$DEVICE-$LOCAL_IPV4"
+ valid_device_name "$DEVICE" || return 1
+ if is_campus_ipv4 "$LOCAL_IPV4";then key="$DEVICE-$LOCAL_IPV4"
+ else
+  case "$LOCAL_IPV6" in 2001:da8:216:*) ;; *) return 1;;esac
+  printf '%s' "$LOCAL_IPV6" | "$CODEC_BIN" validate-ipv6 >/dev/null || return 1
+  key="$DEVICE6-$(printf '%s' "$LOCAL_IPV6" | tr ':' '_')"
+ fi
  SOURCE_LOCK="$STATE_DIR/source-$key.lock"
  SOURCE_STATE="$STATE_DIR/source-$key.json"
  if ! mkdir "$SOURCE_LOCK" 2>/dev/null; then

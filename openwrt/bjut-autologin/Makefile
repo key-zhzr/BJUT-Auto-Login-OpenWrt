@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=18
+PKG_RELEASE:=19
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -60,6 +60,7 @@ define Package/bjut-autologin/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-html $(1)/usr/libexec/bjut-html
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-billing $(1)/usr/libexec/bjut-billing
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-billing-monitor $(1)/usr/libexec/bjut-billing-monitor
+	$(INSTALL_BIN) ./files/usr/libexec/bjut-traffic-monitor $(1)/usr/libexec/bjut-traffic-monitor
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-maintenance $(1)/usr/libexec/bjut-maintenance
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) ./files/usr/libexec/rpcd/bjut-autologin $(1)/usr/libexec/rpcd/bjut-autologin

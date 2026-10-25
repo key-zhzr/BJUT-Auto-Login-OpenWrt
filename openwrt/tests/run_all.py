@@ -25,7 +25,7 @@ def run(command, **kwargs):
 
 def validate_text_files():
     for path in OPENWRT.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts:
+        if not path.is_file() or any(part in ("__pycache__", "node_modules", "test-results", "playwright-report") for part in path.parts):
             continue
         data = path.read_bytes()
         if b"\x00" in data:
@@ -66,6 +66,7 @@ def validate_shell():
         CORE / "files/usr/sbin/bjut-autologin",
         CORE / "files/usr/libexec/bjut-billing",
         CORE / "files/usr/libexec/bjut-billing-monitor",
+        CORE / "files/usr/libexec/bjut-traffic-monitor",
         CORE / "files/usr/libexec/bjut-maintenance",
         CORE / "files/usr/libexec/rpcd/bjut-autologin",
         *sorted((CORE / "files/usr/lib/bjut-autologin").glob("*.sh")),
@@ -201,6 +202,7 @@ def main():
     run([sys.executable, "openwrt/tests/test_collaboration.py"])
     run([sys.executable, "openwrt/tests/test_login_order.py"])
     run([sys.executable, "openwrt/tests/test_billing_center.py"])
+    run([sys.executable, "openwrt/tests/test_traffic_history.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

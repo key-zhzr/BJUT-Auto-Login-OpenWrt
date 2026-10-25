@@ -1,0 +1,23 @@
+#!/bin/sh
+# Independent schedule: a slow connectivity check cannot delay minute samples.
+umask 077
+BJUT_SOURCE_ONLY=1
+BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
+. "$BJUT_SELF" || exit 1
+. "$LIB_DIR/billing.sh" || exit 1
+lock="$STATE_DIR/traffic-monitor.lock"
+mkdir -p "$STATE_DIR" || exit 1
+if ! mkdir "$lock" 2>/dev/null;then
+ owner="$(cat "$lock/pid" 2>/dev/null)";is_uint "$owner" && kill -0 "$owner" 2>/dev/null && exit 0
+ rm -rf "$lock";mkdir "$lock" || exit 1
+fi
+printf '%s' "$$" >"$lock/pid"
+trap 'traffic_history_checkpoint force;rm -rf "$lock";cleanup_runtime' 0
+trap 'exit 0' TERM INT
+while :;do
+ started="$(date +%s)"
+ load_configuration || exit 1
+ [ "${CFG_TRAFFIC_MONITOR:-1}" != 1 ] || traffic_collect
+ elapsed="$(($(date +%s)-started))";delay=$((60-elapsed));[ "$delay" -gt 0 ] || delay=1
+ sleep "$delay" & wait "$!"
+done

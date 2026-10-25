@@ -19,6 +19,106 @@ pushplus_ready() {
 		valid_range "$CFG_PUSHPLUS_DELAY" 10 3600 && valid_range "$CFG_PUSHPLUS_INTERVAL" 60 86400
 }
 
+pushplus_safe_http() {
+	case "$1" in [0-9][0-9][0-9]) printf '%s' "$1";; *) printf '000';; esac
+}
+
+pushplus_safe_code() {
+	case "$1" in
+		''|*[!0-9-]*) return 0;;
+		-*) case "${1#-}" in ''|*[!0-9]*) return 0;; esac;;
+	esac
+	[ "${#1}" -le 8 ] && printf '%s' "$1"
+}
+
+pushplus_write_status() (
+	trap - 0 1 2 15
+	local directory="$1" state="$2" sequence="$3" now="$4" http="$5" code="$6" message="$7" temporary
+	mkdir -p "$directory" || return 1
+	is_uint "$sequence" || sequence=0
+	is_uint "$now" || now="$(date +%s)"
+	. "$JSHN_SH"
+	json_init
+	json_add_string state "$state"
+	json_add_int sequence "$sequence"
+	json_add_int updatedAt "$now"
+	json_add_string httpStatus "$http"
+	json_add_string apiCode "$code"
+	json_add_int delivered 0
+	json_add_string deliverySemantics accepted_not_delivered
+	json_add_string message "$message"
+	temporary="$directory/status.$$"
+	json_dump >"$temporary" && mv -f "$temporary" "$directory/status.json"
+)
+
+pushplus_test_status() (
+	trap - 0 1 2 15
+	local directory="$STATE_DIR/pushplus/.test" status_file="$STATE_DIR/pushplus/.test/status.json"
+	local state=idle sequence=0 updated_at=0 raw_http="" http="" code="" message=""
+	local pending_seq="" attempt_seq="" attempted=0 now cooldown=0 pending=0 enabled=0 configured=0
+	now="$(date +%s)"
+	[ "${CFG_PUSHPLUS_ENABLED:-0}" != 1 ] || enabled=1
+	if [ -n "${CFG_PUSHPLUS_TOKEN:-}" ] && valid_pushplus_token "$CFG_PUSHPLUS_TOKEN"; then configured=1; fi
+	if [ -s "$status_file" ]; then
+		state="$(json_file_value "$status_file" '@.state')"
+		sequence="$(json_file_value "$status_file" '@.sequence')"
+		updated_at="$(json_file_value "$status_file" '@.updatedAt')"
+		raw_http="$(json_file_value "$status_file" '@.httpStatus')"
+		[ -z "$raw_http" ] || http="$(pushplus_safe_http "$raw_http")"
+		code="$(pushplus_safe_code "$(json_file_value "$status_file" '@.apiCode')")"
+		message="$(json_file_value "$status_file" '@.message')"
+	fi
+	case "$state" in queued|accepted|error) ;; *) state=idle;; esac
+	is_uint "$sequence" || sequence=0
+	is_uint "$updated_at" || updated_at=0
+	if [ -s "$directory/pending.json" ] || [ -d "$directory/sending" ]; then
+		pending=1
+		[ ! -s "$directory/pending.json" ] || pending_seq="$(json_file_value "$directory/pending.json" '@.sequence')"
+		[ -n "$pending_seq" ] || [ ! -s "$directory/sending/message.json" ] ||
+			pending_seq="$(json_file_value "$directory/sending/message.json" '@.sequence')"
+		if [ "$state" = idle ] || { is_uint "$pending_seq" && [ "$pending_seq" -gt "$sequence" ]; }; then
+			state=queued
+			is_uint "$pending_seq" && sequence="$pending_seq"
+			[ "$updated_at" -gt 0 ] || updated_at="$now"
+			http=""; code=""
+			message='测试消息排队发送中，等待后台连接 PushPlus。'
+		fi
+	fi
+	[ ! -r "$directory/attempt" ] || read -r attempt_seq attempted <"$directory/attempt"
+	if is_uint "$attempted" && [ "$now" -ge "$attempted" ] && [ "$((now - attempted))" -lt 60 ]; then
+		cooldown="$((60 - (now - attempted)))"
+	fi
+	if [ -z "$message" ]; then
+		case "$state" in
+			queued) message='测试消息排队发送中，等待后台连接 PushPlus。';;
+			accepted) message='PushPlus 已受理（HTTP 200 / 业务码 200）；平台异步投递，已受理不等于已送达。';;
+			error) message="推送请求失败（HTTP ${http:-000} / 业务码 ${code:-未知}），将在冷却后重试。";;
+			*)
+				if [ "$enabled" = 1 ] && [ "$configured" = 1 ]; then
+					message='尚未发送测试消息；点击测试推送后可查看排队、HTTP/业务码或受理状态。'
+				else
+					message='请先启用 PushPlus 消息推送并保存有效令牌。'
+				fi
+				;;
+		esac
+	fi
+	. "$JSHN_SH"
+	json_init
+	json_add_string state "$state"
+	json_add_int enabled "$enabled"
+	json_add_int configured "$configured"
+	json_add_int sequence "$sequence"
+	json_add_int updatedAt "$updated_at"
+	json_add_string httpStatus "$http"
+	json_add_string apiCode "$code"
+	json_add_int pending "$pending"
+	json_add_int cooldownRemaining "$cooldown"
+	json_add_int delivered 0
+	json_add_string deliverySemantics accepted_not_delivered
+	json_add_string message "$message"
+	json_dump
+)
+
 pushplus_start_sender() {
 	local directory="$1" now="$2" started attempt_sequence attempted sequence
 	[ -s "$directory/pending.json" ] || return 0
@@ -43,7 +143,7 @@ pushplus_start_sender() {
 }
 
 pushplus_send() {
-	local directory="$1" now="$2" job="$1/sending/message.json" sequence title content http code
+	local directory="$1" now="$2" job="$1/sending/message.json" sequence title content http code safe_http safe_code
 	mv "$directory/pending.json" "$job" || return 1
 	sequence="$(json_file_value "$job" '@.sequence')"
 	title="$(json_file_value "$job" '@.title')"
@@ -65,14 +165,22 @@ pushplus_send() {
 		--output "$directory/sending/response.json" --write-out '%{http_code}' \
 		--url 'https://www.pushplus.plus/send' 2>/dev/null)" || http=000
 	code="$(json_file_value "$directory/sending/response.json" '@.code')"
-	if [ "$http" = 200 ] && [ "$code" = 200 ]; then
+	safe_http="$(pushplus_safe_http "$http")"
+	safe_code="$(pushplus_safe_code "$code")"
+	if [ "$safe_http" = 200 ] && [ "$safe_code" = 200 ]; then
 		# PushPlus is asynchronous: code=200 only acknowledges receipt.
+		if [ "$(json_file_value "$directory/state.json" '@.sequence')" = "$sequence" ]; then
+			pushplus_write_status "$directory" accepted "$sequence" "$now" "$safe_http" "$safe_code" \
+				'PushPlus 已受理（HTTP 200 / 业务码 200）；平台异步投递，已受理不等于已送达。'
+		fi
 		log_message info 'PushPlus 已受理消息'
 	else
-		log_message warning 'PushPlus 请求未成功，将稍后重试'
+		log_message warning "PushPlus 请求未成功（HTTP $safe_http / 业务码 ${safe_code:-未知}），将稍后重试"
 		# Never restore an old failure after a newer event or manual logout.
 		if [ "$(json_file_value "$directory/state.json" '@.sequence')" = "$sequence" ]; then
 			ln "$job" "$directory/pending.json" 2>/dev/null || true
+			pushplus_write_status "$directory" error "$sequence" "$now" "$safe_http" "$safe_code" \
+				"推送请求失败（HTTP $safe_http / 业务码 ${safe_code:-未知}），将在冷却后重试。"
 		fi
 		return 1
 	fi
@@ -181,5 +289,6 @@ pushplus_queue_test() (
 	json_dump >"$temporary" && mv -f "$temporary" "$directory/pending.json" || return 1
 	json_init; json_add_int sequence "$sequence"
 	json_dump >"$directory/state.json" || return 1
+	pushplus_write_status "$directory" queued "$sequence" "$now" '' '' '测试消息排队发送中，等待后台连接 PushPlus。'
 	pushplus_start_sender "$directory" "$now"
 )

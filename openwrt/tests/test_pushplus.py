@@ -22,7 +22,11 @@ class PushPlusTests(unittest.TestCase):
         self.jshn = self.temp / 'jshn.sh'
         self.jshn.write_text((base.MOCKS / 'jshn.sh').read_text() + '''
 _json_escape() {
- printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read(),ensure_ascii=False)[1:-1],end="")'
+ case "$1" in
+  *'\\'*|*'"'*|*'	'*|*'
+'*) printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read(),ensure_ascii=False)[1:-1],end="")';;
+  *) printf '%s' "$1";;
+ esac
 }
 ''')
         self.curl = self.temp / 'curl'
@@ -75,9 +79,21 @@ else write_status "$1" "fixture $1" bjut-sushe "$TEST_ACCOUNT" 0 0 0; fi
 
     def wait_senders(self):
         deadline = time.monotonic() + 6
-        while list((self.state / 'pushplus').glob('*/sending')) and time.monotonic() < deadline:
+        while (list((self.state / 'pushplus').glob('*/sending')) + list((self.state / 'pushplus').glob('.*/sending'))) and time.monotonic() < deadline:
             time.sleep(.05)
-        self.assertEqual(list((self.state / 'pushplus').glob('*/sending')), [])
+        self.assertEqual(list((self.state / 'pushplus').glob('*/sending')) + list((self.state / 'pushplus').glob('.*/sending')), [])
+
+    def query_test_status(self, **extra):
+        env = {**self.env, 'TEST_ENABLED': '1', **extra}
+        script = '''. "$BJUT_SELF"
+CFG_PUSHPLUS_ENABLED="$TEST_ENABLED"; CFG_PUSHPLUS_TOKEN=fixture-pushplus-secret
+CFG_PUSHPLUS_TOPIC=fixture_group; CFG_PUSHPLUS_ONLINE=1; CFG_PUSHPLUS_FAILURE=1
+CFG_PUSHPLUS_DELAY=60; CFG_PUSHPLUS_INTERVAL=3600
+pushplus_test_status
+'''
+        res = subprocess.run(['sh', '-c', script], env=env, capture_output=True, text=True, check=True, timeout=5)
+        self.assertNotIn('fixture-pushplus-secret', res.stdout)
+        return json.loads(res.stdout)
 
     def test_login_is_nonblocking_and_token_stays_out_of_status_arguments_and_logs(self):
         self.dispatch('login_accepted')
@@ -161,6 +177,48 @@ else write_status "$1" "fixture $1" bjut-sushe "$TEST_ACCOUNT" 0 0 0; fi
         self.assertTrue((self.state / 'pushplus/.test/state.json').exists())
         self.assertTrue((self.state / 'pushplus/test/state.json').exists())
 
+    def test_test_query_status_reports_queued_failed_codes_and_accepted_not_delivered(self):
+        idle = self.query_test_status()
+        self.assertEqual(idle['state'], 'idle')
+        self.assertEqual(idle['delivered'], 0)
+        self.assertEqual(idle['deliverySemantics'], 'accepted_not_delivered')
+
+        # 1. Queued state while sender is in flight
+        self.assertEqual(self.dispatch('test', MOCK_PUSHPLUS_WAIT='1.2', MOCK_PUSHPLUS_HTTP='200', MOCK_PUSHPLUS_CODE='500').returncode, 0)
+        queued = self.query_test_status()
+        self.assertEqual(queued['state'], 'queued')
+        self.assertEqual(queued['pending'], 1)
+        self.assertIn('排队', queued['message'])
+
+        # 2. Failed request exposes safe HTTP & business code without leaking token or response body
+        self.wait_senders()
+        failed = self.query_test_status()
+        self.assertEqual(failed['state'], 'error')
+        self.assertEqual(failed['httpStatus'], '200')
+        self.assertEqual(failed['apiCode'], '500')
+        self.assertEqual(failed['pending'], 1)
+        self.assertEqual(failed['delivered'], 0)
+        self.assertIn('HTTP 200', failed['message'])
+        self.assertIn('业务码 500', failed['message'])
+        self.assertNotIn('fixture-pushplus-secret', json.dumps(failed))
+
+        # 3. Expire cooldown and verify accepted state explicitly notes async acceptance != final delivery
+        attempt_file = self.state / 'pushplus/.test/attempt'
+        seq, attempted = attempt_file.read_text().split()
+        attempt_file.write_text(f'{seq} {int(attempted) - 61}\n')
+        self.assertEqual(self.dispatch('test', MOCK_PUSHPLUS_HTTP='200', MOCK_PUSHPLUS_CODE='200').returncode, 0)
+        self.wait_senders()
+        accepted = self.query_test_status()
+        self.assertEqual(accepted['state'], 'accepted')
+        self.assertEqual(accepted['httpStatus'], '200')
+        self.assertEqual(accepted['apiCode'], '200')
+        self.assertEqual(accepted['pending'], 0)
+        self.assertEqual(accepted['delivered'], 0)
+        self.assertEqual(accepted['deliverySemantics'], 'accepted_not_delivered')
+        self.assertIn('已受理', accepted['message'])
+        self.assertIn('不等于已送达', accepted['message'])
+        self.assertNotIn('fixture-pushplus-secret', json.dumps(accepted))
+
 
 class PushPlusSettingsTests(unittest.TestCase):
     setUpClass = classmethod(multi.MultiUplinkTests.setUpClass.__func__)
@@ -194,6 +252,17 @@ class PushPlusSettingsTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         listing = subprocess.check_output(['sh', str(multi.RPC), 'list'], text=True)
         self.assertIn('pushplus_test', json.loads(listing))
+        self.assertIn('pushplus_status', json.loads(listing))
+        status_rpc = self.rpc('pushplus_status', {}, **env)
+        self.assertEqual(status_rpc.returncode, 0, status_rpc.stderr)
+        status_payload = json.loads(status_rpc.stdout)
+        self.assertEqual(status_payload['state'], 'idle')
+        self.assertEqual(status_payload['configured'], 1)
+        self.assertEqual(status_payload['delivered'], 0)
+        self.assertNotIn('fixture-private-token', status_rpc.stdout)
+        settings_payload = json.loads(self.rpc('settings', {}, **env).stdout)
+        self.assertEqual(settings_payload['pushplus']['state'], 'idle')
+        self.assertNotIn('fixture-private-token', json.dumps(settings_payload))
 
 
 if __name__ == '__main__':

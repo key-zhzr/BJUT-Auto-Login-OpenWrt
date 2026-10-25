@@ -13,7 +13,9 @@
           "maintenance_info",
           "maintenance_poll",
           "billing_poll",
-          "dashboard"
+          "dashboard",
+          "traffic",
+          "pushplus_status"
         ]
       }
     },

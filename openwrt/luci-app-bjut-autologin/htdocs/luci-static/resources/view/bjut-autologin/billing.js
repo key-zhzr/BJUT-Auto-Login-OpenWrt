@@ -2,6 +2,7 @@
 'require view';
 'require rpc';
 'require bjut-autologin.client as client';
+'require bjut-autologin.traffic as traffic';
 'require bjut-autologin.workbench as bjut';
 'require bjut-autologin.records as records';
 'require bjut-autologin.billing-tools as BillingTools';
@@ -51,6 +52,6 @@ return view.extend({
   uplink.addEventListener('change',refresh);account.addEventListener('change',refresh);
   root=E('section',{'class':'bj-enter'});
   client.watch(root,async function(){tools.forEach(function(tool){void tool.poll();});if(polling || !jobs.some(function(job){return job.running && job.ticket;}))return;polling=true;try{await Promise.all(jobs.filter(function(job){return job.running && job.ticket;}).map(async function(job){try{const response=await result(job.ticket,L.env.sessionid);job.item=response.result || response;job.running=job.item.state==='loading';job.sessions=response.sessions;job.sessionsAvailable=response.sessionsAvailable;draw(job);}catch(error){job.running=false;job.item={state:'error',message:String(error.message || error)};draw(job);}}));update();}finally{polling=false;}},1);
-  Promise.resolve().then(refresh);root.className='bjut-workbench';root.append(bjut.style(),E('p',{'class':'bj-billing-subtitle'},_('各上游账号、用量与业务办理')),E('div',{'class':'bj-record-controls bj-billing-controls'},[E('label',{},[E('span',{},_('上游')),uplink]),E('label',{},[E('span',{},_('计费账号')),account]),submit]),message,tabs,overview,recordView,services,devices);return bjut.disclosures(root);
+  Promise.resolve().then(refresh);root.className='bjut-workbench';root.append(bjut.style(),E('p',{'class':'bj-billing-subtitle'},_('各上游账号、用量与业务办理')),E('div',{'class':'bj-record-controls bj-billing-controls'},[E('label',{},[E('span',{},_('上游')),uplink]),E('label',{},[E('span',{},_('计费账号')),account]),submit]),message,tabs,overview,recordView,services,devices);root.append(traffic.render());return bjut.disclosures(root);
  }
 });

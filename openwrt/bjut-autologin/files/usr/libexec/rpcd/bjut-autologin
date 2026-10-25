@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # rpcd checks the caller's session/ACL before executing these named methods.
 if [ "$1" = list ]; then
-	printf '%s\n' '{"status":{},"dashboard":{},"logout":{"uplink":"","account":""},"switch_account":{"uplink":"","account":""},"accounts":{},"ports":{},"logs":{},"settings":{},"maintenance_info":{},"maintenance_start":{"action":"","prepared":"","backup":""},"maintenance_poll":{"ticket":""},"billing_cached":{},"pushplus_test":{},"save_settings":{"enabled":"","transport":"","login_type":"","compatibility":"","strict_network":"","expected_ssid":"","expected_bssid":"","interval":"","timeout":"","offline_confirmations":"","max_backoff":"","credential_cooldown":"","post_login_delay":"","online_url":"","online_code":"","managed_routes":"","mwan3":"","log_level":"","log_target":"","log_directory":"","log_web":"","log_max_kb":"","pushplus_enabled":"","pushplus_token":"","pushplus_topic":"","pushplus_online":"","pushplus_failure":"","pushplus_delay":"","pushplus_interval":"","billing_background":"","billing_interval":"","billing_alerts":"","balance_threshold":"","flow_threshold":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_details":{"uplink":"","account":"","owner":"","module":""},"billing_action":{"ticket":"","owner":"","operation":"","payload":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true},"account_save":{"account":"","username":"","password":"","enabled":"","login_type":"","max_sessions":""},"account_delete":{"account":""},"account_move":{"account":"","direction":""},"uplink_save":{"uplink":"","payload":""},"uplink_delete":{"uplink":""},"billing_records":{"uplink":"","account":"","owner":"","kind":"","start_date":"","end_date":"","year":"","page":""}}'
+	printf '%s\n' '{"status":{},"dashboard":{},"logout":{"uplink":"","account":""},"switch_account":{"uplink":"","account":""},"accounts":{},"ports":{},"logs":{},"settings":{},"maintenance_info":{},"maintenance_start":{"action":"","prepared":"","backup":""},"maintenance_poll":{"ticket":""},"billing_cached":{},"traffic":{},"pushplus_status":{},"pushplus_test":{},"save_settings":{"enabled":"","transport":"","login_type":"","compatibility":"","strict_network":"","expected_ssid":"","expected_bssid":"","interval":"","timeout":"","offline_confirmations":"","max_backoff":"","credential_cooldown":"","post_login_delay":"","online_url":"","online_code":"","managed_routes":"","mwan3":"","log_level":"","log_target":"","log_directory":"","log_web":"","log_max_kb":"","pushplus_enabled":"","pushplus_token":"","pushplus_topic":"","pushplus_online":"","pushplus_failure":"","pushplus_delay":"","pushplus_interval":"","prefer_remaining_flow":"","traffic_monitor":"","billing_background":"","billing_interval":"","billing_alerts":"","balance_threshold":"","flow_threshold":""},"account_set":{"account":"","enabled":""},"login":{"uplink":"","account":""},"sync_accounts":{"payload":""},"billing_start":{"uplink":"","account":"","owner":""},"billing_details":{"uplink":"","account":"","owner":"","module":""},"billing_action":{"ticket":"","owner":"","operation":"","payload":""},"billing_poll":{"ticket":"","owner":""},"billing_captcha":{"ticket":"","owner":"","code":"","refresh":true},"account_save":{"account":"","username":"","password":"","enabled":"","login_type":"","max_sessions":""},"account_delete":{"account":""},"account_move":{"account":"","direction":""},"uplink_save":{"uplink":"","payload":""},"uplink_delete":{"uplink":""},"billing_records":{"uplink":"","account":"","owner":"","kind":"","start_date":"","end_date":"","year":"","page":""}}'
 	exit 0
 fi
 [ "$1" = call ] || exit 2
@@ -35,7 +35,21 @@ owner_hash() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 uci_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
 
 accounts_list() {
- local section user enabled present account_type comma="" limit item online
+	local section user enabled present account_type comma="" limit item online file acct state session active_accounts=""
+	for item in $UPLINK_SECTIONS; do
+		file="$STATE_DIR/uplink-$item.json"
+		[ -s "$file" ] || continue
+		acct="$(json_file_value "$file" '@.account')"
+		[ -n "$acct" ] || continue
+		state="$(json_file_value "$file" '@.state')"
+		session=""
+		case "$state" in online|authenticated_limited|probe_uncertain|login_accepted) ;; *)
+			session="$(json_file_value "$file" '@.session')";;
+		esac
+		if account_session_active "$state" "$session"; then
+			active_accounts="${active_accounts}${active_accounts:+ }$acct"
+		fi
+	done
 	printf '{"accounts":['
 	for section in $ACCOUNT_SECTIONS; do
 		config_get user "$section" username ""
@@ -44,11 +58,11 @@ accounts_list() {
 		[ -z "$present" ] || present=1
 		json_init; json_add_string id "$section"; json_add_string user "$user"
 		json_add_int enabled "$enabled"; json_add_int hasPassword "${present:-0}"
-        config_get account_type "$section" login_type auto; json_add_string loginType "$(protocol_name "$account_type")"
+		config_get account_type "$section" login_type auto; json_add_string loginType "$(protocol_name "$account_type")"
 		config_get limit "$section" max_sessions 0; valid_range "$limit" 0 32 || limit=0
 		online=0
-		for item in $UPLINK_SECTIONS; do
-			if [ "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.account')" = "$user" ] && account_session_active "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.state')" "$(json_file_value "$STATE_DIR/uplink-$item.json" '@.session')";then online=$((online+1));fi
+		for item in $active_accounts; do
+			[ "$item" != "$user" ] || online=$((online+1))
 		done
 		json_add_int maxSessions "$limit"; json_add_int onlineCount "$online"
 		printf '%s' "$comma"; comma=,; json_dump
@@ -214,10 +228,12 @@ case "$2" in
 	logs) workbench_logs ;;
 	settings) workbench_settings ;;
 	billing_cached) billing_cached ;;
+	traffic) traffic_cached ;;
 	maintenance_info) maintenance_info ;;
 	maintenance_start) maintenance_start ;;
 	maintenance_poll) maintenance_poll ;;
 	save_settings) workbench_save_settings ;;
+	pushplus_status) workbench_pushplus_status ;;
 	pushplus_test) workbench_pushplus_test ;;
 	account_set) workbench_account_set ;;
 	login|logout|switch_account)
