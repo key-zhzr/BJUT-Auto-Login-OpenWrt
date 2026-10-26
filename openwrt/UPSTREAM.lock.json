@@ -1,9 +1,9 @@
 {
-  "upstream": "bf428933de0e8e323ee31971cf648f1a68c212ff",
+  "upstream": "268825e95349fce16b66460fece56f9142a184bb",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Manually reviewed and validated traffic v3; router workflows and introduction retained."
+  "reviewNote": "Reviewed shared sampling boundary and Android background cancellation; router runtime remains the r24 build source."
 }
