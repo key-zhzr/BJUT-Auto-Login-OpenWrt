@@ -143,6 +143,7 @@ billing_publish_overview() {
 		*) flow="$(printf '%s' "$flow_text" | billing_flow_mb)"; [ -z "$flow" ] || flow_text="$(awk -v n="$flow" 'BEGIN{printf "%.2f GB",n/1024}')";; esac
 	package="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName' 2>/dev/null)"
 	detail="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.extend' 2>/dev/null)"
+	account_record_plan "$actual" "$package"
 	status="$(billing_extract status)"
 	reason="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.stopReason' 2>/dev/null)"; [ "$status" != 正常 ] || reason=''
 	cycle="$(billing_extract cycle)"
@@ -177,7 +178,7 @@ billing_publish_overview() {
 		# An HTTP-200 login page/error object is not an empty session list.
 		# Some portal versions return a literal null for an empty list, which
 		# jsonfilter builds differ on accepting as a root value.
-		billing_capture_online || true
+		billing_capture_online && date +%s >"$BILLING_JOB/online-at" || true
 	fi
 	if [ "${BILLING_MODULE:-}" = center ]; then billing_center_modules; else
 	 cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"

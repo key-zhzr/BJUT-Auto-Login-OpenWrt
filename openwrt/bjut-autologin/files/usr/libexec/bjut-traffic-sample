@@ -1,0 +1,14 @@
+#!/bin/sh
+umask 077
+BJUT_SOURCE_ONLY=1
+BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
+. "$BJUT_SELF" || exit 1
+. "$LIB_DIR/billing.sh" || exit 1
+valid_section "$1" || exit 2
+load_configuration || exit 1
+TRAFFIC_ONLY_ACCOUNT="$1"
+if is_uint "${BJUT_TRAFFIC_ROUND:-}";then config_get user "$1" username '';key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')";printf '0' >"$STATE_DIR/traffic/$key-next";fi
+config_get user "$1" username ''
+key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+trap 'read -r owner stamp <"$STATE_DIR/traffic-jobs/$key";[ "$owner" != "$$" ] || rm -f "$STATE_DIR/traffic-jobs/$key";cleanup_runtime' 0
+traffic_collect

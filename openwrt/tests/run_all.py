@@ -67,6 +67,7 @@ def validate_shell():
         CORE / "files/usr/libexec/bjut-billing",
         CORE / "files/usr/libexec/bjut-billing-monitor",
         CORE / "files/usr/libexec/bjut-traffic-monitor",
+        CORE / "files/usr/libexec/bjut-traffic-sample",
         CORE / "files/usr/libexec/bjut-maintenance",
         CORE / "files/usr/libexec/rpcd/bjut-autologin",
         *sorted((CORE / "files/usr/lib/bjut-autologin").glob("*.sh")),

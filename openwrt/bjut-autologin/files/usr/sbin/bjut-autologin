@@ -297,6 +297,14 @@ load_main_section() {
 	config_get_bool CFG_BILLING_BACKGROUND "$1" billing_background 0
 	config_get_bool CFG_TRAFFIC_MONITOR "$1" traffic_monitor 0
 	config_get CFG_TRAFFIC_SCOPE "$1" traffic_scope ""
+ config_get CFG_TRAFFIC_MINUTE_HOURS "$1" traffic_minute_hours 48
+ config_get CFG_TRAFFIC_HOUR_DAYS "$1" traffic_hour_days 90
+ config_get CFG_TRAFFIC_DAY_DAYS "$1" traffic_day_days 366
+ config_get CFG_TRAFFIC_STORAGE_MB "$1" traffic_storage_mb 2
+ valid_range "$CFG_TRAFFIC_MINUTE_HOURS" 1 8760 || CFG_TRAFFIC_MINUTE_HOURS=48
+ valid_range "$CFG_TRAFFIC_HOUR_DAYS" 1 3660 || CFG_TRAFFIC_HOUR_DAYS=90
+ valid_range "$CFG_TRAFFIC_DAY_DAYS" 1 36600 || CFG_TRAFFIC_DAY_DAYS=366
+ valid_range "$CFG_TRAFFIC_STORAGE_MB" 1 128 || CFG_TRAFFIC_STORAGE_MB=2
 	case "$CFG_TRAFFIC_SCOPE" in local|all) ;; *) CFG_TRAFFIC_MONITOR=0; CFG_TRAFFIC_SCOPE=local;; esac
 	config_get_bool CFG_PREFER_FLOW "$1" prefer_remaining_flow 0
 	config_get CFG_BILLING_INTERVAL "$1" billing_interval 21600
@@ -457,6 +465,7 @@ write_status() {
 	json_dump >"$tmp" && mv -f "$tmp" "$STATE_FILE" || return 1
 	log_message info "检测完成：${message}；IPv4=${PROBE4}，IPv6=${PROBE6}，会话=$SESSION_STATE${account:+，账号=$account}"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then cp "$STATE_FILE" "$SOURCE_STATE.$$" && mv -f "$SOURCE_STATE.$$" "$SOURCE_STATE"; fi
+	traffic_observe_account "$state" "$account"
 	operation_complete "$state" "$message"
 	account_release
 	pushplus_observe "$state" "$message" "$protocol" "$account" "$now"

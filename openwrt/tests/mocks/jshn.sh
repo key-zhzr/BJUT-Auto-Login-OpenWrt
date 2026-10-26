@@ -86,3 +86,9 @@ json_close_object() {
  _MOCK_DEPTH=$((_MOCK_DEPTH-1))
  if [ "$_MOCK_KIND" = array ];then _json_append "$child";else _json_append "\"$key\":$child";fi
 }
+
+json_add_boolean() {
+ local key="$1" value=false
+ [ "$2" != 1 ] && [ "$2" != true ] || value=true
+ _json_append "\"$key\":$value"
+}

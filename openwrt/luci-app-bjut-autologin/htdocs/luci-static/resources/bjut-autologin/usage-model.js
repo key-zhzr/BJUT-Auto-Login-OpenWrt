@@ -1,13 +1,18 @@
 'use strict';
 'require baseclass';
 // Generated from src/device-usage-model.ts.
+const defaultUsageRetention = { minuteHours: 48, hourDays: 90, dayDays: 366, storageMb: 64 };
+function usageStorageEstimate(devices, retention) {
+    // Includes the minute/hour/day rows and an atomic checkpoint copy.
+    return Math.ceil(Math.max(1, devices) * (retention.minuteHours * 60 + retention.hourDays * 24 + retention.dayDays) * 180 * 2);
+}
 function normalizeUsageReport(report) {
     const series = [...(report.series || [])];
     for (const row of report.timeline?.buckets || []) {
         const channel = report.timeline?.channels[row[0]];
-        if (!channel || row.length !== 5 || !row.every(Number.isFinite) || ![60, 3600, 86400].includes(row[1]) || row[3] < 0 || row[4] <= 0)
+        if (!channel || ![5, 7].includes(row.length) || !row.every(Number.isFinite) || ![60, 3600, 86400].includes(row[1]) || row[3] < 0 || row[4] <= 0)
             continue;
-        series.push({ ...channel, resolution: row[1], at: row[2], usedMb: row[3], sampledSeconds: row[4] });
+        series.push({ ...channel, resolution: row[1], at: row[2], usedMb: row[3], sampledSeconds: row[4], ...(row.length === 7 ? { startedAt: row[5], endedAt: row[6] } : {}) });
     }
     // Scope is enforced by the sampler/API and again here for cached data from
     // an earlier all-device session. Unclassified legacy rows are not local.
@@ -40,15 +45,24 @@ function usageInterfaces(points, account = '') {
             interfaces.set(point.interfaceId, point.interfaceName);
     return [...interfaces].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
 }
+function usageMonthStart(at) { return usageBucket(at, 'month'); }
+function usageZoom(start, end, anchor, factor) {
+    const width = Math.max(60, Math.min(3660 * 86400, (end - start) * factor));
+    const ratio = end > start ? Math.max(0, Math.min(1, (anchor - start) / (end - start))) : .5;
+    return [anchor - width * ratio, anchor + width * (1 - ratio)];
+}
 function buildUsageChart(rows, options) {
     const now = options.now ?? Date.now() / 1000;
-    const scale = usageScales.find(item => item.value === options.scale);
-    const resolution = options.scale === 'month' || scale.seconds >= 86400 ? 86400 : scale.seconds >= 3600 ? 3600 : 60;
-    const start = usageBucket(now - options.range, options.scale), end = usageBucket(now, options.scale);
+    const requestedStart = options.start ?? now - options.range, requestedEnd = Math.min(now, options.end ?? now);
+    let scale = usageScales.find(item => item.value === options.scale);
+    while (scale.seconds && (requestedEnd - requestedStart) / scale.seconds > 4500)
+        scale = usageScales[Math.min(usageScales.indexOf(scale) + 1, usageScales.length - 1)];
+    const resolution = scale.value === 'month' || scale.seconds >= 86400 ? 86400 : scale.seconds >= 3600 ? 3600 : 60;
+    const start = usageBucket(requestedStart, scale.value), end = usageBucket(requestedEnd, scale.value);
     const times = [];
     for (let at = start; at <= end && times.length < 5000;) {
         times.push(at);
-        if (options.scale === 'month') {
+        if (scale.value === 'month') {
             const date = new Date((at + 28800) * 1000);
             at = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) / 1000 - 28800;
         }
@@ -56,33 +70,65 @@ function buildUsageChart(rows, options) {
             at += scale.seconds;
     }
     const index = new Map(times.map((at, i) => [at, i])), curves = new Map();
+    const starts = new Map(), ends = new Map();
+    const accepted = rows.filter(row => Number.isFinite(row.at) && row.at <= now && Number.isFinite(row.usedMb) && row.usedMb >= 0 && row.sampledSeconds > 0 && Number.isFinite(row.sampledSeconds) && (!options.account || row.account === options.account) && (options.presentation !== 'interfaces' || options.interfaces === null || options.interfaces.includes(row.interfaceId)));
     let samples = 0, totalMb = 0;
-    for (const row of rows) {
-        if (row.resolution !== resolution || !Number.isFinite(row.at) || row.at > now || !Number.isFinite(row.usedMb) || row.usedMb < 0 || row.sampledSeconds <= 0 || !Number.isFinite(row.sampledSeconds) || (options.account && row.account !== options.account))
+    for (const row of accepted) {
+        if (row.resolution !== resolution || (row.endedAt ?? row.at) > requestedEnd)
             continue;
-        if (options.presentation === 'interfaces' && options.interfaces !== null && !options.interfaces.includes(row.interfaceId))
-            continue;
-        const i = index.get(usageBucket(row.at, options.scale));
+        const i = index.get(usageBucket(row.at, scale.value));
         if (i === undefined)
             continue;
         const id = options.presentation === 'sum' ? 'sum' : row.interfaceId;
         const curve = curves.get(id) || { id, name: options.presentation === 'sum' ? '所有接口合计' : row.interfaceName, points: Array(times.length).fill(null), totalMb: 0 };
         curve.points[i] = (curve.points[i] ?? 0) + row.usedMb;
         curve.totalMb += row.usedMb;
+        const left = starts.get(id) || Array(times.length).fill(Infinity), right = ends.get(id) || Array(times.length).fill(-Infinity);
+        if (Number.isFinite(row.startedAt) && Number.isFinite(row.endedAt) && row.endedAt >= row.startedAt) {
+            left[i] = Math.min(left[i], row.startedAt);
+            right[i] = Math.max(right[i], row.endedAt);
+        }
+        starts.set(id, left);
+        ends.set(id, right);
         curves.set(id, curve);
         totalMb += row.usedMb;
         samples++;
     }
     const ordered = [...curves.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-    if (options.mode === 'cumulative')
-        for (const curve of ordered) {
-            let sum = 0;
-            curve.points = curve.points.map(point => point === null ? null : (sum += point));
-        }
-    return { times, curves: ordered, samples, totalMb };
+    for (const curve of ordered) {
+        let previous = -1, sum = 0, month = -1;
+        curve.joinPrevious = curve.points.map((point, i) => {
+            if (point === null)
+                return false;
+            const join = previous >= 0 && (i === previous + 1 || (resolution === 60 && starts.get(curve.id)[i] <= ends.get(curve.id)[previous] + 1));
+            previous = i;
+            return join;
+        });
+        if (options.mode === 'delta')
+            continue;
+        curve.points = curve.points.map((point, i) => {
+            if (point === null)
+                return null;
+            const currentMonth = usageMonthStart(times[i]);
+            if (options.mode === 'monthly' && month !== currentMonth) {
+                month = currentMonth;
+                sum = 0;
+                const stop = times[i], day = usageBucket(stop, 'day'), hour = usageBucket(stop, 'hour');
+                for (const row of accepted) {
+                    if ((options.presentation === 'interfaces' && row.interfaceId !== curve.id) || row.at < month || row.at >= stop)
+                        continue;
+                    if ((row.resolution === 86400 && row.at < day) || (row.resolution === 3600 && row.at >= day && row.at < hour) || (row.resolution === 60 && row.at >= hour))
+                        sum += row.usedMb;
+                }
+            }
+            sum += point;
+            return sum;
+        });
+    }
+    return { times, curves: ordered, samples, totalMb, scale: scale.value };
 }
 function usageChartCsv(chart, mode) {
-    const rows = [['时间（北京时间）', '接口', mode === 'delta' ? '采样新增流量（MB）' : '所选范围累计流量（MB）']];
+    const rows = [['时间（北京时间）', '接口', mode === 'delta' ? '采样新增下载量（MB）' : mode === 'monthly' ? '当月累计下载量（MB）' : '所选范围累计下载量（MB）']];
     chart.times.forEach((at, i) => chart.curves.forEach(curve => {
         if (curve.points[i] !== null)
             rows.push([new Date((at + 28800) * 1000).toISOString().slice(0, 19).replace('T', ' '), curve.name, curve.points[i].toFixed(3)]);
@@ -175,6 +221,11 @@ class UsageChart {
         this.width = 1000;
         this.hover = -1;
         this.busy = false;
+        this.viewScope = 'local';
+        this.dates = usageElement('div', 'traffic-dates');
+        this.startInput = usageElement('input');
+        this.endInput = usageElement('input');
+        this.wheelFrame = 0;
         this.accountStamp = '';
         this.interfacesStamp = '';
         this.stamp = '';
@@ -187,10 +238,10 @@ class UsageChart {
         this.enabled.onclick = () => { void this.configure(!this.data.enabled, this.data.scope); };
         header.append(intro, this.enabled);
         const scope = usageElement('div', 'traffic-scope');
-        scope.append(usageElement('span', '', '统计范围'), this.scopeLocal, this.scopeAll);
+        scope.append(usageElement('span', '', '查看范围'), this.scopeLocal, this.scopeAll);
         this.scopeLocal.type = this.scopeAll.type = 'button';
-        this.scopeLocal.onclick = () => { void this.configure(this.data.enabled, 'local'); };
-        this.scopeAll.onclick = () => { void this.configure(this.data.enabled, 'all'); };
+        this.scopeLocal.onclick = () => { this.viewScope = 'local'; this.draw(); this.drawDevices(); };
+        this.scopeAll.onclick = () => { this.viewScope = 'all'; this.draw(); this.drawDevices(); };
         const controls = usageElement('div', 'traffic-controls');
         const select = (label, choices, change) => {
             const field = usageElement('div', 'traffic-field'), caption = usageElement('span', '', label);
@@ -204,13 +255,23 @@ class UsageChart {
             const scale = usageScales.find(item => item.value === value);
             if (!scale.ranges.includes(this.options.range))
                 this.options.range = scale.ranges[scale.ranges.length > 1 ? 1 : 0];
-            this.range.setOptions(scale.ranges.map(seconds => ({ value: String(seconds), text: usageRangeLabel(seconds) })));
-            this.range.value = String(this.options.range);
+            this.range.setOptions([...scale.ranges.map(seconds => ({ value: String(seconds), text: usageRangeLabel(seconds) })), { value: 'custom', text: '自选时间' }]);
+            this.range.value = this.options.start === undefined ? String(this.options.range) : 'custom';
             this.draw();
         });
-        this.range = select('时间范围', usageScales[0].ranges.map(seconds => ({ value: String(seconds), text: usageRangeLabel(seconds) })), value => { this.options.range = Number(value); this.draw(); });
+        this.range = select('时间范围', [...usageScales[0].ranges.map(seconds => ({ value: String(seconds), text: usageRangeLabel(seconds) })), { value: 'custom', text: '自选时间' }], value => {
+            if (value === 'custom')
+                this.window(this.options.start ?? Date.now() / 1000 - this.options.range, this.options.end ?? Date.now() / 1000);
+            else {
+                this.options.range = Number(value);
+                delete this.options.start;
+                delete this.options.end;
+                this.dates.hidden = true;
+            }
+            this.draw();
+        });
         this.range.value = String(this.options.range);
-        select('流量显示', [{ value: 'delta', text: '每段新增流量' }, { value: 'cumulative', text: '所选范围累计' }], value => { this.options.mode = value; this.draw(); });
+        select('流量显示', [{ value: 'delta', text: '每段新增流量' }, { value: 'cumulative', text: '所选范围累计' }, { value: 'monthly', text: '当月累计' }], value => { this.options.mode = value; this.draw(); });
         select('曲线', [{ value: 'sum', text: '所有接口合计' }, { value: 'interfaces', text: '按接口同时显示' }], value => {
             this.options.presentation = value;
             this.draw();
@@ -221,6 +282,24 @@ class UsageChart {
         exportButton.onclick = () => { void this.export().catch(() => { this.status.textContent = '导出失败，请重试。'; }); };
         controls.append(exportButton);
         this.interfaceChoices.hidden = true;
+        for (const [input, label] of [[this.startInput, '开始时间'], [this.endInput, '结束时间']]) {
+            input.type = 'datetime-local';
+            input.step = '60';
+            input.setAttribute('aria-label', label);
+            const field = usageElement('label');
+            field.append(document.createTextNode(label + '（北京时间）'), input);
+            this.dates.append(field);
+            input.onchange = () => {
+                const start = Date.parse(this.startInput.value + ':00+08:00') / 1000, end = Date.parse(this.endInput.value + ':00+08:00') / 1000 + 59;
+                if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+                    this.window(start, end);
+                    this.draw();
+                }
+                else
+                    this.status.textContent = '请选择有效的起止时间。';
+            };
+        }
+        this.dates.hidden = true;
         this.plot.tabIndex = 0;
         this.plot.setAttribute('role', 'group');
         this.plot.setAttribute('aria-label', '流量趋势，使用左右方向键查看采样值');
@@ -228,6 +307,17 @@ class UsageChart {
         this.plot.onpointerleave = () => { if (document.activeElement !== this.plot)
             this.hidePoint(); };
         this.plot.onblur = () => this.hidePoint();
+        this.plot.addEventListener('wheel', event => {
+            if (!this.data.enabled || !this.chart.times.length)
+                return;
+            event.preventDefault();
+            const bounds = this.plot.getBoundingClientRect(), start = this.options.start ?? Date.now() / 1000 - this.options.range, end = this.options.end ?? Date.now() / 1000;
+            const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left - 68) / (bounds.width - 86))), delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1);
+            const [left, right] = usageZoom(start, end, start + (end - start) * ratio, Math.exp(Math.max(-1, Math.min(1, delta * .002))));
+            this.window(left, right);
+            if (!this.wheelFrame)
+                this.wheelFrame = requestAnimationFrame(() => { this.wheelFrame = 0; this.draw(false); this.environment.windowChanged?.(); });
+        }, { passive: false });
         this.plot.onkeydown = event => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key))
                 return;
@@ -241,8 +331,8 @@ class UsageChart {
         };
         const details = usageElement('details', 'traffic-devices');
         details.append(usageElement('summary', '', '当前在线设备'), this.devices);
-        const note = usageElement('p', 'traffic-note', '计费系统每分钟采样 · 空白表示无连续采样 · 累计仅包含所选范围内记录');
-        this.content.append(scope, controls, this.interfaceChoices, this.legend, this.plot, this.summary, note, details);
+        const note = usageElement('p', 'traffic-note', '下载计费量 · 滚轮缩放时间 · 当月累计仅含已采集记录');
+        this.content.append(scope, controls, this.dates, this.interfaceChoices, this.legend, this.plot, this.summary, note, details);
         this.content.hidden = true;
         root.replaceChildren(header, this.content);
         if (typeof ResizeObserver !== 'undefined') {
@@ -265,7 +355,12 @@ class UsageChart {
         if (this.busy || (enabled === this.data.enabled && scope === this.data.scope))
             return;
         this.busy = true;
-        this.enabled.disabled = this.scopeLocal.disabled = this.scopeAll.disabled = true;
+        const confirmed = await (this.environment.confirm ? this.environment.confirm(enabled) : Promise.resolve(window.confirm(enabled ? '开启流量统计？' : '暂停流量统计？已有历史会保留。')));
+        if (!confirmed) {
+            this.busy = false;
+            return;
+        }
+        this.enabled.disabled = true;
         try {
             await this.environment.configure(enabled, scope);
         }
@@ -274,9 +369,21 @@ class UsageChart {
         }
         finally {
             this.busy = false;
-            this.enabled.disabled = this.scopeLocal.disabled = this.scopeAll.disabled = false;
+            this.enabled.disabled = false;
         }
     }
+    window(start, end) {
+        const shift = Math.max(0, end - Date.now() / 1000);
+        this.options.start = Math.max(0, start - shift);
+        this.options.end = end - shift;
+        this.options.range = this.options.end - this.options.start;
+        this.range.value = 'custom';
+        this.dates.hidden = false;
+        const format = (at) => new Date((at + 28800) * 1000).toISOString().slice(0, 16);
+        this.startInput.value = format(this.options.start);
+        this.endInput.value = format(this.options.end);
+    }
+    viewed() { return normalizeUsageReport({ ...this.data, scope: this.viewScope }); }
     update(data, message = '') {
         const scoped = normalizeUsageReport(data);
         const next = { ...scoped, enabled: data.enabled === true, scope: data.scope === 'all' ? 'all' : 'local', accounts: scoped.accounts, history: scoped.history, series: scoped.series };
@@ -287,11 +394,11 @@ class UsageChart {
         this.data = next;
         this.enabled.textContent = next.enabled ? '暂停统计' : '开启统计';
         this.enabled.setAttribute('aria-pressed', String(next.enabled));
-        this.status.textContent = message || (next.enabled ? `计费系统数据 · 每分钟更新 · ${next.scope === 'local' ? this.scopeLocal.textContent : '全部在线设备'}` : '流量统计未开启，可手动开启。');
+        this.status.textContent = message || (next.enabled ? `计费下载量 · 每分钟更新 · 采集${next.scope === 'local' ? this.scopeLocal.textContent : '全部在线设备'}` : '流量统计未开启，可手动开启。');
         this.resize(this.root, () => {
             this.content.hidden = !next.enabled;
             for (const [button, scope] of [[this.scopeLocal, 'local'], [this.scopeAll, 'all']]) {
-                button.setAttribute('aria-pressed', String(next.scope === scope));
+                button.setAttribute('aria-pressed', String(this.viewScope === scope));
             }
             if (!next.enabled)
                 return;
@@ -307,9 +414,11 @@ class UsageChart {
         });
     }
     showError(message) { this.status.textContent = message; }
-    destroy() { this.observer?.disconnect(); }
+    query() { const scale = usageScales.find(item => item.value === this.chart.scale); return { start: Math.floor(this.options.start ?? Date.now() / 1000 - this.options.range), end: Math.ceil(this.options.end ?? Date.now() / 1000), resolution: scale.seconds >= 86400 || scale.value === 'month' ? 86400 : scale.seconds >= 3600 ? 3600 : 60, monthly: this.options.mode === 'monthly' }; }
+    destroy() { this.observer?.disconnect(); if (this.wheelFrame)
+        cancelAnimationFrame(this.wheelFrame); }
     updateInterfaces() {
-        const choices = usageInterfaces(this.data.series, this.options.account), stamp = JSON.stringify([choices, this.options.interfaces]);
+        const choices = usageInterfaces(this.viewed().series, this.options.account), stamp = JSON.stringify([choices, this.options.interfaces]);
         if (stamp === this.interfacesStamp)
             return;
         this.interfacesStamp = stamp;
@@ -332,11 +441,14 @@ class UsageChart {
     draw(animate = true) {
         if (animate) {
             this.resize(this.root, () => this.draw(false));
+            this.environment.windowChanged?.();
             return;
         }
         this.interfaceChoices.hidden = this.options.presentation !== 'interfaces';
+        this.scopeLocal.setAttribute('aria-pressed', String(this.viewScope === 'local'));
+        this.scopeAll.setAttribute('aria-pressed', String(this.viewScope === 'all'));
         this.updateInterfaces();
-        this.chart = buildUsageChart(this.data.series, this.options);
+        this.chart = buildUsageChart(this.viewed().series, this.options);
         this.width = Math.max(300, this.plot.clientWidth || 1000);
         this.legend.replaceChildren(...this.chart.curves.map((curve, index) => {
             const item = usageElement('span'), dot = usageElement('i');
@@ -359,7 +471,7 @@ class UsageChart {
             svg.append(item);
             return item;
         };
-        const maximum = Math.max(0.01, ...this.chart.curves.flatMap(curve => curve.points.filter((value) => value !== null)));
+        const maximum = this.chart.curves.reduce((max, curve) => curve.points.reduce((value, point) => Math.max(value, point ?? 0), max), .01);
         const power = 10 ** Math.floor(Math.log10(maximum)), max = Math.ceil(maximum / power / 0.5) * power * 0.5;
         const x = (index) => left + index / Math.max(1, this.chart.times.length - 1) * (right - left), y = (value) => bottom - value / max * (bottom - top);
         for (let i = 0; i <= 4; i++) {
@@ -375,10 +487,10 @@ class UsageChart {
         this.chart.curves.forEach((curve, index) => {
             let path = '', connected = false;
             curve.points.forEach((point, i) => {
-                if (point === null) {
-                    connected = false;
+                if (point === null)
                     return;
-                }
+                if (curve.joinPrevious && !curve.joinPrevious[i])
+                    connected = false;
                 path += `${connected ? 'L' : 'M'}${x(i).toFixed(2)},${y(point).toFixed(2)} `;
                 connected = true;
                 if (curve.points[i - 1] == null && curve.points[i + 1] == null)
@@ -386,6 +498,14 @@ class UsageChart {
             });
             node('path', { d: path, fill: 'none', stroke: usageColors[index % usageColors.length], 'stroke-width': '1.8', 'stroke-linejoin': 'round', class: 'traffic-line' });
         });
+        const first = this.chart.times[0], last = this.chart.times[this.chart.times.length - 1];
+        for (const change of (this.data.switches || []).filter(item => item.at >= first && item.at <= last && (!this.options.account || item.from === this.options.account || item.to === this.options.account) && (this.options.interfaces === null || this.options.interfaces.includes(item.interfaceId))).slice(-30)) {
+            const position = left + (change.at - first) / Math.max(1, last - first) * (right - left);
+            const marker = node('line', { x1: String(position), x2: String(position), y1: String(top), y2: String(bottom), class: 'traffic-switch' });
+            const title = document.createElementNS(svg.namespaceURI, 'title');
+            title.textContent = `${change.interfaceName} ${change.from || '未登录'} → ${change.to || '未登录'}`;
+            marker.append(title);
+        }
         this.cursor = node('line', { x1: '0', x2: '0', y1: String(top), y2: String(bottom), class: 'traffic-cursor', visibility: 'hidden' });
         this.canvas = svg;
         this.plot.replaceChildren(svg, this.tooltip);
@@ -400,7 +520,7 @@ class UsageChart {
     }
     timeLabel(at, full = false) {
         const date = new Date((at + 28800) * 1000).toISOString();
-        return full ? date.slice(0, 16).replace('T', ' ') : this.options.scale === 'month' ? date.slice(0, 7) : this.options.scale === 'day' || this.options.range > 86400 ? date.slice(5, 10) + (this.options.scale === 'hour' ? ' ' + date.slice(11, 16) : '') : date.slice(11, 16);
+        return full ? date.slice(0, 16).replace('T', ' ') : this.chart.scale === 'month' ? date.slice(0, 7) : this.chart.scale === 'day' || this.options.range > 86400 ? date.slice(5, 10) + (this.chart.scale === 'hour' ? ' ' + date.slice(11, 16) : '') : date.slice(11, 16);
     }
     showPoint(index) {
         if (!this.chart.samples || !this.canvas || !this.cursor)
@@ -424,7 +544,7 @@ class UsageChart {
     drawDevices() {
         this.resize(this.devices, () => {
             this.devices.replaceChildren();
-            for (const account of this.data.accounts) {
+            for (const account of this.viewed().accounts) {
                 const section = usageElement('section'), title = usageElement('h4', '', account.account);
                 section.append(title);
                 section.append(usageElement('p', 'traffic-note', account.error || (account.updatedAt ? `更新于 ${new Date(account.updatedAt * 1000).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })}` : '等待查询')));
@@ -441,7 +561,10 @@ class UsageChart {
                     section.append(usageElement('p', 'traffic-note', `按近 7 天采样估算，月底前约需 ${flowLabel(prediction.projectedMb)}${prediction.shortfallMb > 0 ? `，可能超出余量 ${flowLabel(prediction.shortfallMb)}` : '，当前余量预计足够'}`));
                 this.devices.append(section);
             }
-            this.devices.append(usageElement('p', 'traffic-note', '分钟明细最多保留 48 小时，小时汇总 90 天，每日汇总 12 个月；设备较多时范围会缩短。'));
+            const retention = this.data.retention || defaultUsageRetention;
+            this.devices.append(usageElement('p', 'traffic-note', `分钟明细 ${retention.minuteHours} 小时 · 小时汇总 ${retention.hourDays} 天 · 每日汇总 ${retention.dayDays} 天，可在设置中调整。`));
+            if (this.viewScope === 'all' && this.data.scope === 'local')
+                this.devices.append(usageElement('p', 'traffic-note', '当前仅采集本机设备，可在设置中更改统计范围。'));
             this.devices.append(usageElement('p', 'traffic-note', '以上为本次在线会话已用流量。路由器上游的用量包含经该出口转发的流量。'));
         });
     }

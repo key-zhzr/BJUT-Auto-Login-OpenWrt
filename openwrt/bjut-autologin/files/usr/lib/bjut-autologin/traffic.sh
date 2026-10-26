@@ -17,8 +17,8 @@ traffic_identity_prepare() (
      printf 'interface:%s\t%s\t%s\t%s\n' "$device" "$device" "${mac:--}" "$ip"
     done
    done)
- done | sort -u >"$STATE_DIR/traffic-identities.tsv.tmp"
- mv -f "$STATE_DIR/traffic-identities.tsv.tmp" "$STATE_DIR/traffic-identities.tsv"
+ done | sort -u >"$STATE_DIR/traffic-identities.tsv.$$.tmp"
+ mv -f "$STATE_DIR/traffic-identities.tsv.$$.tmp" "$STATE_DIR/traffic-identities.tsv"
 )
 traffic_match_identity() {
  local mac="$1" ip ipv6 match id
@@ -39,65 +39,95 @@ traffic_schedule_next() {
  fi
 }
 
+traffic_candidates() {
+ local user="$1" candidate state account rank
+ for candidate in $UPLINK_SECTIONS;do
+  state="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.state')"
+  account="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')"
+  rank=3
+  case "$state" in online|authenticated_limited|login_accepted) rank=1;;esac
+  if [ "${account%@campus}" = "${user%@campus}" ] && [ "$rank" = 1 ];then rank=0;fi
+  printf '%s %s\n' "$rank" "$candidate"
+ done | sort -n | awk '{print $2}'
+}
 traffic_collect() {
- local section user password key uplink candidate assigned ticket now result retry seen=''
+ local section user password key uplink ticket now result retry seen='' due started elapsed sampled previous candidates attempts message success
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || return 0
  TRAFFIC_NEXT_AT="$(($(date +%s)+60))"
- traffic_identity_prepare
+ [ "${BJUT_TRAFFIC_IDENTITIES_READY:-0}" = 1 ] && [ -s "$STATE_DIR/traffic-identities.tsv" ] || traffic_identity_prepare
  mkdir -p "$STATE_DIR/traffic" "$STATE_DIR/billing" || return 1
- for section in $ACCOUNT_SECTIONS; do
+ for section in $ACCOUNT_SECTIONS;do
+  [ -z "${TRAFFIC_ONLY_ACCOUNT:-}" ] || [ "$section" = "$TRAFFIC_ONLY_ACCOUNT" ] || continue
   config_get user "$section" username '';config_get password "$section" password ''
   [ -n "$user" ] && [ -n "$password" ] || continue
-  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
-  case "|$seen|" in *"|$key|"*) continue;;esac;seen="$seen|$key"
-  now="$(date +%s)";retry="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)"
-  if is_uint "$retry" && [ "$retry" -gt "$now" ];then
-   traffic_schedule_next "$retry"
-   continue
-  fi
-  uplink=''
-  for candidate in $UPLINK_SECTIONS;do
-   assigned="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')"
-   if [ "$assigned" = "$user" ];then uplink="$candidate";break;fi
+  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')";password=''
+  case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
+  now="$(date +%s)";due="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)"
+  if is_uint "$due" && [ "$due" -gt "$now" ];then traffic_schedule_next "$due";continue;fi
+  is_uint "$due" && [ "$((now-due))" -le 180 ] || due="$now"
+  candidates="$(traffic_candidates "$user")";attempts=0;success=0;started="$now"
+  retry='';message=''
+  for uplink in $candidates;do
+   attempts=$((attempts+1));[ "$attempts" -le 3 ] || break
+   ticket="$("$CODEC_BIN" random16)";case "$ticket" in ''|*[!0-9a-f]*)return 1;;esac;[ "${#ticket}" = 32 ] || return 1
+   mkdir "$STATE_DIR/billing/$ticket" || continue
+   printf '%s' "$now" >"$STATE_DIR/billing/$ticket/created"
+   printf traffic | sha256sum | awk '{print $1}' >"$STATE_DIR/billing/$ticket/owner"
+   . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin
+   json_dump >"$STATE_DIR/billing/$ticket/request.json"
+   /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" &
+   CHILD_PIDS="$!";wait "$CHILD_PIDS";CHILD_PIDS=''
+   result="$STATE_DIR/billing/$ticket/result.json"
+   if [ "$(json_file_value "$result" '@.state')" = ready ] && [ -s "$STATE_DIR/billing/$ticket/online.json" ];then
+    sampled="$(cat "$STATE_DIR/billing/$ticket/online-at" 2>/dev/null)";is_uint "$sampled" || sampled="$(date +%s)"
+    previous="$(cat "$STATE_DIR/traffic/$key-at" 2>/dev/null)"
+    cp "$STATE_DIR/billing/$ticket/online.json" "$STATE_DIR/traffic/$key.json.$$" && mv -f "$STATE_DIR/traffic/$key.json.$$" "$STATE_DIR/traffic/$key.json"
+    cp "$result" "$STATE_DIR/traffic/$key-meta.json.$$" && mv -f "$STATE_DIR/traffic/$key-meta.json.$$" "$STATE_DIR/traffic/$key-meta.json"
+    traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
+    traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled"
+    printf '%s' "$sampled" >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key-error" "$STATE_DIR/traffic/$key.json"
+    elapsed=$(($(date +%s)-started));log_message info "流量采样：账号 ${user}，上游 ${uplink}，完成用时 ${elapsed} 秒"
+    if is_uint "$previous";then elapsed=$((sampled-previous));if [ "$elapsed" -lt 59 ] || [ "$elapsed" -gt 61 ];then log_message notice "流量采样间隔 ${elapsed} 秒：账号 ${user}，已保存真实区间";fi;fi
+    success=1;rm -rf "$STATE_DIR/billing/$ticket";break
+   fi
+   message="$(json_file_value "$result" '@.message')"
+   case "$message" in *密码*|*验证码*) retry=$((now+300));;*)retry=$((now+30));;esac
+   log_message warning "流量查询失败：账号 ${user}，上游 ${uplink}，${message:-请求未完成}"
+   case "$message" in *密码*|*验证码*)rm -rf "$STATE_DIR/billing/$ticket";break;;esac
+   rm -rf "$STATE_DIR/billing/$ticket"
   done
-  if [ -z "$uplink" ];then
-   for candidate in $UPLINK_SECTIONS;do
-    config_get assigned "$candidate" accounts ''
-    case " $assigned " in *" $section "*|'  ') uplink="$candidate";break;;esac
-   done
-  fi
-  [ -n "$uplink" ] || continue
-  ticket="$("$CODEC_BIN" random16)";case "$ticket" in ''|*[!0-9a-f]*)return 1;;esac;[ "${#ticket}" = 32 ] || return 1
-  mkdir "$STATE_DIR/billing/$ticket" || continue
-  printf '%s' "$now" >"$STATE_DIR/billing/$ticket/created"
-  printf traffic | sha256sum | awk '{print $1}' >"$STATE_DIR/billing/$ticket/owner"
-  # Use the same verified dashboard parsing as the interactive overview.
-  # Embedded leftFlow may be zero while the rendered available-flow metric
-  # includes the account's current plan allowance.
-  . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin
-  json_dump >"$STATE_DIR/billing/$ticket/request.json"
-  /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket"
-  result="$STATE_DIR/billing/$ticket/result.json"
-  if [ "$(json_file_value "$result" '@.state')" = ready ] && [ -s "$STATE_DIR/billing/$ticket/online.json" ];then
-   cp "$STATE_DIR/billing/$ticket/online.json" "$STATE_DIR/traffic/$key.json.$$" && mv -f "$STATE_DIR/traffic/$key.json.$$" "$STATE_DIR/traffic/$key.json"
-   cp "$result" "$STATE_DIR/traffic/$key-meta.json.$$" && mv -f "$STATE_DIR/traffic/$key-meta.json.$$" "$STATE_DIR/traffic/$key-meta.json"
-   traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
-   date +%s >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key-error"
-   traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$(date +%s)"
-   rm -f "$STATE_DIR/traffic/$key.json"
-   retry=$((now+60))
+  if [ "$success" = 1 ];then
+   retry=$((due+60));is_uint "${BJUT_TRAFFIC_ROUND:-}" && retry="$BJUT_TRAFFIC_ROUND";now="$(date +%s)";while [ "$retry" -le "$now" ];do retry=$((retry+60));done
   else
-   printf '%s' '查询暂未完成，请在计费中心核对账号或验证码' >"$STATE_DIR/traffic/$key-error"
-   retry=$((now+300))
+   retry="${retry:-$((now+30))}"
+   printf '%s' "${message:-没有可用的查询出口}" >"$STATE_DIR/traffic/$key-error"
   fi
-  printf '%s' "$retry" >"$STATE_DIR/traffic/$key-next"
-  traffic_schedule_next "$retry"
-  rm -rf "$STATE_DIR/billing/$ticket"
+  printf '%s' "$retry" >"$STATE_DIR/traffic/$key-next";traffic_schedule_next "$retry"
  done
 }
 
+# Authentication workers notify the sampler without touching other interfaces.
+traffic_observe_account() {
+ local state="$1" account="$2" old key now file="$STATE_DIR/traffic-account-$UPLINK_ID" monitor
+ case "$state" in online|authenticated_limited) ;; *)return;;esac
+ [ -n "$account" ] || return 0
+ old="$(cat "$file" 2>/dev/null)";[ "$old" != "$account" ] || return 0
+ printf '%s' "$account" >"$file.$$" && mv -f "$file.$$" "$file"
+ now="$(date +%s)";mkdir -p "$STATE_DIR/traffic"
+ if [ -n "$old" ];then
+  printf '%s\t%s\t%s\t%s\t%s\n' "$now" "interface:$DEVICE" "$DEVICE" "$old" "$account" >>"$STATE_DIR/traffic-switches.tsv"
+
+  log_message notice "流量统计检测到换号：${DEVICE}，$old → $account"
+ fi
+ key="$(printf '%s' "$account" | sha256sum | awk '{print $1}')";printf '%s' "$now" >"$STATE_DIR/traffic/$key-wake"
+ rm -f "$STATE_DIR/traffic/$key-next" "$STATE_DIR/traffic/$key-error"
+ monitor="$(cat "$STATE_DIR/traffic-monitor.lock/pid" 2>/dev/null)"
+ local stamp="$(cat "$STATE_DIR/traffic-monitor.lock/start" 2>/dev/null)"
+ if is_uint "$monitor" && [ -n "$stamp" ] && [ "$stamp" = "$(awk '{print $22}' "/proc/$monitor/stat" 2>/dev/null)" ];then kill -USR1 "$monitor" 2>/dev/null || true;fi
+}
+
 traffic_rows() (
- local file="$1" prefix index=0 item key value down up mac ip ipv6 identity interface_id interface_name local_device comma=''
+ local file="$1" prefix index=0 item key value down mac ip ipv6 identity interface_id interface_name local_device comma=''
  prefix="$(billing_rows_prefix "$file")";printf '['
  while [ "$index" -lt 500 ];do
   item="$prefix[$index]";[ -n "$(json_file_value "$file" "$item.sessionId")" ] || break
@@ -115,8 +145,8 @@ END_IDENTITY
    case "$key" in mac)value="$(billing_format_mac "$value")";;loginTime)key=loginAt;;esac
    json_add_string "$key" "$value"
   done
-  down="$(json_file_value "$file" "$item.downFlow")";up="$(json_file_value "$file" "$item.upFlow")"
-  value="$(awk -v d="$down" -v u="$up" 'BEGIN{if(d~/^[0-9]+([.][0-9]+)?$/ && u~/^[0-9]+([.][0-9]+)?$/)printf "%.3f",(d+u)/1024;else printf "--"}')"
+  down="$(json_file_value "$file" "$item.downFlow")"
+  value="$(awk -v d="$down" 'BEGIN{if(d~/^[0-9]+([.][0-9]+)?$/)printf "%.3f",d/1024;else printf "--"}')"
   json_add_string usedFlowMb "$value";printf '%s' "$comma";comma=,;json_dump
  done
  printf ']'
@@ -144,7 +174,12 @@ traffic_cached() (
   if [ -s "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json" ];then cat "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json";else printf '[]';fi
   printf '}'
  done
- printf '],"history":';traffic_history_json;printf ',"timeline":';traffic_series_json;printf ',"series":[]}\n'
+ printf '],"retention":{"minuteHours":%s,"hourDays":%s,"dayDays":%s,"storageMb":%s},"history":' "${CFG_TRAFFIC_MINUTE_HOURS:-48}" "${CFG_TRAFFIC_HOUR_DAYS:-90}" "${CFG_TRAFFIC_DAY_DAYS:-366}" "${CFG_TRAFFIC_STORAGE_MB:-2}"
+ traffic_history_json;printf ',"timeline":';traffic_series_json;printf ',"series":[],"switches":['
+ if [ -f "$STATE_DIR/traffic-switches.tsv" ];then
+  awk -F '\t' 'NF==5 && $1~/^[0-9]+$/ && $2~/^[A-Za-z0-9_:.-]+$/ && $3~/^[A-Za-z0-9_:.-]+$/ && $4~/^[A-Za-z0-9_@.,-]+$/ && $5~/^[A-Za-z0-9_@.,-]+$/{printf "%s{\"at\":%s,\"interfaceId\":\"%s\",\"interfaceName\":\"%s\",\"from\":\"%s\",\"to\":\"%s\"}",n++?",":"",$1,$2,$3,$4,$5}' "$STATE_DIR/traffic-switches.tsv"
+ fi
+ printf ']}\n'
 )
 
 traffic_order_accounts() (

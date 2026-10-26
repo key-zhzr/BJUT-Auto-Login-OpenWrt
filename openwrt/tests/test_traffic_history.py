@@ -1,5 +1,8 @@
 """Billing units, persistent deltas, and IPv6-only identity without a router."""
 import json
+import os
+import signal
+import time
 import subprocess
 import unittest
 from pathlib import Path
@@ -28,7 +31,7 @@ class TrafficTests(unittest.TestCase):
         row={'sessionId':'private-session','loginTime':'2026-10-25 12:00:00','ip':'192.0.2.3','mac':'aabbccddeeff','downFlow':10240,'upFlow':2048}
         file.write_text(json.dumps([row]))
         data=json.loads(self.shell('traffic_rows "$ONLINE"',ONLINE=file,**env))
-        self.assertEqual(data[0]['usedFlowMb'],'12.000')
+        self.assertEqual(data[0]['usedFlowMb'],'10.000')
         self.assertNotIn('private-session',json.dumps(data))
         script='load_configuration; for account in 25000001 25000002; do key=$(printf "%s" "$account" | sha256sum | awk \'{print $1}\'); traffic_history_record "$key" "$ONLINE" "$AT"; done; traffic_history_json'
         self.assertEqual(json.loads(self.shell(script,ONLINE=file,AT='1792886400',**env)),[])
@@ -48,7 +51,7 @@ class TrafficTests(unittest.TestCase):
     def test_shared_app_counter_corpus(self):
         source=Path(__file__).parent/'fixtures/billing-online.json'
         rows=json.loads(self.shell('traffic_rows "$ONLINE"',ONLINE=source))
-        self.assertEqual([row['usedFlowMb'] for row in rows],['4.000','3.000'])
+        self.assertEqual([row['usedFlowMb'] for row in rows],['3.000','2.000'])
         self.assertNotIn('fixture-private',json.dumps(rows))
 
     def test_background_metrics_use_the_same_precedence_as_billing_overview(self):
@@ -138,5 +141,66 @@ wc -c < "$STATE_DIR/traffic-worker-calls"
         self.assertTrue(output.startswith('|2001:da8:216::123|2001:da8:216:abcd::/64|'),output)
         networks['wan16']['ipv6-address'][0]['address']='2001:db8::123';net.write_text(json.dumps(networks))
         output=self.shell('load_configuration;select_uplink dorm_a;read_network_identity; code=$?; test "$code" = 2',**env)
+
+    def test_capacity_defaults_to_three_and_requires_an_exact_verified_vip_plan(self):
+        env=self.config()
+        output=self.shell("load_configuration; account_effective_limit account1;printf '%s ' \"$ACCOUNT_LIMIT\";account_record_plan 25000001 'VIP套餐说明';account_effective_limit account1;printf '%s ' \"$ACCOUNT_LIMIT\";account_record_plan 25000001 'VIP套餐';account_effective_limit account1;printf '%s' \"$ACCOUNT_LIMIT\"",**env)
+        self.assertEqual(output,'3 3 5')
+
+    def test_observed_switch_wakes_only_the_new_account_and_keeps_other_baselines(self):
+        env=self.config()
+        code='''load_configuration;mkdir -p "$STATE_DIR/traffic" "$STATE_DIR/traffic-baselines";touch "$STATE_DIR/traffic-baselines/other"
+UPLINK_ID=dorm_a;DEVICE=lan3
+traffic_observe_account online 25000001
+key=$(printf 25000002 | sha256sum | awk '{print $1}')
+printf 9999999999 >"$STATE_DIR/traffic/$key-next"
+traffic_observe_account online 25000002
+cat "$STATE_DIR/traffic-switches.tsv"
+test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-next" && test -f "$STATE_DIR/traffic-baselines/other"
+'''
+        fields=self.shell(code,**env).strip().split('\t');self.assertEqual(fields[1:],['interface:lan3','lan3','25000001','25000002'])
+
+    def test_router_retains_real_intervals_when_a_minute_has_no_endpoint(self):
+        env=self.config();file=self.temp/'online.json';row={'sessionId':'one','loginTime':'first','ip':'192.0.2.3','mac':'aabbccddeeff','downFlow':10240,'upFlow':999999}
+        file.write_text(json.dumps([row]));script='load_configuration;key=$(printf 25000001|sha256sum|awk \'{print $1}\');traffic_history_record "$key" "$ONLINE" "$AT";traffic_series_json'
+        self.shell(script,ONLINE=file,AT='1792886459',**env)
+        row['downFlow']+=1024;file.write_text(json.dumps([row]))
+        report=json.loads(self.shell(script,ONLINE=file,AT='1792886520',**env));minute=next(r for r in report['buckets'] if r[1]==60)
+        self.assertEqual(minute[3:],[1,61,1792886459,1792886520])
+
+    def test_six_accounts_launch_in_one_cohort_despite_old_staggered_deadlines(self):
+        env=self.config();cfg=Path(env['MOCK_CONFIG_JSON']);data=json.loads(cfg.read_text())
+        for i in range(3,7):data[f'account{i}']={'.type':'account','enabled':'1','username':f'2500000{i}','password':'fixture password'}
+        cfg.write_text(json.dumps(data));worker=self.temp/'sample-worker.sh'
+        worker.write_text('#!/bin/sh\nprintf "%s %s\\n" "$1" "$(date +%s)" >>"$BJUT_STATE_DIR/cohort"\nsleep 1\n');worker.chmod(0o755)
+        path=self.temp/'state'/'traffic';path.mkdir(parents=True,exist_ok=True)
+        import hashlib
+        for i in range(1,7):(path/(hashlib.sha256(f'2500000{i}'.encode()).hexdigest()+'-next')).write_text(str(int(time.time())+i*10))
+        process=subprocess.Popen(['sh',str(base.CORE/'files/usr/libexec/bjut-traffic-monitor')],env=self.environment('online',BJUT_SELF=base.SCRIPT,BJUT_TRAFFIC_SAMPLE=worker,BJUT_TRAFFIC_HISTORY=self.temp/'persistent.tsv',BJUT_TRAFFIC_CURVES=self.temp/'curves.tsv',**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            cutoff=time.monotonic()+20;file=self.temp/'state'/'cohort';rows=[]
+            while time.monotonic()<cutoff:
+                rows=file.read_text().splitlines() if file.exists() else []
+                if len({row.split()[0] for row in rows})>=6:break
+                time.sleep(.1)
+            self.assertEqual(len({row.split()[0] for row in rows}),6,rows)
+            times=[int(row.split()[1]) for row in rows[:6]]
+            self.assertLessEqual(max(times)-min(times),5)
+        finally:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.communicate()
+
+    def test_failed_query_uplink_tries_another_upstream(self):
+        env=self.config();worker=self.temp/'billing-worker.sh'
+        worker.write_text('''#!/bin/sh
+job="$BJUT_STATE_DIR/billing/$1"
+case "$(cat "$job/request.json")" in
+ *dorm_a*)printf '{"state":"error","message":"连接超时"}' >"$job/result.json";;
+ *)printf '{"state":"ready"}' >"$job/result.json";printf '[]' >"$job/online.json";;
+esac
+printf x >>"$BJUT_STATE_DIR/attempts"
+''')
+        self.shell('load_configuration;ACCOUNT_SECTIONS=account1;traffic_collect;test "$(wc -c <"$STATE_DIR/attempts")" -eq 2',BJUT_BILLING=worker,**env)
 
 if __name__=='__main__':unittest.main()

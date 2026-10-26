@@ -258,6 +258,12 @@ return view.extend({
         o = s.option(form.ListValue, 'traffic_scope', _('流量统计范围'));
         o.value('local',_('仅路由器上游'));o.value('all',_('全部在线设备'));o.default='local';o.rmempty=false;
 
+
+        for(const item of [['traffic_minute_hours','分钟明细保留（小时）','48',8760],['traffic_hour_days','小时汇总保留（天）','90',3660],['traffic_day_days','每日汇总保留（天）','366',36600],['traffic_storage_mb','统计存储上限（MB）','2',128]]){
+            o=s.option(form.Value,item[0],_(item[1]));o.default=item[2];o.datatype='range(1,'+item[3]+')';o.rmempty=false;
+        }
+        const TrafficEstimate=form.Value.extend({renderWidget:function(){return E('p',{'data-traffic-estimate':'1'});},formvalue:function(){return null;}});
+        o=s.option(TrafficEstimate,'_traffic_estimate',_('预计存储占用'));
 		o = s.option(form.Flag, 'billing_background', _('后台计费检查'));
 		o.default = '0'; o.rmempty = false;
 		o.description = _('定期检查各账号余额和流量，App 关闭后也可运行。');
@@ -298,6 +304,9 @@ return view.extend({
 		o = s.option(form.Value, 'expected_ssid', _('SSID')); o.modalonly = true;
 		o = s.option(form.Value, 'expected_bssid', _('BSSID')); o.modalonly = true;
 
-		return m.render().then(function(root){root.append(bjut.style());return root;});
+		return m.render().then(function(root){root.append(bjut.style());
+          let count=0;uci.sections('bjut-autologin','uplink',function(item){if(item.enabled!=='0')count++;});count=Math.max(1,count);
+          const update=function(){const get=function(key,fallback){const input=root.querySelector('input[id$=".'+key+'"]');return Number(input && input.value || uci.get('bjut-autologin','main',key) || fallback);};const rows=get('traffic_minute_hours',48)*60+get('traffic_hour_days',90)*24+get('traffic_day_days',366);const note=root.querySelector('[data-traffic-estimate]');if(note)note.textContent=_('按 ')+count+_(' 条上游预计约 ')+(count*rows*360/1048576).toFixed(1)+_(' MB（含保存时临时空间）。存储上限 ')+get('traffic_storage_mb',2)+_(' MB，达到上限时优先保留较新记录。全部设备的占用会更多。');};
+          root.addEventListener('input',update);update();return root;});
 	}
 });

@@ -34,6 +34,10 @@ test('LuCI six-page regression suite and PushPlus diagnostic states', async ({ p
   await expect(traffic.getByRole('button',{name:'开启统计',exact:true})).toBeVisible();
   await expect(traffic.locator('.traffic-content')).toBeHidden();
   await traffic.getByRole('button',{name:'开启统计',exact:true}).click();
+  await page.locator('#luci-modal').getByRole('button',{name:'取消',exact:true}).click();
+  await expect(traffic.locator('.traffic-content')).toBeHidden();
+  await traffic.getByRole('button',{name:'开启统计',exact:true}).click();
+  await page.locator('#luci-modal').getByRole('button',{name:'开启统计',exact:true}).click();
   await expect(traffic.locator('.traffic-content')).toBeVisible();
   await expect(traffic.locator('.traffic-line')).toHaveCount(1);
   await traffic.getByLabel('时间范围',{exact:true}).selectOption('3600');
@@ -53,7 +57,14 @@ test('LuCI six-page regression suite and PushPlus diagnostic states', async ({ p
   await expect(traffic.getByLabel('流量显示',{exact:true})).toHaveValue('cumulative');
   await expect(traffic.locator('.traffic-line')).toHaveCount(1);
   await traffic.locator('summary').click();await expect(traffic).toContainText('512.50 MB');
+  await traffic.getByLabel('流量显示',{exact:true}).selectOption('monthly');
+  await expect(traffic.getByLabel('流量显示',{exact:true})).toHaveValue('monthly');
+  await traffic.locator('.traffic-plot').scrollIntoViewIfNeeded();
+  const plot=await traffic.locator('.traffic-plot').boundingBox();
+  await page.mouse.move(plot.x+plot.width*.5,plot.y+plot.height*.5);await page.mouse.wheel(0,-300);
+  await expect(traffic.getByLabel('开始时间',{exact:true})).toBeVisible();
   await traffic.getByRole('button',{name:'暂停统计',exact:true}).click();
+  await page.locator('#luci-modal').getByRole('button',{name:'暂停统计',exact:true}).click();
   await expect(traffic.locator('.traffic-content')).toBeHidden();
 
   await page.setViewportSize({ width: 390, height: 844 });

@@ -85,7 +85,7 @@ workbench_settings() {
  local section key value comma="" network dump
  printf '{"service":'
  json_init
- for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor traffic_scope billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
+ for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
   case "$key" in
    prefer_remaining_flow) value="$CFG_PREFER_FLOW";; traffic_monitor) value="$CFG_TRAFFIC_MONITOR";; traffic_scope) value="$CFG_TRAFFIC_SCOPE";; billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
    enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
@@ -187,6 +187,10 @@ workbench_validate_field() {
   pushplus_interval) valid_range "$value" 60 86400; return $?;;
   billing_interval) valid_range "$value" 900 86400; return $?;;
   balance_threshold|flow_threshold) printf '%s' "$value" | grep -Eq '^[0-9]{1,6}([.][0-9]{1,3})?$'; return $?;;
+  traffic_minute_hours) valid_range "$value" 1 8760; return $?;;
+  traffic_hour_days) valid_range "$value" 1 3660; return $?;;
+  traffic_day_days) valid_range "$value" 1 36600; return $?;;
+  traffic_storage_mb) valid_range "$value" 1 128; return $?;;
   max_sessions) valid_range "$value" 0 32; return $?;;
   transport) case "$value" in auto|wifi|ethernet) return 0;; esac;;
   login_type) case "$value" in auto|type1|type2|type3|bjut-sushe|bjut_wifi|lgn) return 0;; esac;;
@@ -210,7 +214,7 @@ workbench_save_settings() {
   # rpcd adds the authenticated caller ID to HTTP requests. ACL checks already
   # happened; this transport metadata is never a UCI setting.
   [ "$key" != ubus_rpc_session ] || continue
-  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|traffic_minute_hours|traffic_hour_days|traffic_day_days|traffic_storage_mb|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
   settings_keys="${settings_keys}${settings_keys:+ }$key"
  done

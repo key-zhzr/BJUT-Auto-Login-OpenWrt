@@ -5,7 +5,7 @@ account_session_active() {
  case "$1:$2" in *:online|online:*|authenticated_limited:*|probe_uncertain:*|login_accepted:*) return 0;; *) return 1;;esac
 }
 account_lock_acquire() {
- local lock="$1" candidate owner started
+ local lock="$1" timeout="${2:-2}" candidate owner started
  candidate="$(mktemp "$STATE_DIR/account-owner.XXXXXX")" || return 1
  printf '%s\n' "$$" >"$candidate" || { rm -f "$candidate";return 1; }
  [ ! -d "$lock" ] || { rm -f "$candidate";return 1; }
@@ -19,17 +19,42 @@ account_lock_acquire() {
    if is_uint "$owner" && ! kill -0 "$owner" 2>/dev/null;then rm -f "$lock";fi
    rmdir "$lock.recover" 2>/dev/null || true
   fi
-  if [ "$(($(date +%s)-started))" -ge 2 ];then rm -f "$candidate";return 1;fi
+  if [ "$(($(date +%s)-started))" -ge "$timeout" ];then rm -f "$candidate";return 1;fi
   sleep 0.05 2>/dev/null || sleep 1
  done
  rm -f "$candidate"
 }
+# Auto capacity is conservative until a verified dashboard names VIP套餐 exactly.
+account_effective_limit() {
+ local section="$1" user password key signature saved_signature updated package requested now
+ config_get user "$section" username '';config_get password "$section" password ''
+ key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+ signature="$(printf '%s\n' "$user" "$password" | sha256sum | awk '{print $1}')";password=''
+ ACCOUNT_LIMIT=3;ACCOUNT_PLAN='';now="$(date +%s)"
+ if [ -r "$STATE_DIR/account-plan-$key" ];then
+  { IFS= read -r saved_signature;IFS= read -r updated;IFS= read -r package; } <"$STATE_DIR/account-plan-$key"
+  if [ "$saved_signature" = "$signature" ] && is_uint "$updated" && [ "$((now-updated))" -ge 0 ] && [ "$((now-updated))" -le 86400 ];then
+   ACCOUNT_PLAN="$package";[ "$package" != 'VIP套餐' ] || ACCOUNT_LIMIT=5
+  fi
+ fi
+ config_get requested "$section" max_sessions 0
+ if valid_range "$requested" 1 32 && [ "$requested" -lt "$ACCOUNT_LIMIT" ];then ACCOUNT_LIMIT="$requested";fi
+}
+account_record_plan() {
+ local actual="$1" package="$2" section user password key signature
+ [ "${#package}" -le 256 ] || return 0
+ for section in $ACCOUNT_SECTIONS;do
+  config_get user "$section" username '';[ "$user" = "$actual" ] || continue
+  config_get password "$section" password ''
+  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+  signature="$(printf '%s\n' "$user" "$password" | sha256sum | awk '{print $1}')";password=''
+  (umask 077;printf '%s\n%s\n%s\n' "$signature" "$(date +%s)" "$package" >"$STATE_DIR/account-plan-$key.$$") && mv -f "$STATE_DIR/account-plan-$key.$$" "$STATE_DIR/account-plan-$key"
+ done
+}
 account_reserve() {
  local section="$1" user limit key lock now item state session assigned count=0 hash expiry device address seen='' signature
  config_get user "$section" username ''
- config_get limit "$section" max_sessions 0
- valid_range "$limit" 0 32 || return 1
- [ "$limit" -gt 0 ] || return 0
+ account_effective_limit "$section";limit="$ACCOUNT_LIMIT"
  key="$(printf '%s' "${user%@campus}" | sha256sum | awk '{print $1}')"
  lock="$STATE_DIR/account-$key.pid"
  account_lock_acquire "$lock" || return 1

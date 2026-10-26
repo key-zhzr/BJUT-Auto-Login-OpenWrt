@@ -41,11 +41,15 @@ start_service() {
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param nice 15
-	procd_set_param file /etc/config/bjut-autologin
+	procd_set_param env BJUT_TRAFFIC_REVISION=23
 	procd_close_instance
 }
 
 stop_service() {
+	local traffic
+	config_load bjut-autologin
+	config_get_bool traffic main traffic_monitor 0
+	[ "$traffic" = 1 ] || { rm -rf /var/run/bjut-autologin/traffic-baselines; logger -t bjut-autologin "流量统计已暂停，恢复时重新建立基线"; }
 	[ "${BJUT_RELOADING:-0}" = 1 ] || "$PROG" cleanup >/dev/null 2>&1
 }
 
@@ -54,7 +58,7 @@ reload_service() {
 	config_load bjut-autologin
 	config_get_bool enabled main enabled 0
 	BJUT_RELOADING="$enabled"
-	stop
+	# procd reconciles changed instances; the sampler reads its settings live.
 	start
 }
 

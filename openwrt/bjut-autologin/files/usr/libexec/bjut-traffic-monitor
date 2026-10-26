@@ -1,35 +1,85 @@
 #!/bin/sh
-# Independent schedule: a slow connectivity check cannot delay minute samples.
+# One concurrent cohort per minute; errors and immediate switch samples are independent.
 umask 077
 BJUT_SOURCE_ONLY=1
 BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$BJUT_SELF" || exit 1
 . "$LIB_DIR/billing.sh" || exit 1
 lock="$STATE_DIR/traffic-monitor.lock"
-mkdir -p "$STATE_DIR" || exit 1
+proc_stamp() { is_uint "$1" && awk '{print $22}' "/proc/$1/stat" 2>/dev/null; }
+job_alive() { is_uint "$1" && [ -n "$2" ] && [ "$2" = "$(proc_stamp "$1")" ] && kill -0 "$1" 2>/dev/null; }
+stop_jobs() {
+ local job child stamp
+ for job in "$STATE_DIR"/traffic-jobs/*;do
+  [ -f "$job" ] || continue
+  read -r child stamp <"$job"
+  job_alive "$child" "$stamp" && kill "$child" 2>/dev/null
+ done
+ wait
+ rm -f "$STATE_DIR"/traffic-jobs/*
+}
+finish() {
+ local flag
+ [ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null
+ stop_jobs
+ traffic_history_checkpoint force
+ flag="$("$UCI_BIN" -q get bjut-autologin.main.traffic_monitor)"
+ [ "$flag" = 1 ] || rm -rf "$STATE_DIR/traffic-baselines"
+ rm -rf "$lock"
+ cleanup_runtime
+}
+mkdir -p "$STATE_DIR/traffic" "$STATE_DIR/traffic-jobs" || exit 1
 if ! mkdir "$lock" 2>/dev/null;then
- owner="$(cat "$lock/pid" 2>/dev/null)";is_uint "$owner" && kill -0 "$owner" 2>/dev/null && exit 0
+ owner="$(cat "$lock/pid" 2>/dev/null)";stamp="$(cat "$lock/start" 2>/dev/null)"
+ job_alive "$owner" "$stamp" && exit 0
  rm -rf "$lock";mkdir "$lock" || exit 1
 fi
-printf '%s' "$$" >"$lock/pid"
-trap 'traffic_history_checkpoint force;rm -rf "$lock";cleanup_runtime' 0
+printf '%s' "$$" >"$lock/pid";proc_stamp "$$" >"$lock/start"
+trap finish 0
 trap 'exit 0' TERM INT
-# A new worker never bridges time while collection was disabled or stopped.
-rm -rf "$STATE_DIR/traffic-baselines"
-rm -f "$STATE_DIR/traffic/"*-next
+trap ':' USR1 HUP
+identity_at=0
+round="$(date +%s)"
 while :;do
- started="$(date +%s)"
- TRAFFIC_NEXT_AT=0
- load_configuration || exit 1
- [ "${CFG_TRAFFIC_MONITOR:-0}" != 1 ] || traffic_collect
- finished="$(date +%s)"
- # Accounts become due at different times. Sleeping a whole minute after a
- # near-due account was skipped can otherwise stretch its interval to 120s.
- if is_uint "$TRAFFIC_NEXT_AT" && [ "$TRAFFIC_NEXT_AT" -gt 0 ];then
-  delay=$((TRAFFIC_NEXT_AT-finished))
- else
-  delay=$((60-finished+started))
+ CONFIG_LOADED=0;load_configuration || exit 1
+ [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || exit 0
+ scope="$(cat "$STATE_DIR/traffic-scope" 2>/dev/null)"
+ if [ -n "$scope" ] && [ "$scope" != "$CFG_TRAFFIC_SCOPE" ];then
+  stop_jobs;rm -rf "$STATE_DIR/traffic-baselines"
+  log_message info '流量统计范围已变化，重新建立基线'
  fi
+ printf '%s' "$CFG_TRAFFIC_SCOPE" >"$STATE_DIR/traffic-scope"
+ now="$(date +%s)"
+ if [ "$((now-identity_at))" -ge 30 ];then traffic_identity_prepare;identity_at="$now";fi
+ now="$(date +%s)";batch=0
+ if [ "$now" -ge "$round" ];then
+  batch=1
+  while [ "$round" -le "$now" ];do round=$((round+60));done
+ fi
+ delay=$((round-now));[ "$delay" -le 30 ] || delay=30
+ seen=''
+ for section in $ACCOUNT_SECTIONS;do
+  config_get user "$section" username '';config_get password "$section" password ''
+  [ -n "$user" ] && [ -n "$password" ] || continue;password=''
+  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+  case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
+  due="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)";is_uint "$due" || due=0
+  # Keep a pending cohort marker if an old request is still finishing. Never
+  # skip that account for a full extra minute just because its worker was busy.
+  if [ "$batch" = 1 ] && { [ ! -s "$STATE_DIR/traffic/$key-error" ] || [ "$due" -le "$now" ]; };then
+   printf '%s' "$round" >"$STATE_DIR/traffic/$key-pending"
+  fi
+  child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
+  if job_alive "$child" "$stamp";then delay=1;continue;fi
+  wake=0;[ ! -f "$STATE_DIR/traffic/$key-wake" ] || wake=1
+  pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
+  if [ "$wake" = 1 ] || is_uint "$pending" || { [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -le "$now" ]; };then
+   rm -f "$STATE_DIR/traffic/$key-wake" "$STATE_DIR/traffic/$key-pending"
+   BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
+   child="$!";stamp="$(proc_stamp "$child")"
+   printf '%s %s\n' "$child" "$stamp" >"$STATE_DIR/traffic-jobs/$key";delay=1
+  fi
+ done
  [ "$delay" -gt 0 ] || delay=1
- sleep "$delay" & wait "$!"
+ sleep "$delay" & SLEEP_PID="$!";wait "$SLEEP_PID";kill "$SLEEP_PID" 2>/dev/null;SLEEP_PID=''
 done
