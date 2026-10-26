@@ -586,6 +586,13 @@ read_network_identity() {
 	TRANSPORT="$CFG_TRANSPORT"
 	SSID=""
 	BSSID=""
+	# Billing statistics identify local devices by addresses/MACs, not SSID.
+	# Wireless driver probes can block on an Ethernet device; keep them out of
+	# this read-only sampler path. Authentication workers still read full identity.
+	if [ "${BJUT_NETWORK_ADDRESSES_ONLY:-0}" = 1 ];then
+		[ "$TRANSPORT" != auto ] || TRANSPORT=unknown
+		return 0
+	fi
 	# rpcd-mod-iwinfo works on both classic shell Wi-Fi scripts and newer
 	# wifi-scripts-ucode systems where the standalone iwinfo CLI may be absent.
 	info="$("$UBUS_BIN" -S call iwinfo info "{\"device\":\"$DEVICE\"}" 2>/dev/null)" || info=""

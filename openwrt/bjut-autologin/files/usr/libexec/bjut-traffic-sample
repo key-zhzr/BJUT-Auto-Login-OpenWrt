@@ -4,6 +4,10 @@ BJUT_SOURCE_ONLY=1
 BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$BJUT_SELF" || exit 1
 . "$LIB_DIR/billing.sh" || exit 1
+if [ "${1:-}" = --identities ];then
+ load_configuration && traffic_identity_prepare
+ exit $?
+fi
 valid_section "$1" || exit 2
 load_configuration || exit 1
 TRAFFIC_ONLY_ACCOUNT="$1"

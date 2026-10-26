@@ -172,8 +172,13 @@ test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-nex
         env=self.config();cfg=Path(env['MOCK_CONFIG_JSON']);data=json.loads(cfg.read_text())
         for i in range(3,7):data[f'account{i}']={'.type':'account','enabled':'1','username':f'2500000{i}','password':'fixture password'}
         cfg.write_text(json.dumps(data));worker=self.temp/'sample-worker.sh'
-        worker.write_text('#!/bin/sh\nprintf "%s %s\\n" "$1" "$(date +%s)" >>"$BJUT_STATE_DIR/cohort"\nsleep 1\n');worker.chmod(0o755)
+        worker.write_text('''#!/bin/sh
+if [ "$1" = --identities ];then sleep 12;exit 0;fi
+printf "%s %s\n" "$1" "$(date +%s)" >>"$BJUT_STATE_DIR/cohort"
+sleep 1
+''');worker.chmod(0o755)
         path=self.temp/'state'/'traffic';path.mkdir(parents=True,exist_ok=True)
+        (self.state/'traffic-identities.tsv').write_text('interface:lan3\tlan3\t-\t10.126.19.139\n')
         import hashlib
         for i in range(1,7):(path/(hashlib.sha256(f'2500000{i}'.encode()).hexdigest()+'-next')).write_text(str(int(time.time())+i*10))
         process=subprocess.Popen(['sh',str(base.CORE/'files/usr/libexec/bjut-traffic-monitor')],env=self.environment('online',BJUT_SELF=base.SCRIPT,BJUT_TRAFFIC_SAMPLE=worker,BJUT_TRAFFIC_HISTORY=self.temp/'persistent.tsv',BJUT_TRAFFIC_CURVES=self.temp/'curves.tsv',**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
@@ -184,6 +189,7 @@ test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-nex
                 if len({row.split()[0] for row in rows})>=6:break
                 time.sleep(.1)
             self.assertEqual(len({row.split()[0] for row in rows}),6,rows)
+            self.assertLess(time.monotonic(),cutoff-12,'Slow identity refresh blocked account dispatch')
             times=[int(row.split()[1]) for row in rows[:6]]
             self.assertLessEqual(max(times)-min(times),5)
         finally:
@@ -213,5 +219,11 @@ cat "$STATE_DIR/traffic/$key-at"
         at=int(self.shell(code,MOCK_SCENARIO='billing_success',BJUT_TRAFFIC_SAMPLE_AT=str(target),BJUT_HTML=self.html,BJUT_BILLING=base.CORE/'files/usr/libexec/bjut-billing',**env))
         self.assertGreaterEqual(at,target)
         self.assertLessEqual(at,target+2)
+
+    def test_address_only_inventory_does_not_query_wireless_drivers(self):
+        env=self.config()
+        script='load_configuration;select_uplink dorm_a;read_network_identity;test -n "$LOCAL_IPV4";printf "%s" "$SSID"'
+        self.assertEqual(self.shell(script,BJUT_NETWORK_ADDRESSES_ONLY='1',MOCK_UBUS_IWINFO='1',**env),'')
+        self.assertNotEqual(self.shell(script,MOCK_UBUS_IWINFO='1',**env),'')
 
 if __name__=='__main__':unittest.main()

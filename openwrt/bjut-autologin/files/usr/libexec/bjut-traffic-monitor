@@ -18,9 +18,14 @@ stop_jobs() {
  wait
  rm -f "$STATE_DIR"/traffic-jobs/*
 }
+stop_identity() {
+ job_alive "$identity_pid" "$identity_stamp" && kill "$identity_pid" 2>/dev/null
+ identity_pid='';identity_stamp=''
+}
 finish() {
  local flag
  [ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null
+ stop_identity
  stop_jobs
  traffic_history_checkpoint force
  flag="$("$UCI_BIN" -q get bjut-autologin.main.traffic_monitor)"
@@ -38,25 +43,31 @@ printf '%s' "$$" >"$lock/pid";proc_stamp "$$" >"$lock/start"
 trap finish 0
 trap 'exit 0' TERM INT
 trap ':' USR1 HUP
-identity_at=0
-round="$(($(date +%s)+15))"
+identity_at=0;identity_pid='';identity_stamp=''
+round="$(($(date +%s)+30))"
 while :;do
  CONFIG_LOADED=0;load_configuration || exit 1
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || exit 0
  scope="$(cat "$STATE_DIR/traffic-scope" 2>/dev/null)"
  if [ -n "$scope" ] && [ "$scope" != "$CFG_TRAFFIC_SCOPE" ];then
-  stop_jobs;rm -rf "$STATE_DIR/traffic-baselines"
+  stop_identity;stop_jobs;rm -rf "$STATE_DIR/traffic-baselines"
   log_message info '流量统计范围已变化，重新建立基线'
  fi
  printf '%s' "$CFG_TRAFFIC_SCOPE" >"$STATE_DIR/traffic-scope"
  now="$(date +%s)"
- if [ "$((now-identity_at))" -ge 30 ];then traffic_identity_prepare;identity_at="$now";fi
- now="$(date +%s)";batch=0
- if [ "$now" -ge "$((round-15))" ];then
-  batch=1;sample_at="$round"
-  while [ "$((round-15))" -le "$now" ];do round=$((round+60));done
+ if [ "$((now-identity_at))" -ge 30 ] && ! job_alive "$identity_pid" "$identity_stamp";then
+  BJUT_NETWORK_ADDRESSES_ONLY=1 "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" --identities &
+  identity_pid="$!";identity_stamp="$(proc_stamp "$identity_pid")";identity_at="$now"
  fi
- delay=$((round-15-now));[ "$delay" -le 30 ] || delay=30
+ if [ ! -s "$STATE_DIR/traffic-identities.tsv" ];then
+  round=$((now+30));sleep 1 & SLEEP_PID="$!";wait "$SLEEP_PID";SLEEP_PID='';continue
+ fi
+ now="$(date +%s)";batch=0
+ if [ "$now" -ge "$((round-30))" ];then
+  batch=1;sample_at="$round"
+  while [ "$((round-30))" -le "$now" ];do round=$((round+60));done
+ fi
+ delay=$((round-30-now));[ "$delay" -le 30 ] || delay=30
  seen=''
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';config_get password "$section" password ''
@@ -78,7 +89,7 @@ while :;do
   if [ "$wake" = 1 ] || is_uint "$pending" || { [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -le "$now" ]; };then
    rm -f "$STATE_DIR/traffic/$key-wake" "$STATE_DIR/traffic/$key-pending"
    target="$pending";[ "$wake" != 1 ] || target=''
-   BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
+   BJUT_NETWORK_ADDRESSES_ONLY=1 BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
    child="$!";stamp="$(proc_stamp "$child")"
    printf '%s %s\n' "$child" "$stamp" >"$STATE_DIR/traffic-jobs/$key";delay=1
   fi
