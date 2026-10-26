@@ -203,4 +203,15 @@ printf x >>"$BJUT_STATE_DIR/attempts"
 ''')
         self.shell('load_configuration;ACCOUNT_SECTIONS=account1;traffic_collect;test "$(wc -c <"$STATE_DIR/attempts")" -eq 2',BJUT_BILLING=worker,**env)
 
+    def test_online_counter_request_waits_for_the_shared_sample_boundary(self):
+        env=self.config();target=int(time.time())+8
+        code="""
+load_configuration;ACCOUNT_SECTIONS=account1;traffic_collect
+key=$(printf 25000001|sha256sum|awk '{print $1}')
+cat "$STATE_DIR/traffic/$key-at"
+"""
+        at=int(self.shell(code,MOCK_SCENARIO='billing_success',BJUT_TRAFFIC_SAMPLE_AT=str(target),BJUT_HTML=self.html,BJUT_BILLING=base.CORE/'files/usr/libexec/bjut-billing',**env))
+        self.assertGreaterEqual(at,target)
+        self.assertLessEqual(at,target+2)
+
 if __name__=='__main__':unittest.main()

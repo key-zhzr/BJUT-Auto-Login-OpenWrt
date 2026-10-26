@@ -119,7 +119,9 @@ traffic_observe_account() {
 
   log_message notice "流量统计检测到换号：${DEVICE}，$old → $account"
  fi
- key="$(printf '%s' "$account" | sha256sum | awk '{print $1}')";printf '%s' "$now" >"$STATE_DIR/traffic/$key-wake"
+ key="$(printf '%s' "$account" | sha256sum | awk '{print $1}')"
+ if [ -z "$old" ] && [ -s "$STATE_DIR/traffic/$key-at" ] && [ ! -s "$STATE_DIR/traffic/$key-error" ];then return 0;fi
+ printf '%s' "$now" >"$STATE_DIR/traffic/$key-wake"
  rm -f "$STATE_DIR/traffic/$key-next" "$STATE_DIR/traffic/$key-error"
  monitor="$(cat "$STATE_DIR/traffic-monitor.lock/pid" 2>/dev/null)"
  local stamp="$(cat "$STATE_DIR/traffic-monitor.lock/start" 2>/dev/null)"

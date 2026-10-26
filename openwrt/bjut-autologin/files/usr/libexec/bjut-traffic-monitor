@@ -39,7 +39,7 @@ trap finish 0
 trap 'exit 0' TERM INT
 trap ':' USR1 HUP
 identity_at=0
-round="$(date +%s)"
+round="$(($(date +%s)+15))"
 while :;do
  CONFIG_LOADED=0;load_configuration || exit 1
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || exit 0
@@ -52,11 +52,11 @@ while :;do
  now="$(date +%s)"
  if [ "$((now-identity_at))" -ge 30 ];then traffic_identity_prepare;identity_at="$now";fi
  now="$(date +%s)";batch=0
- if [ "$now" -ge "$round" ];then
-  batch=1
-  while [ "$round" -le "$now" ];do round=$((round+60));done
+ if [ "$now" -ge "$((round-15))" ];then
+  batch=1;sample_at="$round"
+  while [ "$((round-15))" -le "$now" ];do round=$((round+60));done
  fi
- delay=$((round-now));[ "$delay" -le 30 ] || delay=30
+ delay=$((round-15-now));[ "$delay" -le 30 ] || delay=30
  seen=''
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';config_get password "$section" password ''
@@ -67,15 +67,18 @@ while :;do
   # Keep a pending cohort marker if an old request is still finishing. Never
   # skip that account for a full extra minute just because its worker was busy.
   if [ "$batch" = 1 ] && { [ ! -s "$STATE_DIR/traffic/$key-error" ] || [ "$due" -le "$now" ]; };then
-   printf '%s' "$round" >"$STATE_DIR/traffic/$key-pending"
+   printf '%s' "$sample_at" >"$STATE_DIR/traffic/$key-pending"
   fi
-  child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
-  if job_alive "$child" "$stamp";then delay=1;continue;fi
   wake=0;[ ! -f "$STATE_DIR/traffic/$key-wake" ] || wake=1
+  child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
+  if job_alive "$child" "$stamp";then
+   if [ "$wake" = 1 ];then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;else delay=1;continue;fi
+  fi
   pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
   if [ "$wake" = 1 ] || is_uint "$pending" || { [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -le "$now" ]; };then
    rm -f "$STATE_DIR/traffic/$key-wake" "$STATE_DIR/traffic/$key-pending"
-   BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
+   target="$pending";[ "$wake" != 1 ] || target=''
+   BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
    child="$!";stamp="$(proc_stamp "$child")"
    printf '%s %s\n' "$child" "$stamp" >"$STATE_DIR/traffic-jobs/$key";delay=1
   fi

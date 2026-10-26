@@ -173,6 +173,15 @@ billing_publish_overview() {
 	# is still loading; one unavailable endpoint cannot hide the balance.
 	[ "${BILLING_MODULE:-}" != center ] || percent=44
 	sed 's/"state"[[:space:]]*:[[:space:]]*"ready"/"state":"loading"/;s/"percent"[[:space:]]*:[[:space:]]*100/"percent":'"$percent"'/;s/"message"[[:space:]]*:[[:space:]]*"计费数据已更新"/"message":"正在读取在线设备"/' "$BILLING_JOB/overview.json" >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+	# The traffic worker prepares routes/session/dashboard ahead of the shared
+	# minute boundary. Only the counter request waits; interactive jobs do not.
+	if is_uint "${BJUT_TRAFFIC_SAMPLE_AT:-}";then
+		local sample_now="$(date +%s)" sample_delay
+		sample_delay=$((BJUT_TRAFFIC_SAMPLE_AT-sample_now))
+		if [ "$sample_delay" -gt 0 ] && [ "$sample_delay" -le 60 ];then
+			sleep "$sample_delay" & SLEEP_PID="$!";wait "$SLEEP_PID";SLEEP_PID=''
+		fi
+	fi
 	rm -f "$BILLING_JOB/online.json"
 	if billing_request /Self/dashboard/getOnlineList; then
 		# An HTTP-200 login page/error object is not an empty session list.
