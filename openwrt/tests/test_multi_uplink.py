@@ -248,6 +248,18 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertEqual(current['account1']['password'],original['account1']['password'])
         self.assertEqual(current['dorm_a']['accounts'],['account1'])
 
+    def test_http_session_metadata_is_not_a_setting_or_a_persisted_option(self):
+        env=self.config();path=Path(env['MOCK_CONFIG_JSON'])
+        result=self.rpc('save_settings',{'traffic_monitor':'1','traffic_scope':'local','ubus_rpc_session':'a'*32},**env)
+        self.assertEqual(json.loads(result.stdout)['state'],'ready',result.stdout+result.stderr)
+        current=json.loads(path.read_text())
+        self.assertEqual(current['main']['traffic_monitor'],'1');self.assertEqual(current['main']['traffic_scope'],'local')
+        self.assertNotIn('ubus_rpc_session',current['main'])
+        original=path.read_bytes()
+        for payload in [{'ubus_rpc_session':'a'*32},{'ubus_rpc_session':'a'*32,'unexpected':'value'}]:
+            result=self.rpc('save_settings',payload,**env)
+            self.assertEqual(json.loads(result.stdout)['state'],'error');self.assertEqual(path.read_bytes(),original)
+
     def test_invalid_or_unrelated_settings_cannot_modify_configuration(self):
         env = self.config(); original = Path(env['MOCK_CONFIG_JSON']).read_bytes()
         for args in ({'interval':'0'}, {'timeout':'999'}, {'interval':'600'}, {'password':'secret'}, {'network':'wan;reboot'}):

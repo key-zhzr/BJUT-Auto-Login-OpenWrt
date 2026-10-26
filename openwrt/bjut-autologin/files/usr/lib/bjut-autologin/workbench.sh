@@ -203,20 +203,25 @@ workbench_validate_field() {
 }
 
 workbench_save_settings() {
- local key value keys interval backoff push_enabled push_token
+ local key value keys settings_keys='' interval backoff push_enabled push_token
  json_load "$(cat "$REQUEST")" || { reply error "设置内容无效"; return; }; json_get_keys keys
  [ -n "$keys" ] || { reply error "没有要保存的设置"; return; }
  for key in $keys; do
+  # rpcd adds the authenticated caller ID to HTTP requests. ACL checks already
+  # happened; this transport metadata is never a UCI setting.
+  [ "$key" != ubus_rpc_session ] || continue
   case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
+  settings_keys="${settings_keys}${settings_keys:+ }$key"
  done
+ [ -n "$settings_keys" ] || { reply error "没有要保存的设置"; return; }
  interval="$(request_value interval)"; interval="${interval:-$CFG_INTERVAL}"
  backoff="$(request_value max_backoff)"; backoff="${backoff:-$CFG_MAX_BACKOFF}"
  [ "$interval" -le "$backoff" ] || { reply error "最大重试间隔不能小于检测间隔"; return; }
  push_enabled="$(request_value pushplus_enabled)"; push_enabled="${push_enabled:-$CFG_PUSHPLUS_ENABLED}"
  push_token="$(request_value pushplus_token)"; push_token="${push_token:-$CFG_PUSHPLUS_TOKEN}"
  [ "$push_enabled" != 1 ] || { [ -n "$push_token" ] && valid_pushplus_token "$push_token"; } || { reply error '请填写有效的 PushPlus 令牌'; return; }
- workbench_commit "$MAIN_SECTION" $keys
+ workbench_commit "$MAIN_SECTION" $settings_keys
 }
 
 workbench_pushplus_status() {
