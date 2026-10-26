@@ -295,7 +295,9 @@ load_main_section() {
 	config_get CFG_PUSHPLUS_DELAY "$1" pushplus_delay 60
 	config_get CFG_PUSHPLUS_INTERVAL "$1" pushplus_interval 3600
 	config_get_bool CFG_BILLING_BACKGROUND "$1" billing_background 0
-	config_get_bool CFG_TRAFFIC_MONITOR "$1" traffic_monitor 1
+	config_get_bool CFG_TRAFFIC_MONITOR "$1" traffic_monitor 0
+	config_get CFG_TRAFFIC_SCOPE "$1" traffic_scope ""
+	case "$CFG_TRAFFIC_SCOPE" in local|all) ;; *) CFG_TRAFFIC_MONITOR=0; CFG_TRAFFIC_SCOPE=local;; esac
 	config_get_bool CFG_PREFER_FLOW "$1" prefer_remaining_flow 0
 	config_get CFG_BILLING_INTERVAL "$1" billing_interval 21600
 	config_get_bool CFG_BILLING_ALERTS "$1" billing_alerts 1

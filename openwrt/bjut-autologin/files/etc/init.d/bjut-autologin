@@ -12,15 +12,19 @@ EXTRA_HELP="
 	status_json   Print the current JSON runtime status"
 
 start_service() {
-	local enabled
+	local enabled traffic scope
 	"$PROG" setup >/dev/null || return 1
 	config_load bjut-autologin
 	config_get_bool enabled main enabled 0
-	[ "$enabled" = "1" ] || return 0
+	config_get_bool traffic main traffic_monitor 0
+	config_get scope main traffic_scope ""
+	case "$scope" in local|all) ;; *)traffic=0;;esac
+	[ "$enabled" = 1 ] || [ "$traffic" = 1 ] || return 0
 
 	chmod 0600 /etc/config/bjut-autologin 2>/dev/null || true
 	"$PROG" check-config >/dev/null || return 1
 
+	if [ "$enabled" = 1 ];then
 	procd_open_instance
 	procd_set_param command "$PROG" daemon
 	procd_set_param respawn 3600 5 5
@@ -29,6 +33,8 @@ start_service() {
 	procd_set_param nice 10
 	procd_set_param file /etc/config/bjut-autologin
 	procd_close_instance
+	fi
+	[ "$traffic" = 1 ] || return 0
 	procd_open_instance traffic
 	procd_set_param command /usr/libexec/bjut-traffic-monitor
 	procd_set_param respawn 3600 5 5

@@ -14,11 +14,14 @@ fi
 printf '%s' "$$" >"$lock/pid"
 trap 'traffic_history_checkpoint force;rm -rf "$lock";cleanup_runtime' 0
 trap 'exit 0' TERM INT
+# A new worker never bridges time while collection was disabled or stopped.
+rm -rf "$STATE_DIR/traffic-baselines"
+rm -f "$STATE_DIR/traffic/"*-next
 while :;do
  started="$(date +%s)"
  TRAFFIC_NEXT_AT=0
  load_configuration || exit 1
- [ "${CFG_TRAFFIC_MONITOR:-1}" != 1 ] || traffic_collect
+ [ "${CFG_TRAFFIC_MONITOR:-0}" != 1 ] || traffic_collect
  finished="$(date +%s)"
  # Accounts become due at different times. Sleeping a whole minute after a
  # near-due account was skipped can otherwise stretch its interval to 120s.

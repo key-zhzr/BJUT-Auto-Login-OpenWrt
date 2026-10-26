@@ -85,9 +85,9 @@ workbench_settings() {
  local section key value comma="" network dump
  printf '{"service":'
  json_init
- for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
+ for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor traffic_scope billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
   case "$key" in
-   prefer_remaining_flow) value="$CFG_PREFER_FLOW";; traffic_monitor) value="$CFG_TRAFFIC_MONITOR";; billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
+   prefer_remaining_flow) value="$CFG_PREFER_FLOW";; traffic_monitor) value="$CFG_TRAFFIC_MONITOR";; traffic_scope) value="$CFG_TRAFFIC_SCOPE";; billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
    enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
    managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";; log_target) value="$CFG_LOG_TARGET";; log_directory) value="$CFG_LOG_DIRECTORY";; log_web) value="$CFG_LOG_WEB";; log_max_kb) value="$CFG_LOG_MAX_KB";;
    max_backoff) value="$CFG_MAX_BACKOFF";; credential_cooldown) value="$CFG_CREDENTIAL_COOLDOWN";; post_login_delay) value="$CFG_POST_LOGIN_DELAY";;
@@ -169,6 +169,7 @@ workbench_validate_field() {
 '*|*"$(printf '\r')"*) return 1;; esac
  case "$key" in
   enabled|managed_routes|mwan3|strict_network|log_web|pushplus_enabled|pushplus_online|pushplus_failure|prefer_remaining_flow|traffic_monitor|billing_background|billing_alerts) case "$value" in 0|1) return 0;; esac;;
+  traffic_scope) case "$value" in local|all) return 0;; esac;;
   interval) is_uint "$value" && [ "$value" -ge 5 ] && [ "$value" -le 3600 ]; return $?;;
   timeout) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 30 ]; return $?;;
   offline_confirmations) is_uint "$value" && [ "$value" -ge 1 ] && [ "$value" -le 10 ]; return $?;;
@@ -206,7 +207,7 @@ workbench_save_settings() {
  json_load "$(cat "$REQUEST")" || { reply error "设置内容无效"; return; }; json_get_keys keys
  [ -n "$keys" ] || { reply error "没有要保存的设置"; return; }
  for key in $keys; do
-  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
  done
  interval="$(request_value interval)"; interval="${interval:-$CFG_INTERVAL}"

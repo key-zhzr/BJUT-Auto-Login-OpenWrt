@@ -225,6 +225,17 @@ static int validate_ipv4(const unsigned char *data, size_t length)
     memcpy(text, data, length); text[length] = 0;
     return inet_pton(AF_INET, text, &address) == 1 ? 0 : -1;
 }
+static int normalize_ip(const unsigned char *data, size_t length)
+{
+    char text[INET6_ADDRSTRLEN], output[INET6_ADDRSTRLEN];
+    unsigned char address[16];
+    int family;
+    if (!length || length >= sizeof(text)) return -1;
+    memcpy(text, data, length); text[length] = 0;
+    family = strchr(text, ':') ? AF_INET6 : AF_INET;
+    if (inet_pton(family, text, address) != 1 || !inet_ntop(family, address, output, sizeof(output))) return -1;
+    return fputs(output, stdout) < 0 ? -1 : 0;
+}
 static int leap(int y) { return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0); }
 static int month_days(int y, int m)
 {
@@ -330,6 +341,8 @@ int main(int argc, char **argv)
         result = validate_ipv6(data, length);
     } else if (strcmp(argv[1], "validate-ipv4") == 0) {
         result = validate_ipv4(data, length);
+    } else if (strcmp(argv[1], "normalize-ip") == 0) {
+        result = normalize_ip(data, length);
     } else if (strcmp(argv[1], "date-days") == 0) {
         result = date_codec(data, length, 1);
     } else if (strcmp(argv[1], "days-date") == 0) {

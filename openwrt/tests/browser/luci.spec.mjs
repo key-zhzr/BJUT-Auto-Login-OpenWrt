@@ -29,25 +29,32 @@ test('LuCI six-page regression suite and PushPlus diagnostic states', async ({ p
   await expect(results).toContainText('通过：设置页面与 PushPlus 排队/失败码/已受理状态');
 
   await expect(page.locator('#content > [data-qa-view="overview"]')).toBeVisible();
+  await page.locator('#hide-router-qa').click();
   const traffic = page.locator('.bj-device-usage');
-  await expect(traffic).toContainText('512.50 MB');
-  await expect(traffic.locator('[data-traffic-filter="range"]')).toHaveValue('30');
-  await traffic.locator('[data-traffic-filter="account"]').selectOption('25000001');
-  await traffic.locator('[data-traffic-filter="period"]').selectOption('month');
-  await expect(traffic.locator('.bj-traffic-history')).toContainText('每月采样新增流量');
-  await expect(traffic.locator('.bj-traffic-history')).toContainText('2.00 GB');
-  await traffic.locator('[data-traffic-filter="range"]').selectOption('90');
-  await expect(traffic.locator('.bj-traffic-history')).toContainText('采样新增流量 4.00 GB');
+  await expect(traffic.getByRole('button',{name:'开启统计',exact:true})).toBeVisible();
+  await expect(traffic.locator('.traffic-content')).toBeHidden();
+  await traffic.getByRole('button',{name:'开启统计',exact:true}).click();
+  await expect(traffic.locator('.traffic-content')).toBeVisible();
+  await expect(traffic.locator('.traffic-line')).toHaveCount(1);
+  await traffic.getByLabel('时间范围',{exact:true}).selectOption('3600');
+  await traffic.getByLabel('曲线',{exact:true}).selectOption('interfaces');
+  await expect(traffic.locator('.traffic-line')).toHaveCount(2);
+  await traffic.locator('.traffic-interfaces').getByText('lan4',{exact:true}).click();
+  await expect(traffic.locator('.traffic-line')).toHaveCount(1);
+  await traffic.getByLabel('流量显示',{exact:true}).selectOption('cumulative');
+  await traffic.locator('.traffic-plot').focus();await page.keyboard.press('End');
+  await expect(traffic.locator('.traffic-tooltip')).toBeVisible();
+  await expect(traffic.locator('.traffic-tooltip')).toContainText('lan3');
   const download = page.waitForEvent('download');
   await traffic.getByRole('button', { name: '导出 CSV', exact: true }).click();
-  const file = await download;
-  expect(file.suggestedFilename()).toBe('device-usage.csv');
-  const csv = await readFile(await file.path(), 'utf8');
-  expect(csv).toContain('25000001');
-  expect(csv).not.toContain('25000002');
+  const file = await download;expect(file.suggestedFilename()).toBe('device-usage.csv');
+  const csv = await readFile(await file.path(), 'utf8');expect(csv).toContain('lan3');expect(csv).not.toContain('lan4');
   await page.waitForTimeout(5500);
-  await expect(traffic.locator('[data-traffic-filter="account"]')).toHaveValue('25000001');
-  await expect(traffic.locator('[data-traffic-filter="period"]')).toHaveValue('month');
+  await expect(traffic.getByLabel('流量显示',{exact:true})).toHaveValue('cumulative');
+  await expect(traffic.locator('.traffic-line')).toHaveCount(1);
+  await traffic.locator('summary').click();await expect(traffic).toContainText('512.50 MB');
+  await traffic.getByRole('button',{name:'暂停统计',exact:true}).click();
+  await expect(traffic.locator('.traffic-content')).toBeHidden();
 
   await page.setViewportSize({ width: 390, height: 844 });
   for (const viewId of ['overview', 'accounts', 'billing', 'diagnostics', 'logs', 'config']) {

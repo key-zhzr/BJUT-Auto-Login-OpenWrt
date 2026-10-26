@@ -17,9 +17,9 @@ function call(method,args,timeout) {
   return value;
  });
 }
-function watch(root,refresh,interval) {
+function watch(root,refresh,interval,onStop) {
  let timer=null,running=false,again=false,stopped=false,mounted=false;
- function stop(){stopped=true;if(timer!==null)window.clearTimeout(timer);window.removeEventListener('online',wake);window.removeEventListener('focus',wake);document.removeEventListener('visibilitychange',wake);observer.disconnect();}
+ function stop(){stopped=true;if(timer!==null)window.clearTimeout(timer);window.removeEventListener('online',wake);window.removeEventListener('focus',wake);document.removeEventListener('visibilitychange',wake);observer.disconnect();if(onStop)onStop();}
  function delay(){return Math.max(.1,typeof interval==='function'?interval():interval || 2)*1000;}
  async function run(){
   if(stopped)return;

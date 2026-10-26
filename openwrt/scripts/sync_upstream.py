@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-SENSITIVE = ('src-tauri/src/', 'src-tauri/Cargo.', 'src/network-trust', 'src/device-usage-model.ts', 'scripts/build-router-usage-ui.mjs', 'src/router-billing-tools.ts', 'scripts/build-router-billing-ui.mjs', 'openwrt/', '.github/')
+SENSITIVE = ('src-tauri/src/', 'src-tauri/Cargo.', 'src/network-trust', 'src/device-usage-model.ts', 'src/usage-chart', 'scripts/build-router-usage-ui.mjs', 'src/router-billing-tools.ts', 'scripts/build-router-billing-ui.mjs', 'openwrt/', '.github/')
 
 
 def git(repo, *args, check=True):
@@ -72,7 +72,7 @@ def synchronize(repo, ref, run_checks=True):
             usage_view = repo / 'scripts/build-router-usage-ui.mjs'
             if usage_view.is_file() and (repo / 'src/device-usage-model.ts').is_file():
                 subprocess.run(['node', str(usage_view), str(repo)], cwd=repo, check=True)
-                git(repo, 'add', 'openwrt/luci-app-bjut-autologin/htdocs/luci-static/resources/bjut-autologin/usage-model.js')
+                git(repo, 'add', 'openwrt/luci-app-bjut-autologin/htdocs/luci-static/resources/bjut-autologin/usage-model.js', 'openwrt/luci-app-bjut-autologin/htdocs/luci-static/resources/bjut-autologin/usage-chart.css')
         except (subprocess.CalledProcessError, OSError):
             git(repo, 'merge', '--abort', check=False)
             raise RuntimeError('Shared billing view could not be regenerated; main was not changed.') from None

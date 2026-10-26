@@ -268,7 +268,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
-	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","billing_center","maintenance"],"uplinks":[' "$(date +%s)" "$VERSION"
+	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","traffic_charts","billing_center","maintenance"],"uplinks":[' "$(date +%s)" "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"

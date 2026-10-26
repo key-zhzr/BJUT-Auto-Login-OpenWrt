@@ -26,6 +26,7 @@ const accounts = { accounts: [{ id: 'account1', user: '25000001', enabled: 1, ha
 const ports = { ports: status.uplinks.map((item, i) => ({ uplink: item.id, device: item.device, linkUp: 1, speedMbps: i === 3 ? '2500' : '1000', txBytes: String(50000000000 + i * 1000000000), rxBytes: String(70000000000 + i * 3000000000) })) };
 let revision = 0, failNext = false, sequence = 0, pushplusSeq = 0, pushplusMode = 'HoldQueued';
 let pushplusState = { state: 'idle', enabled: 1, configured: 1, sequence: 0, updatedAt: 0, httpStatus: '', apiCode: '', pending: 0, cooldownRemaining: 0, delivered: 0, deliverySemantics: 'accepted_not_delivered', message: '尚未发送测试消息；点击发送测试消息后可查看排队、HTTP/业务码或受理状态。' };
+let trafficEnabled=false,trafficScope='local';
 const calls = [];
 const tickets = new Map();
 async function server(method, args = {}) {
@@ -46,14 +47,11 @@ async function server(method, args = {}) {
         return accounts;
     if (method === 'ports')
         return ports;
+    if(method==='save_settings') {if(args.traffic_monitor!==undefined)trafficEnabled=args.traffic_monitor==='1';if(args.traffic_scope)trafficScope=args.traffic_scope;return {state:'ready'};}
     if (method === 'traffic') {
-        const day = (offset) => new Date(Date.now() + 8 * 3600000 - offset * 86400000).toISOString().slice(0, 10);
-        return { accounts: [{ account: '25000001', updatedAt: Math.floor(Date.now() / 1000), remainingFlow: '30720', devices: [{ mac: 'AA-BB-CC-DD-EE-FF', ip: '10.126.19.139', usedFlowMb: '512.5' }] }], history: [
-            { day: day(0), account: '25000001', device: 'device1', label: 'AA-BB-CC-DD-EE-FF', usedMb: 1024, sampledSeconds: 3600 },
-            { day: day(1), account: '25000001', device: 'device1', label: 'AA-BB-CC-DD-EE-FF', usedMb: 1024, sampledSeconds: 3600 },
-            { day: day(35), account: '25000001', device: 'device1', label: 'AA-BB-CC-DD-EE-FF', usedMb: 2048, sampledSeconds: 3600 },
-            { day: day(0), account: '25000002', device: 'device2', label: '11-22-33-44-55-66', usedMb: 4096, sampledSeconds: 3600 },
-        ] };
+        const at=Math.floor(Date.now()/60000)*60;
+        const channels=[{account:'25000001',device:'a',interfaceId:'lan3',interfaceName:'lan3',local:true},{account:'25000001',device:'b',interfaceId:'lan4',interfaceName:'lan4',local:true}];
+        return {enabled:trafficEnabled,scope:trafficScope,accounts:[{account:'25000001',updatedAt:at,devices:[{interfaceName:'lan3',local:true,ip:'10.126.19.139',usedFlowMb:'512.5'}]}],history:[],series:[],timeline:{channels,buckets:channels.flatMap((_,channel)=>Array.from({length:60},(_,i)=>[channel,60,at-(59-i)*60,(channel+1)*(i%7+1),60]).concat([[channel,86400,at-at%86400,1024*(channel+1),3600]]))}};
     }
     if (method === 'account_set') {
         const target = accounts.accounts.find(a => a.id === args.account);
@@ -128,7 +126,7 @@ async function server(method, args = {}) {
     }
     return { state: 'ready' };
 }
-const L = { env: { sessionid: '1'.repeat(32) } };
+const L = { resource:path=>'../luci-app-bjut-autologin/htdocs/luci-static/resources/'+path, env: { sessionid: '1'.repeat(32) } };
 const rpc = { getBaseURL: () => '/mock-ubus', getSessionID: () => L.env.sessionid, declare: (declaration) => (...values) => server(declaration.method, Object.fromEntries((declaration.params || []).map((key, i) => [key, values[i]]))) };
 const request = { post: async (_url, body, _options) => ({ ok: true, json: () => ({ jsonrpc: '2.0', id: body.id, result: [0, awaited.get(body.id)] }) }) };
 const awaited = new Map();
@@ -139,13 +137,14 @@ class LuCIBase {
     static extend(methods) { class Module extends this {} Object.assign(Module.prototype, methods); return Module; }
 }
 const mockUciSections = {
-    service: [{ '.name': 'main', '.type': 'service', enabled: '1', transport: 'auto', login_type: 'auto', compatibility: 'secure', strict_network: '1', interval: '20', timeout: '3', offline_confirmations: '2', max_backoff: '300', credential_cooldown: '600', post_login_delay: '2', online_url: 'http://connect.rom.miui.com/generate_204', online_code: '204', log_level: 'info', log_target: 'system', managed_routes: '1', mwan3: '1', pushplus_enabled: '1', pushplus_online: '1', pushplus_failure: '1', pushplus_delay: '60', pushplus_interval: '3600', prefer_remaining_flow: '0', traffic_monitor: '1', billing_background: '0' }],
+    service: [{ '.name': 'main', '.type': 'service', enabled: '1', transport: 'auto', login_type: 'auto', compatibility: 'secure', strict_network: '1', interval: '20', timeout: '3', offline_confirmations: '2', max_backoff: '300', credential_cooldown: '600', post_login_delay: '2', online_url: 'http://connect.rom.miui.com/generate_204', online_code: '204', log_level: 'info', log_target: 'system', managed_routes: '1', mwan3: '1', pushplus_enabled: '1', pushplus_online: '1', pushplus_failure: '1', pushplus_delay: '60', pushplus_interval: '3600', prefer_remaining_flow: '0', traffic_monitor: '0', traffic_scope:'local', billing_background: '0' }],
     uplink: [
         { '.name': 'dorm_0', '.type': 'uplink', enabled: '1', network: 'wan14', network6: 'wan16', device: 'lan3', transport: 'ethernet', login_type: 'type1', accounts: ['account1', 'account2'] },
         { '.name': 'dorm_1', '.type': 'uplink', enabled: '1', network: 'wan24', network6: 'wan26', device: 'lan4', transport: 'ethernet', login_type: 'type1', accounts: ['account2'] }
     ]
 };
 const uci = {
+    get:(_pkg,id,key)=>[...mockUciSections.service,...mockUciSections.uplink].find(item=>item['.name']===id)?.[key],
     load: async () => mockUciSections,
     sections: (_pkg, type, cb) => {
         const list = type === 'account'

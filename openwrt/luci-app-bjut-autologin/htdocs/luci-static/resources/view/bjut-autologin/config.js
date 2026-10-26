@@ -253,7 +253,10 @@ return view.extend({
 		o = s.option(form.Flag, 'prefer_remaining_flow', _('优先使用余量充足的账号'));
 		o.default='0';o.rmempty=false;o.description=_('仅在未指定独立顺序时使用新鲜计费数据排序。');
 		o = s.option(form.Flag, 'traffic_monitor', _('设备流量统计'));
-		o.default='1';o.rmempty=false;o.description=_('每分钟从计费系统读取各设备已用流量。');
+		o.default='0';o.rmempty=false;o.description=_('开启后每分钟记录计费流量并绘制曲线。');
+        o.cfgvalue=function(section){return ['local','all'].includes(uci.get('bjut-autologin',section,'traffic_scope'))?(uci.get('bjut-autologin',section,'traffic_monitor')||'0'):'0';};
+        o = s.option(form.ListValue, 'traffic_scope', _('流量统计范围'));
+        o.value('local',_('仅路由器上游'));o.value('all',_('全部在线设备'));o.default='local';o.rmempty=false;
 
 		o = s.option(form.Flag, 'billing_background', _('后台计费检查'));
 		o.default = '0'; o.rmempty = false;

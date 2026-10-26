@@ -80,3 +80,6 @@ python3 -m http.server 1431 --bind 127.0.0.1 --directory openwrt
 打开 `http://127.0.0.1:1431/tests/luci-regression.html`，点击“检查刷新与功能”。页面仅注入模拟 rpcd 数据，不访问真实路由器或校园网；覆盖控件聚焦持续刷新、单次请求失败恢复、注销切换、离页停止刷新及计费汇总。分别在桌面和 390px 窄屏验收。
 
 真实 LuCI 主题、路由器登录耗时、多上游策略路由、真实计费变更和物理网络切换仍需现场测试，不以模拟通过替代。
+
+
+流量统计专项：`python3 -m unittest discover -s openwrt/tests -p test_traffic_history.py` 验证默认关闭、旧配置重新确认、物理上游匹配、仅本机范围过滤、连续增量与分层汇总、缺采样/计数回退以及每分钟调度。LuCI 浏览器用例覆盖手动开启/暂停、接口对比、累计、悬停和键盘读数、CSV 及移动端无横向溢出。共享模型变更后运行 `node scripts/build-router-usage-ui.mjs .`，同时提交生成的 JS 和 CSS。
