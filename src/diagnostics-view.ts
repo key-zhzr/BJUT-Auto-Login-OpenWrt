@@ -1,4 +1,6 @@
 import type { DiagnosticReport, DiagnosticStep, DualStackReport } from './models';
+import { animateResize, setVisible } from './layout-motion';
+import { diagnosticAdvice } from './network-quality-model';
 
 export function renderDiagnosticReportView(report: DiagnosticReport, options: { busy: boolean; renderHealth: (health: DualStackReport) => void; formatTime: (time: string) => string }) {
   const adapterRepairPanel = document.getElementById('diagnostic-adapter-repair')!;
@@ -7,7 +9,7 @@ export function renderDiagnosticReportView(report: DiagnosticReport, options: { 
   const diagnosticSteps = document.getElementById('diagnostic-steps')!;
   const btnCopyDiagnostics = document.getElementById('btn-copy-diagnostics') as HTMLButtonElement;
   if (report.dualStack && !report.stale) options.renderHealth(report.dualStack);
-  adapterRepairPanel.hidden = !report.adapterRestart;
+  setVisible(adapterRepairPanel, !!report.adapterRestart);
   btnRestartLgnAdapter.disabled = options.busy;
   if (report.adapterRestart) {
     adapterRepairMessage.textContent = `${report.adapterRestart.interfaceName}：${report.adapterRestart.reason}。重启会短暂中断此有线连接并重新获取网络配置，macOS 可能要求管理员授权。`;
@@ -25,9 +27,13 @@ export function renderDiagnosticReportView(report: DiagnosticReport, options: { 
   badge.className = `health-badge ${overallClass}`;
   badge.textContent = overallLabel;
   title.textContent = report.summary;
+  const advice = document.getElementById('diagnostic-advice');
+  if (advice) animateResize(advice, () => { advice.replaceChildren(); for (const message of diagnosticAdvice(report)) { const p = document.createElement('p'); p.textContent=message; advice.append(p); } });
   meta.textContent = `${options.formatTime(report.createdAt)} · SSID ${report.ssid || '--'} · IP ${report.ip || '--'}`;
-  diagnosticSteps.innerHTML = '';
-  report.steps.forEach(step => renderDiagnosticStep(step));
+  animateResize(diagnosticSteps,()=>{
+    diagnosticSteps.innerHTML = '';
+    report.steps.forEach(step => renderDiagnosticStep(step, false));
+  });
   btnCopyDiagnostics.disabled = false;
 }
 
@@ -53,7 +59,7 @@ export function formatDiagnosticReport(report: DiagnosticReport, formatTime: (ti
 }
 
 const diagnosticOrder = ['network_identity', 'campus_route', 'campus_environment', 'dns', 'internet', 'authentication_session', 'wired_ipv6_configuration', 'portal'];
-export function renderDiagnosticStep(step: DiagnosticStep) {
+export function renderDiagnosticStep(step: DiagnosticStep, animate = true) {
   const diagnosticSteps = document.getElementById('diagnostic-steps')!;
   const row = document.createElement('div');
   row.className = `diagnostic-step ${step.status}`;
@@ -74,10 +80,11 @@ export function renderDiagnosticStep(step: DiagnosticStep) {
 
   row.dataset.stepId = step.id;
   const previous = Array.from(diagnosticSteps.children).find(child => (child as HTMLElement).dataset.stepId === step.id);
-  if (previous) previous.replaceWith(row);
+  const update=()=>{if (previous) previous.replaceWith(row);
   else {
     const order = diagnosticOrder.indexOf(step.id);
     const next = Array.from(diagnosticSteps.children).find(child => diagnosticOrder.indexOf((child as HTMLElement).dataset.stepId || '') > order);
     diagnosticSteps.insertBefore(row, next || null);
-  }
+  }};
+  if(animate)animateResize(diagnosticSteps,update);else update();
 }

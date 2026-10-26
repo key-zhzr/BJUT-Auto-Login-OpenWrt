@@ -23,6 +23,11 @@ export interface NetworkProfile {
 }
 
 export interface BackendConfig {
+  tray?: import('./tray-preferences').TrayPreferences;
+  traffic_monitor_enabled?: boolean;
+  traffic_monitor_scope?: 'local' | 'all';
+  traffic_retention?: {minuteHours:number;hourDays:number;dayDays:number;storageMb?:number};
+  prefer_remaining_flow?: boolean;
   preferred_interface?: string;
   adaptive_network_checks?: boolean;
   accounts?: Partial<AccountView>[];

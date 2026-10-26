@@ -604,6 +604,32 @@ fn renewal_package(service: BillingServiceState) -> Result<(String, String), Bil
     }
 }
 
+pub(crate) async fn query_device_usage(
+    access: &BillingAccess,
+    compatibility: VpnCompatibility,
+    pool: &std::sync::Mutex<BillingSessionPool>,
+) -> Result<(BillingSnapshot, Vec<BillingOnlineSession>), BillingError> {
+    let (mut session, _) = acquire_billing_session(pool, access, compatibility).await?;
+    let overview = parse_dashboard_bounded(&session.dashboard_html, &access.account).await?;
+    let result = get_dashboard_text(
+        &mut session,
+        "/Self/dashboard/getOnlineList",
+        "application/json,*/*;q=0.8",
+    )
+    .await
+    .and_then(|text| parse_online_sessions(&text));
+    if let Some(password) = access.password.as_deref() {
+        if result.is_ok() {
+            pool.lock()
+                .unwrap()
+                .put(&access.account, password, compatibility, session);
+        } else {
+            pool.lock().unwrap().remove(&access.account);
+        }
+    }
+    result.map(|devices| (overview, devices))
+}
+
 pub(crate) async fn query_records(
     access: &BillingAccess,
     compatibility: VpnCompatibility,
@@ -3671,11 +3697,8 @@ fn parse_online_sessions(text: &str) -> Result<Vec<BillingOnlineSession>, Billin
                 .and_then(value_as_f64)
                 .map(|value| format!("{:.0}", value / 60.0))
                 .unwrap_or_else(|| "--".to_string());
-            let used_flow_mb = match (
-                object.get("downFlow").and_then(value_as_f64),
-                object.get("upFlow").and_then(value_as_f64),
-            ) {
-                (Some(down), Some(up)) => format!("{:.3}", (down + up) / 1024.0),
+            let used_flow_mb = match object.get("downFlow").and_then(value_as_f64) {
+                Some(down) if down.is_finite() && down >= 0. => format!("{:.3}", down / 1024.0),
                 _ => "--".to_string(),
             };
             Ok(BillingOnlineSession {
@@ -4777,6 +4800,21 @@ mod tests {
     }
 
     #[test]
+    fn device_counter_corpus_matches_router_units() {
+        let devices =
+            parse_online_sessions(include_str!("../fixtures/billing-online.json")).unwrap();
+        assert_eq!(
+            devices
+                .iter()
+                .map(|d| d.used_flow_mb.as_str())
+                .collect::<Vec<_>>(),
+            vec!["3.000", "2.000"]
+        );
+        assert_eq!(devices[0].duration_minutes, "2");
+        assert_eq!(devices[1].duration_minutes, "1");
+    }
+
+    #[test]
     fn dashboard_remaining_flow_falls_back_to_embedded_authoritative_value() {
         let html = r#"
             <script>(function (user) { window.user = user || {}; })({
@@ -4871,7 +4909,7 @@ mod tests {
         .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].duration_minutes, "2");
-        assert_eq!(records[0].used_flow_mb, "1.500");
+        assert_eq!(records[0].used_flow_mb, "1.000");
         assert_eq!(records[0].session_id, "session-1");
     }
 

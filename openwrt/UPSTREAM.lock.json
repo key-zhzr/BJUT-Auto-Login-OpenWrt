@@ -1,4 +1,9 @@
 {
-  "upstream": "877242391d5897216324eaebf5aae6a580b1f777",
-  "reviewRequired": []
+  "upstream": "bf428933de0e8e323ee31971cf648f1a68c212ff",
+  "reviewRequired": [
+    "src-tauri/src/",
+    "src/device-usage-model.ts",
+    "src/usage-chart.ts"
+  ],
+  "reviewNote": "Manually reviewed and validated traffic v3; router workflows and introduction retained."
 }

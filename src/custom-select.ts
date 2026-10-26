@@ -13,10 +13,12 @@ export class CustomSelect {
   private selectedOptions: HTMLElement[] = [];
   private highlightedOption: HTMLElement | null = null;
   private scrollFrame: number | null = null;
+  private closeTimer: number | null = null;
+  private scrollPositions = new WeakMap<Element, {top: number; left: number}>();
   onChangeCallbacks: ((value: string) => void)[] = [];
 
   private options() { return this.allOptions.filter(option => option.getAttribute('aria-disabled') !== 'true'); }
-  private close() {
+  close() {
     if (CustomSelect.openInstance === this) CustomSelect.openInstance = null;
     if (this.scrollFrame !== null) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = null; }
     if (!this.element.classList.contains('open')) return;
@@ -24,6 +26,15 @@ export class CustomSelect {
     this.trigger.removeAttribute('aria-activedescendant');
     this.highlightedOption?.classList.remove('keyboard-active');
     this.highlightedOption = null;
+    this.optionsContainer.inert = true;
+    if (this.closeTimer !== null) window.clearTimeout(this.closeTimer);
+    const style = getComputedStyle(this.optionsContainer);
+    const milliseconds = (value: string) => Math.max(0, ...value.split(',').map(part => Number.parseFloat(part) * (part.trim().endsWith('ms') ? 1 : 1000)));
+    const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : milliseconds(style.transitionDuration) + milliseconds(style.transitionDelay);
+    this.closeTimer = window.setTimeout(() => {
+      this.closeTimer = null;
+      if (!this.element.classList.contains('open')) this.optionsContainer.hidden = true;
+    }, duration);
   }
   private highlight(index: number, keyboard = true) {
     const options = this.options(); if (!options.length) return;
@@ -55,6 +66,10 @@ export class CustomSelect {
     if (this.disabled) return;
     CustomSelect.openInstance?.close();
     CustomSelect.openInstance = this;
+    if (this.closeTimer !== null) { window.clearTimeout(this.closeTimer); this.closeTimer = null; }
+    this.element.classList.add('menu-positioning');
+    this.optionsContainer.hidden = false;
+    this.optionsContainer.inert = false;
     const trigger = this.trigger.getBoundingClientRect();
     const scroller = this.element.closest<HTMLElement>('main, .modal-content');
     const bounds = scroller?.getBoundingClientRect();
@@ -71,10 +86,20 @@ export class CustomSelect {
     }
     const below = Math.max(0, bottom - trigger.bottom - 12);
     const above = Math.max(0, trigger.top - top - 12);
-    const opensUp = below < 160 && above > below;
+    // Resolve placement while the flyout is invisible. Keep that placement on
+    // exit too; changing top/bottom halfway through a transform causes a jump.
+    this.element.classList.remove('open');
+    const desired = Math.min(220, this.optionsContainer.scrollHeight || 220);
+    const opensUp = below < desired && above > below;
     this.element.classList.toggle('opens-up', opensUp);
     this.optionsContainer.style.maxHeight = `${Math.min(220, opensUp ? above : below)}px`;
+    this.optionsContainer.getBoundingClientRect();
+    this.element.classList.remove('menu-positioning');
     this.element.classList.add('open'); this.trigger.setAttribute('aria-expanded', 'true');
+    this.scrollPositions = new WeakMap();
+    for (let parent = this.element.parentElement; parent; parent = parent.parentElement) {
+      this.scrollPositions.set(parent, {top: parent.scrollTop, left: parent.scrollLeft});
+    }
     this.highlight(Math.max(0, this.options().findIndex(option => option.dataset.value === this._value)), keyboard);
   }
   private prepareOptions() {
@@ -97,6 +122,8 @@ export class CustomSelect {
     this.trigger = this.element.querySelector('.custom-select-trigger')!;
     this.triggerSpan = this.trigger.querySelector('span')!;
     this.optionsContainer = this.element.querySelector('.custom-select-options')!;
+    this.optionsContainer.hidden = true;
+    this.optionsContainer.inert = true;
     this.trigger.tabIndex = 0; this.trigger.setAttribute('role', 'combobox');
     this.trigger.setAttribute('aria-haspopup', 'listbox'); this.trigger.setAttribute('aria-expanded', 'false');
     const accessibleLabel = this.element.getAttribute('aria-label');
@@ -132,6 +159,14 @@ export class CustomSelect {
     this.optionsContainer.addEventListener('mousedown', event => {
       if ((event.target as HTMLElement).closest('.custom-option')) event.preventDefault();
     });
+    // Consume wheel momentum inside the list, including at its limits. Letting
+    // it reach the page used to scroll an ancestor and close the flyout.
+    this.optionsContainer.addEventListener('wheel', event => {
+      if (!this.element.classList.contains('open') || !event.deltaY) return;
+      event.preventDefault(); event.stopPropagation();
+      const unit = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? this.optionsContainer.clientHeight : 1;
+      this.optionsContainer.scrollTop += event.deltaY * unit;
+    }, {passive: false});
     this.optionsContainer.addEventListener('click', event => {
       const option = (event.target as HTMLElement).closest<HTMLElement>('.custom-option');
       if (this.disabled || !option || option.getAttribute('aria-disabled') === 'true') return;
@@ -143,7 +178,12 @@ export class CustomSelect {
       document.addEventListener('scroll', event => {
         const current = CustomSelect.openInstance;
         if (current && event.target instanceof Element && !current.optionsContainer.contains(event.target)
-          && event.target.contains(current.element)) current.close();
+          && event.target.contains(current.element)) {
+          const before = current.scrollPositions.get(event.target);
+          // Focusing a trigger can queue a scroll event before it opens. Its
+          // offset is already captured above; it must not close the new menu.
+          if (!before || Math.abs(before.top-event.target.scrollTop) > .5 || Math.abs(before.left-event.target.scrollLeft) > .5) current.close();
+        }
       }, {capture:true,passive:true});
       CustomSelect.outsideHandlerInstalled = true;
     }

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f172a" />
     <title>BJUT-Auto-Login</title>
+    <script src="/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="/src/styles.css" />
     <link rel="stylesheet" href="/src/themes.css" />
     <link rel="stylesheet" href="/src/theme-apple.css" />
@@ -60,6 +61,7 @@
               </button>
               <div id="nav-billing-tree" class="nav-billing-tree" aria-label="计费系统功能" aria-hidden="true">
                 <span class="nav-tree-label">功能</span>
+                <button class="nav-tree-link nav-billing-link" type="button" data-billing-section-target="upstreams" data-router-billing-only hidden><i data-lucide="layout-dashboard"></i><span>上游总览</span></button>
                 <button class="nav-tree-link nav-billing-link active" type="button" data-billing-section-target="overview">
                   <i data-lucide="layout-dashboard"></i><span>概览</span>
                 </button>
@@ -97,13 +99,38 @@
       <main id="main-content">
         <!-- Dashboard -->
         <section id="dashboard" class="page active">
+          <aside id="onboarding-resume" class="glass-card onboarding-resume" hidden><span>首次设置尚未完成</span><button id="btn-onboarding-continue" class="btn btn-secondary btn-sm" type="button">继续设置</button></aside>
           <header class="page-header">
             <h1>控制台</h1>
             <button id="btn-open-billing" class="btn btn-secondary btn-sm" type="button">
               <i data-lucide="receipt-text"></i> 计费中心
             </button>
           </header>
-          
+
+          <section id="router-dashboard" class="glass-card router-dashboard" hidden>
+            <div class="router-panel-header">
+              <div><h3>路由器</h3><p id="router-discovery-message" role="status"></p></div>
+              <div class="router-actions">
+                <button id="btn-router-discover" class="btn btn-secondary btn-sm" type="button">查找</button>
+                <button id="btn-router-auto-connect" class="btn btn-primary btn-sm" type="button">连接</button>
+              </div>
+            </div>
+            <div id="router-connected" hidden>
+              <div class="router-panel-header"><strong id="router-version"></strong><div class="router-actions">
+                <button id="btn-router-refresh" class="btn btn-secondary btn-sm" type="button">刷新</button>
+                <button id="btn-router-disconnect" class="btn btn-secondary btn-sm" type="button">停止协作</button>
+              </div></div>
+              <div id="router-uplink-status" class="router-port-grid"></div>
+              <details class="router-more-actions"><summary>指定上游和账号</summary>
+                <div class="router-controls-row">
+                  <div class="custom-select" id="router-uplink-select" aria-label="路由上游"><div class="custom-select-trigger"><span>选择上游</span><i data-lucide="chevron-down"></i></div><div class="custom-select-options"></div></div>
+                  <div class="custom-select" id="router-account-select" aria-label="路由登录账号"><div class="custom-select-trigger"><span>自动选择账号</span><i data-lucide="chevron-down"></i></div><div class="custom-select-options"></div></div>
+                </div>
+                <div class="router-actions"><button id="btn-router-login" class="btn btn-primary btn-sm" type="button">登录所选上游</button><button id="btn-router-billing" class="btn btn-secondary btn-sm" type="button">计费中心</button></div>
+              </details>
+            </div>
+          </section>
+          <h3 id="dashboard-local-label" class="router-local-heading" hidden>当前设备</h3>
           <div id="dashboard-override-options" class="glass-card" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 12px;">
             <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
               <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 150px;">
@@ -219,6 +246,8 @@
               </div>
             </div>
           </div>
+        <section id="device-usage-panel" class="glass-card device-usage-panel" aria-live="polite"></section>
+          <section id="router-device-usage-panel" class="glass-card device-usage-panel" hidden aria-live="polite"></section>
         </section>
 
         <!-- Billing center (opened from the dashboard to keep mobile navigation compact) -->
@@ -249,8 +278,13 @@
 
           <div id="billing-center-message" class="billing-center-message" hidden aria-live="polite"></div>
 
+          <div id="router-billing-source" class="router-source-row" hidden>
+            <span>查询来源</span><button id="btn-billing-source-router" class="btn btn-secondary btn-sm" type="button" aria-pressed="true">路由器</button><button id="btn-billing-source-local" class="btn btn-secondary btn-sm" type="button" aria-pressed="false">当前设备</button><span id="billing-source-current" role="status"></span>
+          </div>
+
           <div class="billing-workbench">
             <nav class="billing-mobile-nav" aria-label="计费中心功能" role="tablist">
+              <button class="btn btn-secondary billing-section-nav-button" type="button" role="tab" aria-selected="false" data-billing-section-target="upstreams" data-router-billing-only hidden><i data-lucide="layout-dashboard"></i><span>上游总览</span></button>
               <button class="btn btn-secondary billing-section-nav-button active" type="button" role="tab" aria-selected="true" data-billing-section-target="overview">
                 <i data-lucide="layout-dashboard"></i><span>概览</span>
               </button>
@@ -269,6 +303,7 @@
             </nav>
 
             <div class="billing-workbench-content">
+              <section id="router-billing-summary-content" data-billing-section="upstreams" hidden></section>
           <div class="billing-center-summary" data-billing-section="overview">
             <article class="billing-summary-card glass-card">
               <span>计费账号</span>
@@ -510,9 +545,10 @@
                   <i data-lucide="wallet-cards"></i>
                   <h2>充值</h2>
                 </div>
-                <p>选择支付方式，为自己或他人充值网费。</p>
+                <p id="billing-recharge-description">选择支付方式，为自己或他人充值网费。</p>
               </div>
             </div>
+            <div id="billing-recharge-unavailable" class="billing-empty" hidden>路由器计费不包含充值，请切换到当前设备完成充值。</div>
             <div class="billing-payment-panel">
               <div class="billing-recharge-hours" role="note">
                 <i data-lucide="clock"></i>
@@ -683,6 +719,7 @@
           </section>
             </div>
           </div>
+
         </section>
 
         <!-- Accounts -->
@@ -695,7 +732,7 @@
             <button id="btn-show-add" class="btn btn-primary"><i data-lucide="plus"></i> 添加账号</button>
           </header>
 
-          <section id="discovered-account-card" class="account-discovery-card glass-card hidden" aria-live="polite">
+          <section id="discovered-account-card" class="account-discovery-card glass-card" hidden aria-live="polite">
             <div class="account-discovery-icon"><i data-lucide="user-search"></i></div>
             <div class="account-discovery-copy">
               <h3 id="discovered-account-title">发现当前校园网账号</h3>
@@ -708,10 +745,20 @@
           </section>
           
           <div class="accounts-container">
+            <h3 id="router-local-accounts-title" class="router-local-heading" hidden>本机账号</h3>
             <div id="accounts-list" class="accounts-list">
               <!-- Dynamically populated -->
             </div>
           </div>
+
+          <section id="router-accounts-panel" class="glass-card router-page-panel" hidden>
+            <div class="router-panel-header"><h3>路由账号</h3><span id="router-accounts-count"></span><button id="btn-router-add-account" type="button" class="btn btn-primary btn-sm">添加账号</button></div><p id="router-accounts-message" role="status"></p>
+            <div id="router-accounts-list"></div>
+            <details id="router-sync-details"><summary>同步本机账号至路由器</summary>
+              <div id="router-sync-accounts" class="router-sync-accounts"></div>
+              <button id="btn-router-sync" class="btn btn-secondary btn-sm" type="button">同步选定账号</button>
+            </details>
+          </section>
 
           <section class="diagnostic-panel glass-card account-credential-health">
             <div class="diagnostic-panel-header">
@@ -726,7 +773,7 @@
               <div><span>已保存密码</span><strong id="credential-saved-count">0</strong></div>
               <div><span>需要补录</span><strong id="credential-missing-count">0</strong></div>
             </div>
-            <div id="credential-missing-users" class="diagnostic-note hidden"></div>
+            <div id="credential-missing-users" class="diagnostic-note" hidden></div>
           </section>
         </section>
 
@@ -829,6 +876,8 @@
               <p>检查网络链路与账号健康状态</p>
             </div>
             <div class="diagnostics-actions">
+              <button id="btn-route-trace" class="btn btn-secondary btn-sm" type="button">链路检查</button>
+              <button id="btn-issue-preview" class="btn btn-secondary btn-sm" type="button">反馈问题</button>
               <button id="btn-copy-diagnostics" class="btn btn-secondary btn-sm" disabled><i data-lucide="copy"></i> 复制报告</button>
               <button id="btn-run-diagnostics" class="btn btn-primary"><i data-lucide="activity"></i> 开始诊断</button>
             </div>
@@ -863,6 +912,10 @@
           </details>
 
           <div class="diagnostics-grid">
+            <section id="router-diagnostics-panel" class="diagnostic-panel glass-card router-page-panel" hidden>
+              <div class="router-panel-header"><h3>路由上游</h3><button id="btn-router-diagnostics-refresh" class="btn btn-secondary btn-sm" type="button">刷新</button></div>
+              <div id="router-diagnostics-results"></div>
+            </section>
             <details id="account-health-panel" class="diagnostic-panel glass-card">
               <summary class="account-health-summary"><strong>账号状态</strong><span id="account-health-summary">暂无账号</span></summary>
               <div class="diagnostic-panel-header">
@@ -882,10 +935,16 @@
                 <p>网络接口 → 校园环境 → DNS → 互联网 → 认证网关</p>
               </div>
             </div>
+            <div id="diagnostic-advice" class="transfer-note" aria-live="polite"></div>
             <div id="diagnostic-steps" class="diagnostic-steps">
               <div class="diagnostic-empty">运行诊断后将在此展示每一步结果</div>
             </div>
           </section>
+        <section id="network-quality-panel" class="glass-card">
+          <h3>网络质量 · 最近 24 小时</h3>
+          <div id="network-quality-content" class="transfer-note"></div>
+          <label><input id="quality-alerts" type="checkbox"> 持续异常与恢复时提醒</label>
+        </section>
         </section>
 
         <!-- Logs -->
@@ -920,6 +979,12 @@
             </div>
             <span id="log-filter-count">0 条</span>
           </div>
+
+          <details id="router-logs-panel" class="glass-card router-page-panel" hidden open>
+            <summary>路由器日志</summary>
+            <div class="router-actions"><button id="btn-router-logs-refresh" class="btn btn-secondary btn-sm" type="button">刷新</button></div>
+            <pre id="router-logs-content" class="router-log-content">正在读取…</pre>
+          </details>
           
           <div class="logs-container glass-card">
             <div id="logs-content" class="logs-content">
@@ -1208,6 +1273,17 @@
 
             <div class="settings-group glass-card" style="margin-top: 1rem;">
               <h3>高级设置</h3>
+              <div class="setting-item"><div class="setting-info"><h4>优先使用余量充足的账号</h4><p>依据已开启统计取得的新鲜计费数据排序，独立账号顺序优先。</p></div><label class="switch"><input id="setting-prefer-flow" type="checkbox"><span class="slider round"></span></label></div>
+              <div class="setting-item"><div class="setting-info"><h4>设备流量统计</h4><p>开启后每分钟记录计费流量并绘制曲线。Android 在前台更新。</p></div><label class="switch"><input id="setting-traffic-monitor" type="checkbox"><span class="slider round"></span></label></div>
+              <div class="setting-item"><div class="setting-info"><h4>流量统计范围</h4></div><div class="traffic-scope"><label><input type="radio" name="setting-traffic-scope" value="local" checked>仅本机设备</label><label><input type="radio" name="setting-traffic-scope" value="all">全部在线设备</label></div></div>
+              <div class="traffic-retention-controls">
+                <label>分钟明细保留（小时）<input type="number" min="1" max="8760" step="1" data-usage-retention="minuteHours" aria-label="分钟明细保留（小时）"></label>
+                <label>小时汇总保留（天）<input type="number" min="1" max="3660" step="1" data-usage-retention="hourDays" aria-label="小时汇总保留（天）"></label>
+                <label>每日汇总保留（天）<input type="number" min="1" max="36600" step="1" data-usage-retention="dayDays" aria-label="每日汇总保留（天）"></label>
+                <label>统计存储上限（MB）<input type="number" min="1" max="128" step="1" data-usage-retention="storageMb" aria-label="统计存储上限（MB）"></label>
+              </div><p id="usage-storage-estimate" class="traffic-note"></p>
+              <div class="setting-item"><div class="setting-info"><h4>首次使用引导</h4><p>查看账号、网络与后台运行的设置步骤。</p></div><button class="btn btn-secondary btn-sm" id="btn-onboarding" type="button">重新查看</button></div>
+              <div class="setting-item desktop-only"><div class="setting-info"><h4>菜单栏与托盘</h4><p>选择图标、显示内容和快捷菜单。</p></div><button class="btn btn-secondary btn-sm" id="btn-tray-preferences" type="button">自定义</button></div>
               <div class="setting-item">
                 <div class="setting-info">
                   <h4>更多控制台选项</h4>
@@ -1282,6 +1358,34 @@
               </div>
             </div>
 
+            <section id="router-control" class="settings-group glass-card router-control" style="margin-top: 1rem;">
+              <div class="setting-group-heading">
+                <div>
+                  <h3>路由协作</h3>
+                  <p id="router-settings-connection">自动查找当前局域网中的 BJUT 路由器。</p>
+                  <p id="router-message" role="status" aria-live="polite"></p>
+                </div>
+                <div class="setting-group-actions">
+                  <button id="btn-router-settings-discover" class="btn btn-secondary btn-sm" type="button">重新查找</button>
+                  <button id="btn-router-manual-connect" class="btn btn-secondary btn-sm" type="button">手动连接</button>
+                  <button id="btn-router-forget-password" class="btn btn-secondary btn-sm" type="button" hidden>忘记路由密码</button>
+                </div>
+              </div>
+              <form id="router-settings-form" class="router-settings-form" hidden>
+                <div id="router-service-common" class="router-settings-list"></div>
+                <details id="router-service-advanced" class="router-settings-advanced">
+                  <summary>更多设置与上游</summary>
+                  <div id="router-service-more" class="router-settings-list"></div>
+                  <h4 class="router-settings-subheading">上游接口</h4>
+                  <div id="router-configured-uplinks"></div>
+                </details>
+                <div class="router-settings-footer">
+                  <p id="router-settings-message" role="status"></p>
+                  <button id="btn-router-settings-save" class="btn btn-primary btn-sm" type="submit">保存设置</button>
+                </div>
+              </form>
+            </section>
+
             <div id="settings-about" class="settings-group glass-card settings-about-card" style="margin-top: 1rem;">
               <div class="settings-about-header">
                 <div class="settings-about-logo" aria-hidden="true"></div>
@@ -1292,7 +1396,7 @@
                 </div>
               </div>
               <div class="settings-about-meta">
-                <div><span>当前版本</span><strong id="app-version">v0.1.5</strong></div>
+                <div><span>当前版本</span><strong id="app-version">v0.1.6</strong></div>
                 <div><span>数据原则</span><strong>账号凭据仅保存在本机安全存储</strong></div>
                 <div><span>项目性质</span><strong>开源第三方工具，非学校官方应用</strong></div>
               </div>
@@ -1302,13 +1406,31 @@
                 <button class="btn btn-secondary btn-sm" id="btn-open-project-home" type="button"><i data-lucide="external-link"></i> 开源仓库</button>
                 <button class="btn btn-secondary btn-sm" id="btn-open-project-license" type="button"><i data-lucide="file-text"></i> 开源许可</button>
               </div>
-              <p class="settings-about-note">应用只会连接校园网登录、计费、统一认证、校园服务与 GitHub Releases 等明确用途的服务；敏感字段不会写入运行日志。</p>
+              <p class="settings-about-note">应用连接校园网认证、计费、校园服务、GitHub 更新及你配置的路由器；敏感字段不会写入运行日志。</p>
             </div>
           </div>
         </section>
       </main>
     </div>
 
+    <div id="router-connect-modal" class="modal-overlay hidden">
+      <div class="modal-content glass-card router-connect-modal-content" role="dialog" aria-modal="true" aria-labelledby="router-connect-title">
+        <h3 id="router-connect-title">连接路由器</h3>
+        <p>使用路由器的管理账号连接。</p>
+        <details id="router-connection-settings" open><summary>连接设置</summary>
+          <form id="router-connect-form" class="router-connect-form">
+            <label>路由器地址<input id="router-address" type="url" autocomplete="url" placeholder="https://192.168.1.1" required></label>
+            <div class="router-controls-row"><label>管理账号<input id="router-username" autocomplete="username" required></label><label>管理密码<input id="router-password" type="password" autocomplete="off" required></label></div>
+            <label class="router-setting-switch"><input id="router-remember-password" type="checkbox">记住路由密码</label><p class="router-http-note">仅在记住的网络中自动重连。</p>
+            <label class="router-setting-switch"><input id="router-allow-http" type="checkbox">允许局域网 HTTP</label>
+            <p class="router-http-note">HTTP 仅用于可信局域网，密码将明文传输。</p>
+            <details class="router-certificate-details"><summary>路由器证书（可选）</summary><p>首次连接可确认指纹，也可粘贴 PEM 证书。</p><textarea id="router-certificate" rows="4" spellcheck="false" aria-label="路由器 PEM 证书"></textarea></details>
+            <p id="router-connect-message" role="status" aria-live="polite"></p>
+            <div class="modal-actions"><button id="btn-router-connect-cancel" class="btn btn-secondary" type="button">取消</button><button id="btn-router-connect" class="btn btn-primary" type="submit">连接</button></div>
+          </form>
+        </details>
+      </div>
+    </div>
     <!-- Terms of Service Modal -->
     <div id="network-profile-modal" class="modal-overlay hidden">
       <div class="modal-content glass-card network-profile-modal-content">
@@ -1406,7 +1528,7 @@
     <div id="confirm-modal" class="modal-overlay hidden">
       <div class="modal-content glass-card">
         <h3 id="confirm-modal-title">确认</h3>
-        <p id="confirm-modal-text" style="margin-bottom: 1.5rem; color: var(--text-muted); font-size: 0.95rem; white-space: pre-wrap;"></p>
+        <p id="confirm-modal-text" style="margin-bottom: 1.5rem; color: var(--text-muted); font-size: 0.95rem; white-space: pre-wrap; overflow-wrap: anywhere;"></p>
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" id="btn-confirm-cancel">取消</button>
           <button type="button" class="btn btn-primary" id="btn-confirm-ok">确定</button>

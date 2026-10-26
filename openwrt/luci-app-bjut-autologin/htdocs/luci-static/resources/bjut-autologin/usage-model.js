@@ -266,7 +266,6 @@ class UsageChart {
                 this.options.range = Number(value);
                 delete this.options.start;
                 delete this.options.end;
-                this.dates.hidden = true;
             }
             this.draw();
         });
@@ -316,7 +315,12 @@ class UsageChart {
             const [left, right] = usageZoom(start, end, start + (end - start) * ratio, Math.exp(Math.max(-1, Math.min(1, delta * .002))));
             this.window(left, right);
             if (!this.wheelFrame)
-                this.wheelFrame = requestAnimationFrame(() => { this.wheelFrame = 0; this.draw(false); this.environment.windowChanged?.(); });
+                this.wheelFrame = requestAnimationFrame(() => { this.wheelFrame = 0; if (this.dates.hidden)
+                    this.draw();
+                else {
+                    this.draw(false);
+                    this.environment.windowChanged?.();
+                } });
         }, { passive: false });
         this.plot.onkeydown = event => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key))
@@ -378,7 +382,6 @@ class UsageChart {
         this.options.end = end - shift;
         this.options.range = this.options.end - this.options.start;
         this.range.value = 'custom';
-        this.dates.hidden = false;
         const format = (at) => new Date((at + 28800) * 1000).toISOString().slice(0, 16);
         this.startInput.value = format(this.options.start);
         this.endInput.value = format(this.options.end);
@@ -444,6 +447,7 @@ class UsageChart {
             this.environment.windowChanged?.();
             return;
         }
+        this.dates.hidden = this.options.start === undefined;
         this.interfaceChoices.hidden = this.options.presentation !== 'interfaces';
         this.scopeLocal.setAttribute('aria-pressed', String(this.viewScope === 'local'));
         this.scopeAll.setAttribute('aria-pressed', String(this.viewScope === 'all'));

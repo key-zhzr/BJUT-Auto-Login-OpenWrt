@@ -88,7 +88,7 @@ export class UsageChart {
         });
         this.range = select('时间范围', [...usageScales[0].ranges.map(seconds => ({value: String(seconds), text: usageRangeLabel(seconds)})),{value:'custom',text:'自选时间'}], value => {
             if(value==='custom')this.window(this.options.start??Date.now()/1000-this.options.range,this.options.end??Date.now()/1000);
-            else {this.options.range=Number(value);delete this.options.start;delete this.options.end;this.dates.hidden=true;}
+            else {this.options.range=Number(value);delete this.options.start;delete this.options.end;}
             this.draw();
         });
         this.range.value = String(this.options.range);
@@ -116,7 +116,7 @@ export class UsageChart {
             event.preventDefault();const bounds=this.plot.getBoundingClientRect(),start=this.options.start??Date.now()/1000-this.options.range,end=this.options.end??Date.now()/1000;
             const ratio=Math.max(0,Math.min(1,(event.clientX-bounds.left-68)/(bounds.width-86))),delta=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?bounds.height:1);
             const [left,right]=usageZoom(start,end,start+(end-start)*ratio,Math.exp(Math.max(-1,Math.min(1,delta*.002))));this.window(left,right);
-            if(!this.wheelFrame)this.wheelFrame=requestAnimationFrame(()=>{this.wheelFrame=0;this.draw(false);this.environment.windowChanged?.();});
+            if(!this.wheelFrame)this.wheelFrame=requestAnimationFrame(()=>{this.wheelFrame=0;if(this.dates.hidden)this.draw();else{this.draw(false);this.environment.windowChanged?.();}});
         },{passive:false});
         this.plot.onkeydown = event => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
@@ -150,7 +150,7 @@ export class UsageChart {
     }
     private window(start:number,end:number){
         const shift=Math.max(0,end-Date.now()/1000);this.options.start=Math.max(0,start-shift);this.options.end=end-shift;this.options.range=this.options.end-this.options.start;
-        this.range.value='custom';this.dates.hidden=false;
+        this.range.value='custom';
         const format=(at:number)=>new Date((at+28800)*1000).toISOString().slice(0,16);
         this.startInput.value=format(this.options.start);this.endInput.value=format(this.options.end);
     }
@@ -197,6 +197,7 @@ export class UsageChart {
     }
     private draw(animate = true) {
         if (animate) {this.resize(this.root, () => this.draw(false));this.environment.windowChanged?.();return;}
+        this.dates.hidden=this.options.start===undefined;
         this.interfaceChoices.hidden = this.options.presentation !== 'interfaces';
         this.scopeLocal.setAttribute('aria-pressed',String(this.viewScope==='local'));this.scopeAll.setAttribute('aria-pressed',String(this.viewScope==='all'));
         this.updateInterfaces();
