@@ -1,9 +1,5 @@
 {
-  "upstream": "268825e95349fce16b66460fece56f9142a184bb",
-  "reviewRequired": [
-    "src-tauri/src/",
-    "src/device-usage-model.ts",
-    "src/usage-chart.ts"
-  ],
-  "reviewNote": "Reviewed shared sampling boundary and Android background cancellation; router runtime remains the r24 build source."
+  "upstream": "211d8fc62cce7ebc243e18bb4558d9e31e544ec2",
+  "reviewRequired": [],
+  "retainedWorkflows": []
 }
