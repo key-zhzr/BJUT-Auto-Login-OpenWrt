@@ -1,9 +1,9 @@
 {
-  "upstream": "268825e95349fce16b66460fece56f9142a184bb",
+  "upstream": "b3ab9e500fbbb62bd994ed6795d9160b40096fa3",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Reviewed shared sampling boundary and Android background cancellation; router runtime remains the r24 build source."
+  "reviewNote": "Reviewed actual counter request timestamps and sampling documentation; router r26 independently reduces preparation polling, unchanged mwan3 work and empty-account history compaction."
 }
