@@ -1,9 +1,9 @@
 {
-  "upstream": "4875f8971fb36f8e44bf776ec3fd057cbb422305",
+  "upstream": "25a05369743e2b090f57bb7e82662dfe2ab2094a",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Reviewed documentation-only upstream changes. Formal router r27 passed six real six-account rounds with zero-second timestamp skew and 60-second intervals; timed eth1.41 switch and restore both retained the next shared cohort."
+  "reviewNote": "Reviewed shared traffic tooltip positioning, dashed discontinuities and switch reasons, plus matching App/LuCI setting dependencies. r28 adds validated dictionary+gzip checkpoints and selects confirmed upstream accounts before local-scope sampling."
 }
