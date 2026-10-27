@@ -232,6 +232,10 @@ def validate_runtime_with_sanitizers():
                 result=subprocess.run([binary,'snapshot',method,request,temp,temp,config,delta],env=env,capture_output=True)
                 if b'Sanitizer' in result.stderr or result.returncode not in (0,75):raise RuntimeError('Runtime snapshot failed sanitizer check')
                 if result.returncode==0:json.loads(result.stdout)
+        (temp/'view-context.json').write_text(json.dumps(context))
+        request.write_text('{"start":9223372036854775807,"end":9223372036854775807,"resolution":60,"monthly":true}')
+        result=subprocess.run([binary,'snapshot','traffic',request,temp,temp,config,delta],env=env,capture_output=True)
+        if result.returncode!=0 or b'Sanitizer' in result.stderr:raise RuntimeError('Extreme date bounds were not handled safely')
     finally:shutil.rmtree(temp)
 
 

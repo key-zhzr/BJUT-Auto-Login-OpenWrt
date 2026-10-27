@@ -90,7 +90,8 @@ static uint64_t hash_file(uint64_t h, const char *file) {
     FILE *f = fopen(file, "rb");
     unsigned char buffer[4096];
     size_t n;
-    // Include path/presence, then content; same-second edits also invalidate.
+    // Include inode/timestamps and content: neither same-second edits nor an
+    // A -> B -> A replacement during a cold read can publish the wrong view.
     for (const char *p = file; *p; p++) {
         h ^= (unsigned char)*p;
         h *= UINT64_C(1099511628211);
@@ -99,6 +100,25 @@ static uint64_t hash_file(uint64_t h, const char *file) {
     h *= UINT64_C(1099511628211);
     if (!f)
         return h;
+    struct stat st;
+    if (fstat(fileno(f), &st)) {
+        fclose(f);
+        return 0;
+    }
+    char stamp[256];
+#ifdef __APPLE__
+    struct timespec modified = {st.st_mtime, st.st_mtimensec};
+    struct timespec changed = {st.st_ctime, st.st_ctimensec};
+#else
+    struct timespec modified = st.st_mtim, changed = st.st_ctim;
+#endif
+    snprintf(stamp, sizeof(stamp), "%ju:%ju:%jd:%jd:%ld:%jd:%ld", (uintmax_t)st.st_dev,
+             (uintmax_t)st.st_ino, (intmax_t)st.st_size, (intmax_t)modified.tv_sec,
+             modified.tv_nsec, (intmax_t)changed.tv_sec, changed.tv_nsec);
+    for (const char *p = stamp; *p; p++) {
+        h ^= (unsigned char)*p;
+        h *= UINT64_C(1099511628211);
+    }
     size_t total = 0;
     while ((n = fread(buffer, 1, sizeof(buffer), f))) {
         total += n;
@@ -226,23 +246,29 @@ static int wait_probes(int argc, char **argv) {
         int done = 0;
         char file[PATH_MAX];
         for (int i = 0; i < 3; i++) {
-            snprintf(file, sizeof(file), "%s/%s/ok", directory, targets[i]);
-            if (!access(file, F_OK))
-                return 0;
             snprintf(file, sizeof(file), "%s/%s/done", directory, targets[i]);
             if (!access(file, F_OK))
                 done++;
+            snprintf(file, sizeof(file), "%s/%s/ok", directory, targets[i]);
+            if (!access(file, F_OK))
+                return 0;
         }
-        if (done == 3)
-            return 1;
         int living = 0;
         for (int i = 3; i < argc; i++) {
             Child c;
             if (child_token(argv[i], &c) && alive(c))
                 living++;
         }
-        if (!living)
+        if (done == 3 || !living) {
+            // A final worker may publish success between the first scan and
+            // its exit. Check committed results again before declaring failure.
+            for (int i = 0; i < 3; i++) {
+                snprintf(file, sizeof(file), "%s/%s/ok", directory, targets[i]);
+                if (!access(file, F_OK))
+                    return 0;
+            }
             return 1;
+        }
         pause_ms(50);
     } while (monotonic_ms() < deadline);
     return 1;
@@ -610,12 +636,16 @@ static int history(J *out, J *ctx, J *request, int all) {
         number(row, "sampledSeconds", num(row, "sampledSeconds") + strtoll(v[5], NULL, 10));
     }
     fclose(f);
-    int64_t first = num(request, "start"),
-            last = get(request, "end") ? num(request, "end") : INT64_C(41024448000),
+    int64_t first = digits(str(request, "start")) ? num(request, "start") : 0,
+            last = digits(str(request, "end")) ? num(request, "end") : INT64_C(41024448000),
             resolution = num(request, "resolution");
     if (first < 0)
         first = 0;
     if (last < 0)
+        last = INT64_C(41024448000);
+    if (first > INT64_C(41024448000))
+        first = INT64_C(41024448000);
+    if (last > INT64_C(41024448000))
         last = INT64_C(41024448000);
     if (resolution != 60 && resolution != 3600 && resolution != 86400)
         resolution = 0;
