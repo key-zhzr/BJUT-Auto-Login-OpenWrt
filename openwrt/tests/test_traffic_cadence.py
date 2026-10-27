@@ -10,6 +10,12 @@ spec.loader.exec_module(cadence)
 
 
 class CadenceTests(unittest.TestCase):
+    def test_local_scope_observes_only_confirmed_upstream_accounts(self):
+        accounts=[{'user':'one','hasPassword':True},{'user':'two','hasPassword':True},{'user':'other','hasPassword':True}]
+        status={'uplinks':[{'state':'online','account':'two@campus'},{'state':'online','account':'two'},{'state':'waiting_interface','account':'one'}]}
+        self.assertEqual(cadence.selected_accounts(accounts,'local',status),{'two'})
+        self.assertEqual(cadence.selected_accounts(accounts,'all',status),{'one','two','other'})
+        self.assertEqual(cadence.selected_accounts(accounts,'local',{}),set())
     def test_reads_only_expected_account_timestamps_without_error_contents(self):
         times, errors = cadence.parse_timestamps("/state/account-at 100\n/state/other-at 999\n/state/account-error private diagnostic\n", {"account"})
         self.assertEqual(times, {"account": 100})

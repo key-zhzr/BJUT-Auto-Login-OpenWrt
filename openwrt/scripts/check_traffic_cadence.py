@@ -40,6 +40,15 @@ def summarize(rounds, minimum_rounds=5, maximum_skew=5, tolerance=1):
             "intervals": intervals}
 
 
+def selected_accounts(accounts, scope, status):
+    users = {row['user'] for row in accounts if row.get('hasPassword')}
+    if scope != 'local':
+        return users
+    active = {row.get('account', '').removesuffix('@campus') for row in status.get('uplinks', [])
+              if row.get('state') in ('online', 'authenticated_limited', 'login_accepted', 'probe_uncertain')}
+    return {user for user in users if user.removesuffix('@campus') in active}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", help="SSH destination, for example root@192.168.1.1")
@@ -67,8 +76,9 @@ def main():
 
     try:
         accounts = json.loads(read("ubus call bjut-autologin accounts '{}'"))["accounts"]
-        expected = {hashlib.sha256(row["user"].encode()).hexdigest()
-                    for row in accounts if row.get("hasPassword")}
+        scope = read('uci -q get bjut-autologin.main.traffic_scope').strip()
+        status = json.loads(read("ubus call bjut-autologin status '{}'")) if scope == 'local' else {}
+        expected = {hashlib.sha256(user.encode()).hexdigest() for user in selected_accounts(accounts, scope, status)}
         if not expected:
             raise RuntimeError("No saved accounts with credentials are available")
         started, monotonic_start = int(time.time()), time.monotonic()
@@ -92,7 +102,7 @@ def main():
             time.sleep(args.poll_seconds)
         summary = summarize(rounds, args.minimum_rounds)
         summary["passed"] = summary["passed"] and not read_errors
-        json.dump({"startedAt": started, "accountCount": len(expected), "summary": summary,
+        json.dump({"startedAt": started, "scope": scope, "accountCount": len(expected), "summary": summary,
                    "rounds": rounds, "snapshots": snapshots, "readErrors": read_errors}, output, indent=2)
         output.write("\n")
         print(json.dumps(summary), flush=True)

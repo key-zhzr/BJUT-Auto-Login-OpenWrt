@@ -9,8 +9,11 @@ function usageStorageEstimate(devices, retention) {
 function usageTooltipPosition(width, height, boxWidth, boxHeight, x, y) {
     const gap = 32, pad = 8, clamp = (value, maximum) => Math.max(pad, Math.min(Math.max(pad, maximum - pad), value));
     // Prefer a side that leaves the pointer's whole column unobstructed.
-    const left = x + gap + boxWidth <= width - pad ? x + gap : x - gap - boxWidth >= pad ? x - gap - boxWidth : clamp(x - boxWidth / 2, width - boxWidth);
-    const top = y + gap + boxHeight <= height - pad ? y + gap : y - gap - boxHeight >= pad ? y - gap - boxHeight : clamp(y - boxHeight / 2, height - boxHeight);
+    const side = x + gap + boxWidth <= width - pad ? x + gap : x - gap - boxWidth >= pad ? x - gap - boxWidth : null;
+    const left = side ?? clamp(x - boxWidth / 2, width - boxWidth);
+    // Narrow plots may have no room on either side. Let the tooltip extend
+    // above the plot rather than covering the sample beneath the pointer.
+    const top = y + gap + boxHeight <= height - pad ? y + gap : y - gap - boxHeight >= pad ? y - gap - boxHeight : side === null ? y - gap - boxHeight : clamp(y - boxHeight / 2, height - boxHeight);
     return { left, top };
 }
 function normalizeUsageReport(report) {
