@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=27
+PKG_RELEASE:=28
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -15,7 +15,7 @@ define Package/bjut-autologin
   SUBMENU:=Captive Portals
   TITLE:=Low-overhead BJUT campus network auto-login
   URL:=https://github.com/key-zhzr/BJUT-Auto-Login-OpenWrt
-  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full +coreutils-sha256sum
+  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full +coreutils-sha256sum +zlib
 endef
 
 define Package/bjut-autologin/description
@@ -30,6 +30,7 @@ define Build/Prepare
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)
 	$(CP) ./src/bjut-html.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-codec.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/bjut-traffic-store.c $(PKG_BUILD_DIR)/
 	$(CP) ./LICENSE $(PKG_BUILD_DIR)/
 endef
 
@@ -38,6 +39,9 @@ define Build/Compile
 		-std=c99 -Wall -Wextra -Werror \
 		-o $(PKG_BUILD_DIR)/bjut-codec \
 		$(PKG_BUILD_DIR)/bjut-codec.c $(TARGET_LDFLAGS)
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
+		-std=c99 -Wall -Wextra -Werror -o $(PKG_BUILD_DIR)/bjut-traffic-store \
+		$(PKG_BUILD_DIR)/bjut-traffic-store.c $(TARGET_LDFLAGS) -lz
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
 		-std=c99 -Wall -Wextra -Werror -o $(PKG_BUILD_DIR)/bjut-html \
 		$(PKG_BUILD_DIR)/bjut-html.c $(TARGET_LDFLAGS)
@@ -57,6 +61,7 @@ define Package/bjut-autologin/install
 		$(1)/etc/hotplug.d/iface/95-bjut-autologin
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-codec $(1)/usr/libexec/bjut-codec
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-traffic-store $(1)/usr/libexec/bjut-traffic-store
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-html $(1)/usr/libexec/bjut-html
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-billing $(1)/usr/libexec/bjut-billing
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-billing-monitor $(1)/usr/libexec/bjut-billing-monitor
@@ -89,6 +94,14 @@ define Package/bjut-autologin/prerm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
  /etc/init.d/bjut-autologin stop >/dev/null 2>&1 || true
+ # Materialize a legacy checkpoint before replacing/removing this decoder,
+ # so downgrading to an older package does not strand compressed history.
+ for kind in samples curves; do
+  stored="/etc/bjut-autologin/usage-$$kind.tsv"
+  if [ -f "$$stored.dict.gz" ]; then
+   /usr/libexec/bjut-traffic-store unpack "$$kind" "$$stored.dict.gz" "$$stored.restore.$$$$" 536870912 && mv -f "$$stored.restore.$$$$" "$$stored" || exit 1
+  fi
+ done
  /usr/sbin/bjut-autologin cleanup >/dev/null 2>&1 || true
 fi
 exit 0

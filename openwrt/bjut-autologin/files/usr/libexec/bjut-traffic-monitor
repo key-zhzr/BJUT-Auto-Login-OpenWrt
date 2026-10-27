@@ -69,10 +69,17 @@ while :;do
  fi
  delay=$((round-30-now));[ "$delay" -le 30 ] || delay=30
  seen=''
+ traffic_active_prepare
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';config_get password "$section" password ''
   [ -n "$user" ] && [ -n "$password" ] || continue;password=''
   key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+  if ! traffic_account_selected "$user";then
+   child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
+   if job_alive "$child" "$stamp";then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;fi
+   rm -f "$STATE_DIR/traffic/$key-pending" "$STATE_DIR/traffic/$key-wake" "$STATE_DIR/traffic-jobs/$key"
+   continue
+  fi
   case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
   due="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)";is_uint "$due" || due=0
   # Keep a pending cohort marker if an old request is still finishing. Never

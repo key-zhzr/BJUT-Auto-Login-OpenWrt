@@ -5,6 +5,7 @@ import signal
 import time
 import subprocess
 import unittest
+import gzip
 from pathlib import Path
 import test_multi_uplink as multi
 import test_openwrt_port as base
@@ -46,7 +47,7 @@ class TrafficTests(unittest.TestCase):
         row['downFlow']=102400;file.write_text(json.dumps([row]))
         history=json.loads(self.shell(script,ONLINE=file,AT='1792887000',**env))
         self.assertTrue(all(r['usedMb']==2 for r in history))
-        self.assertTrue((self.temp/'persistent.tsv').exists())
+        self.assertTrue((self.temp/'persistent.tsv.dict.gz').exists())
 
     def test_shared_app_counter_corpus(self):
         source=Path(__file__).parent/'fixtures/billing-online.json'
@@ -132,7 +133,7 @@ wc -c < "$STATE_DIR/traffic-worker-calls"
         file.write_text(json.dumps(rows))
         report=json.loads(self.shell(script,ONLINE=file,AT='1792887060',**env))
         self.assertTrue(all(r[3]==2 for r in report['buckets']),report)
-        self.assertTrue((self.temp/'curves.tsv').exists())
+        self.assertTrue((self.temp/'curves.tsv.dict.gz').exists())
 
     def test_ipv6_only_identity_lock_and_pd_are_observed_before_lgn(self):
         env=self.config();cfg=Path(env['MOCK_CONFIG_JSON']);data=json.loads(cfg.read_text());data['dorm_a']['login_type']='type3';cfg.write_text(json.dumps(data))
@@ -158,7 +159,69 @@ traffic_observe_account online 25000002
 cat "$STATE_DIR/traffic-switches.tsv"
 test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-next" && test -f "$STATE_DIR/traffic-baselines/other"
 '''
-        fields=self.shell(code,**env).strip().split('\t');self.assertEqual(fields[1:],['interface:lan3','lan3','25000001','25000002'])
+        fields=self.shell(code,**env).strip().split('\t');self.assertEqual(fields[1:],['interface:lan3','lan3','25000001','25000002','检测到上游账号变更'])
+
+    def test_dictionary_gzip_round_trip_preserves_legacy_and_real_intervals(self):
+        for kind,rows in [('curves',['60\t1792886400\tabc\tdev\tinterface:lan3\tlan3\t1\t1.234\t60\n',
+                                    '60\t1792886460\tabc\tdev\tinterface:lan3\tlan3\t1\t0.000\t61\t1792886399\t1792886460\n']),
+                          ('samples',['2026-10-25\tabc\tdev\taabbccddeeff\t0.000\t60\n','2026-10-26\tabc\tdev\taabbccddeeff\t1.234\t61\t1\n'])]:
+            raw=self.temp/(kind+'.tsv');packed=self.temp/(kind+'.gz');restored=self.temp/(kind+'-restored.tsv')
+            raw.write_text(''.join(rows)*100)
+            subprocess.run([self.traffic_store,'pack',kind,raw,packed],check=True)
+            self.assertLess(packed.stat().st_size,raw.stat().st_size/5)
+            subprocess.run([self.traffic_store,'unpack',kind,packed,restored,'100000'],check=True)
+            self.assertEqual(restored.read_bytes(),raw.read_bytes())
+            # A truncated CRC or decompression limit never publishes partial history.
+            for broken,limit in [(packed.read_bytes()[:-5],'100000'),(packed.read_bytes(),'10')]:
+                invalid=self.temp/'bad.gz';invalid.write_bytes(broken);out=self.temp/'bad.tsv'
+                result=subprocess.run([self.traffic_store,'unpack',kind,invalid,out,limit],capture_output=True)
+                self.assertNotEqual(result.returncode,0);self.assertFalse(out.exists())
+
+    def test_checkpoint_converts_only_after_validation_and_restores_before_ui_read(self):
+        env=self.config();legacy=self.temp/'curves.tsv'
+        value='60\t1792886400\tabc\tdev\tinterface:lan3\tlan3\t1\t1.234\t60\t1792886340\t1792886400\n'
+        legacy.write_text(value)
+        self.shell('load_configuration;traffic_history_prepare;traffic_history_checkpoint force',**env)
+        self.assertFalse(legacy.exists());self.assertTrue((self.temp/'curves.tsv.dict.gz').exists())
+        (self.state/'usage-curves.tsv').unlink()
+        self.shell('load_configuration;traffic_series_json',**env)
+        self.assertEqual((self.state/'usage-curves.tsv').read_text(),value)
+        before=(self.temp/'curves.tsv.dict.gz').read_bytes()
+        self.shell('load_configuration;traffic_history_checkpoint force || true',BJUT_TRAFFIC_STORE='/usr/bin/false',**env)
+        self.assertEqual((self.temp/'curves.tsv.dict.gz').read_bytes(),before)
+        # A downgraded package may write a newer legacy checkpoint. Prefer it
+        # when upgrading again, rather than reviving an older gzip snapshot.
+        (self.state/'usage-curves.tsv').unlink();legacy.write_text(value.replace('1.234','2.345'))
+        os.utime(self.temp/'curves.tsv.dict.gz',(10,10));os.utime(legacy,(20,20))
+        self.shell('load_configuration;traffic_history_prepare',**env)
+        self.assertEqual((self.state/'usage-curves.tsv').read_text(),legacy.read_text())
+
+    def test_local_scope_queries_only_accounts_confirmed_on_upstreams(self):
+        env=self.config();worker=self.temp/'selected-billing.sh'
+        worker.write_text('''#!/bin/sh
+job="$BJUT_STATE_DIR/billing/$1"
+cat "$job/request.json" >>"$BJUT_STATE_DIR/queried"
+printf '{"state":"ready"}' >"$job/result.json";printf '[]' >"$job/online.json"
+''')
+        (self.state/'uplink-dorm_a.json').write_text(json.dumps({'state':'online','account':'25000002'}))
+        (self.state/'uplink-dorm_b.json').write_text(json.dumps({'state':'online','account':'25000002'}))
+        report=json.loads(self.shell('load_configuration;CFG_TRAFFIC_SCOPE=local;traffic_collect;traffic_cached',BJUT_BILLING=worker,**env))
+        self.assertEqual([r['account'] for r in report['accounts']],['25000002'])
+        queried=(self.state/'queried').read_text();self.assertIn('account2',queried);self.assertNotIn('account1',queried)
+        (self.state/'queried').unlink();(self.state/'uplink-dorm_a.json').write_text('{"state":"waiting_interface"}')
+        (self.state/'uplink-dorm_b.json').write_text('{"state":"online","account":""}')
+        report=json.loads(self.shell('load_configuration;CFG_TRAFFIC_SCOPE=local;traffic_collect;traffic_cached',BJUT_BILLING=worker,**env))
+        self.assertEqual(report['accounts'],[]);self.assertFalse((self.state/'queried').exists())
+
+    def test_switch_reason_is_json_escaped_and_old_markers_still_load(self):
+        env=self.config()
+        report=json.loads(self.shell('''load_configuration;UPLINK_ID=dorm_a;DEVICE=lan3
+traffic_observe_account online 25000001
+TRAFFIC_SWITCH_REASON='自动轮换：流量耗尽，服务端提示 "停机"'
+traffic_observe_account online 25000002
+printf '1792886400\\tinterface:lan3\\tlan3\\t25000002\\t25000001\\n' >>"$STATE_DIR/traffic-switches.tsv"
+traffic_cached''',**env))
+        self.assertIn('"停机"',report['switches'][0]['reason']);self.assertEqual(report['switches'][1]['reason'],'原因未记录')
 
     def test_router_retains_real_intervals_when_a_minute_has_no_endpoint(self):
         env=self.config();file=self.temp/'online.json';row={'sessionId':'one','loginTime':'first','ip':'192.0.2.3','mac':'aabbccddeeff','downFlow':10240,'upFlow':999999}

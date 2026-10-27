@@ -39,6 +39,25 @@ traffic_schedule_next() {
  fi
 }
 
+# Select accounts before opening billing sessions. Unknown upstream identities
+# wait for the authentication worker; never enumerate every stored credential.
+traffic_active_prepare() {
+ local candidate state account
+ TRAFFIC_ACTIVE_ACCOUNTS=''
+ [ "${CFG_TRAFFIC_SCOPE:-local}" = local ] || return 0
+ for candidate in $UPLINK_SECTIONS;do
+  state="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.state')"
+  case "$state" in online|authenticated_limited|login_accepted|probe_uncertain) ;;*)continue;;esac
+  account="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')";account="${account%@campus}"
+  case "$account" in ''|*[!A-Za-z0-9_@.,-]*)continue;;esac
+  case " $TRAFFIC_ACTIVE_ACCOUNTS " in *" $account "*) ;;*)TRAFFIC_ACTIVE_ACCOUNTS="$TRAFFIC_ACTIVE_ACCOUNTS $account";;esac
+ done
+}
+traffic_account_selected() {
+ [ "${CFG_TRAFFIC_SCOPE:-local}" = local ] || return 0
+ case " $TRAFFIC_ACTIVE_ACCOUNTS " in *" ${1%@campus} "*)return 0;;*)return 1;;esac
+}
+
 traffic_candidates() {
  local user="$1" candidate state account rank
  for candidate in $UPLINK_SECTIONS;do
@@ -56,10 +75,12 @@ traffic_collect() {
  TRAFFIC_NEXT_AT="$(($(date +%s)+60))"
  [ "${BJUT_TRAFFIC_IDENTITIES_READY:-0}" = 1 ] && [ -s "$STATE_DIR/traffic-identities.tsv" ] || traffic_identity_prepare
  mkdir -p "$STATE_DIR/traffic" "$STATE_DIR/billing" || return 1
+ traffic_active_prepare
  for section in $ACCOUNT_SECTIONS;do
   [ -z "${TRAFFIC_ONLY_ACCOUNT:-}" ] || [ "$section" = "$TRAFFIC_ONLY_ACCOUNT" ] || continue
   config_get user "$section" username '';config_get password "$section" password ''
   [ -n "$user" ] && [ -n "$password" ] || continue
+  traffic_account_selected "$user" || continue
   key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')";password=''
   case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
   now="$(date +%s)";due="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)"
@@ -109,14 +130,19 @@ traffic_collect() {
 
 # Authentication workers notify the sampler without touching other interfaces.
 traffic_observe_account() {
- local state="$1" account="$2" old key now file="$STATE_DIR/traffic-account-$UPLINK_ID" monitor
+ local state="$1" account="$2" old key now file="$STATE_DIR/traffic-account-$UPLINK_ID" monitor reason
  case "$state" in online|authenticated_limited) ;; *)return;;esac
  [ -n "$account" ] || return 0
  old="$(cat "$file" 2>/dev/null)";[ "$old" != "$account" ] || return 0
  printf '%s' "$account" >"$file.$$" && mv -f "$file.$$" "$file"
  now="$(date +%s)";mkdir -p "$STATE_DIR/traffic"
  if [ -n "$old" ];then
-  printf '%s\t%s\t%s\t%s\t%s\n' "$now" "interface:$DEVICE" "$DEVICE" "$old" "$account" >>"$STATE_DIR/traffic-switches.tsv"
+  reason="${TRAFFIC_SWITCH_REASON:-检测到上游账号变更}"
+  if [ "${FORCE:-0}" = 1 ] && [ "${EVENT:-}" = manual ];then
+   case "${MANUAL_ACTION:-}" in switch)reason='手动切换账号';;login|manual)reason='手动登录';;esac
+  fi
+  reason="$(printf '%s' "$reason" | tr '\011\012\015' '   ')"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "interface:$DEVICE" "$DEVICE" "$old" "$account" "$reason" >>"$STATE_DIR/traffic-switches.tsv"
 
   log_message notice "流量统计检测到换号：${DEVICE}，$old → $account"
  fi
@@ -159,8 +185,10 @@ traffic_cached() (
  local section user key at flow comma='' seen=''
  if [ "${CFG_TRAFFIC_MONITOR:-0}" != 1 ];then printf '{"enabled":false,"scope":"%s","accounts":[],"history":[],"series":[]}\n' "${CFG_TRAFFIC_SCOPE:-local}";return;fi
  printf '{"enabled":true,"scope":"%s","accounts":[' "${CFG_TRAFFIC_SCOPE:-local}"
+ traffic_active_prepare
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';[ -n "$user" ] || continue
+  traffic_account_selected "$user" || continue
   key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
   case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
   at="$(cat "$STATE_DIR/traffic/$key-at" 2>/dev/null)";is_uint "$at" || at=0
@@ -180,7 +208,14 @@ traffic_cached() (
  printf '],"retention":{"minuteHours":%s,"hourDays":%s,"dayDays":%s,"storageMb":%s},"history":' "${CFG_TRAFFIC_MINUTE_HOURS:-48}" "${CFG_TRAFFIC_HOUR_DAYS:-90}" "${CFG_TRAFFIC_DAY_DAYS:-366}" "${CFG_TRAFFIC_STORAGE_MB:-2}"
  traffic_history_json;printf ',"timeline":';traffic_series_json;printf ',"series":[],"switches":['
  if [ -f "$STATE_DIR/traffic-switches.tsv" ];then
-  awk -F '\t' 'NF==5 && $1~/^[0-9]+$/ && $2~/^[A-Za-z0-9_:.-]+$/ && $3~/^[A-Za-z0-9_:.-]+$/ && $4~/^[A-Za-z0-9_@.,-]+$/ && $5~/^[A-Za-z0-9_@.,-]+$/{printf "%s{\"at\":%s,\"interfaceId\":\"%s\",\"interfaceName\":\"%s\",\"from\":\"%s\",\"to\":\"%s\"}",n++?",":"",$1,$2,$3,$4,$5}' "$STATE_DIR/traffic-switches.tsv"
+  local change_at change_id change_name change_from change_to change_reason changes_comma=''
+  while IFS="$(printf '\t')" read -r change_at change_id change_name change_from change_to change_reason;do
+   is_uint "$change_at" || continue
+   case "$change_id:$change_name:$change_from:$change_to" in *[!A-Za-z0-9_@:.,-]*)continue;;esac
+   json_init;json_add_int at "$change_at";json_add_string interfaceId "$change_id";json_add_string interfaceName "$change_name"
+   json_add_string from "$change_from";json_add_string to "$change_to";json_add_string reason "${change_reason:-原因未记录}"
+   printf '%s' "$changes_comma";json_dump;changes_comma=,
+  done <"$STATE_DIR/traffic-switches.tsv"
  fi
  printf ']}\n'
 )

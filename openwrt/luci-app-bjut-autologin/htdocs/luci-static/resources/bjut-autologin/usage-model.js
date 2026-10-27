@@ -6,6 +6,13 @@ function usageStorageEstimate(devices, retention) {
     // Includes the minute/hour/day rows and an atomic checkpoint copy.
     return Math.ceil(Math.max(1, devices) * (retention.minuteHours * 60 + retention.hourDays * 24 + retention.dayDays) * 180 * 2);
 }
+function usageTooltipPosition(width, height, boxWidth, boxHeight, x, y) {
+    const gap = 32, pad = 8, clamp = (value, maximum) => Math.max(pad, Math.min(Math.max(pad, maximum - pad), value));
+    // Prefer a side that leaves the pointer's whole column unobstructed.
+    const left = x + gap + boxWidth <= width - pad ? x + gap : x - gap - boxWidth >= pad ? x - gap - boxWidth : clamp(x - boxWidth / 2, width - boxWidth);
+    const top = y + gap + boxHeight <= height - pad ? y + gap : y - gap - boxHeight >= pad ? y - gap - boxHeight : clamp(y - boxHeight / 2, height - boxHeight);
+    return { left, top };
+}
 function normalizeUsageReport(report) {
     const series = [...(report.series || [])];
     for (const row of report.timeline?.buckets || []) {
@@ -302,7 +309,7 @@ class UsageChart {
         this.plot.tabIndex = 0;
         this.plot.setAttribute('role', 'group');
         this.plot.setAttribute('aria-label', '流量趋势，使用左右方向键查看采样值');
-        this.plot.onpointermove = event => { const bounds = this.plot.getBoundingClientRect(); this.showPoint(Math.round(((event.clientX - bounds.left) / bounds.width * this.width - 68) / (this.width - 86) * (this.chart.times.length - 1))); };
+        this.plot.onpointermove = event => { const bounds = this.plot.getBoundingClientRect(); this.showPoint(Math.round(((event.clientX - bounds.left) / bounds.width * this.width - 68) / (this.width - 86) * (this.chart.times.length - 1)), { x: event.clientX - bounds.left, y: event.clientY - bounds.top }); };
         this.plot.onpointerleave = () => { if (document.activeElement !== this.plot)
             this.hidePoint(); };
         this.plot.onblur = () => this.hidePoint();
@@ -335,7 +342,7 @@ class UsageChart {
         };
         const details = usageElement('details', 'traffic-devices');
         details.append(usageElement('summary', '', '当前在线设备'), this.devices);
-        const note = usageElement('p', 'traffic-note', '下载计费量 · 滚轮缩放时间 · 当月累计仅含已采集记录');
+        const note = usageElement('p', 'traffic-note', '下载计费量 · 滚轮缩放时间 · 虚线连接采样中断 · 当月累计仅含已采集记录');
         this.content.append(scope, controls, this.dates, this.interfaceChoices, this.legend, this.plot, this.summary, note, details);
         this.content.hidden = true;
         root.replaceChildren(header, this.content);
@@ -489,25 +496,28 @@ class UsageChart {
             node('text', { x: String(x(index)), y: String(height - 7), 'text-anchor': i === 0 ? 'start' : i === labelCount - 1 ? 'end' : 'middle', class: 'traffic-axis' }, this.timeLabel(this.chart.times[index]));
         }
         this.chart.curves.forEach((curve, index) => {
-            let path = '', connected = false;
+            let path = '', gaps = '', previous = -1;
             curve.points.forEach((point, i) => {
                 if (point === null)
                     return;
-                if (curve.joinPrevious && !curve.joinPrevious[i])
-                    connected = false;
+                const connected = previous >= 0 && (curve.joinPrevious ? curve.joinPrevious[i] : previous === i - 1);
+                if (previous >= 0 && !connected)
+                    gaps += `M${x(previous).toFixed(2)},${y(curve.points[previous]).toFixed(2)} L${x(i).toFixed(2)},${y(point).toFixed(2)} `;
                 path += `${connected ? 'L' : 'M'}${x(i).toFixed(2)},${y(point).toFixed(2)} `;
-                connected = true;
+                previous = i;
                 if (curve.points[i - 1] == null && curve.points[i + 1] == null)
                     node('circle', { cx: String(x(i)), cy: String(y(point)), r: '2.5', fill: usageColors[index % usageColors.length] });
             });
+            if (gaps)
+                node('path', { d: gaps, fill: 'none', stroke: usageColors[index % usageColors.length], 'stroke-width': '1.3', class: 'traffic-gap' });
             node('path', { d: path, fill: 'none', stroke: usageColors[index % usageColors.length], 'stroke-width': '1.8', 'stroke-linejoin': 'round', class: 'traffic-line' });
         });
         const first = this.chart.times[0], last = this.chart.times[this.chart.times.length - 1];
-        for (const change of (this.data.switches || []).filter(item => item.at >= first && item.at <= last && (!this.options.account || item.from === this.options.account || item.to === this.options.account) && (this.options.interfaces === null || this.options.interfaces.includes(item.interfaceId))).slice(-30)) {
+        for (const change of this.visibleSwitches()) {
             const position = left + (change.at - first) / Math.max(1, last - first) * (right - left);
             const marker = node('line', { x1: String(position), x2: String(position), y1: String(top), y2: String(bottom), class: 'traffic-switch' });
             const title = document.createElementNS(svg.namespaceURI, 'title');
-            title.textContent = `${change.interfaceName} ${change.from || '未登录'} → ${change.to || '未登录'}`;
+            title.textContent = `${change.interfaceName} ${change.from || '未登录'} → ${change.to || '未登录'} · ${change.reason || '原因未记录'}`;
             marker.append(title);
         }
         this.cursor = node('line', { x1: '0', x2: '0', y1: String(top), y2: String(bottom), class: 'traffic-cursor', visibility: 'hidden' });
@@ -522,12 +532,16 @@ class UsageChart {
             this.plot.append(empty);
         }
     }
+    visibleSwitches() {
+        const first = this.chart.times[0], last = this.chart.times[this.chart.times.length - 1];
+        return (this.data.switches || []).filter(item => item.at >= first && item.at <= last && (!this.options.account || item.from === this.options.account || item.to === this.options.account) && (this.options.interfaces === null || this.options.interfaces.includes(item.interfaceId))).slice(-30);
+    }
     timeLabel(at, full = false) {
         const date = new Date((at + 28800) * 1000).toISOString();
-        return full ? date.slice(0, 16).replace('T', ' ') : this.chart.scale === 'month' ? date.slice(0, 7) : this.chart.scale === 'day' || this.options.range > 86400 ? date.slice(5, 10) + (this.chart.scale === 'hour' ? ' ' + date.slice(11, 16) : '') : date.slice(11, 16);
+        return full ? date.slice(0, 19).replace('T', ' ') : this.chart.scale === 'month' ? date.slice(0, 7) : this.chart.scale === 'day' || this.options.range > 86400 ? date.slice(5, 10) + (this.chart.scale === 'hour' ? ' ' + date.slice(11, 16) : '') : date.slice(11, 16);
     }
-    showPoint(index) {
-        if (!this.chart.samples || !this.canvas || !this.cursor)
+    showPoint(index, pointer) {
+        if (!this.chart.times.length || !this.canvas || !this.cursor)
             return;
         this.hover = Math.max(0, Math.min(this.chart.times.length - 1, index));
         const x = 68 + this.hover / Math.max(1, this.chart.times.length - 1) * (this.width - 86);
@@ -538,11 +552,19 @@ class UsageChart {
         this.chart.curves.forEach((curve, i) => {
             const item = usageElement('div'), label = usageElement('span', '', curve.name), value = curve.points[this.hover];
             label.style.color = usageColors[i % usageColors.length];
-            item.append(label, document.createTextNode(value === null ? ' —' : ' ' + flowLabel(value)));
+            item.append(label, document.createTextNode(value === null ? ' 无采样' : ' ' + flowLabel(value)));
             this.tooltip.append(item);
         });
+        const location = pointer || { x, y: this.plot.clientHeight / 2 }, first = this.chart.times[0], last = this.chart.times[this.chart.times.length - 1];
+        for (const change of this.visibleSwitches().filter(item => Math.abs(68 + (item.at - first) / Math.max(1, last - first) * (this.width - 86) - location.x) <= 14)) {
+            const event = usageElement('section', 'traffic-change');
+            event.append(usageElement('strong', '', change.interfaceName), usageElement('div', '', `${change.from || '未登录'} → ${change.to || '未登录'}`), usageElement('small', '', `${this.timeLabel(change.at, true)} · ${change.reason || '原因未记录'}`));
+            this.tooltip.append(event);
+        }
         this.tooltip.hidden = false;
-        this.tooltip.style.left = `${Math.max(8, Math.min(this.plot.clientWidth - this.tooltip.offsetWidth - 8, x + 12))}px`;
+        const position = usageTooltipPosition(this.plot.clientWidth, this.plot.clientHeight, this.tooltip.offsetWidth, this.tooltip.offsetHeight, location.x, location.y);
+        this.tooltip.style.left = `${position.left}px`;
+        this.tooltip.style.top = `${position.top}px`;
     }
     hidePoint() { this.hover = -1; this.tooltip.hidden = true; this.cursor?.setAttribute('visibility', 'hidden'); }
     drawDevices() {

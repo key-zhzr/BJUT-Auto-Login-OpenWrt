@@ -17,6 +17,7 @@ class MultiUplinkTests(unittest.TestCase):
     def setUpClass(cls):
         base.OpenWrtPortTests.setUpClass()
         cls.codec = base.OpenWrtPortTests.codec
+        cls.traffic_store = base.OpenWrtPortTests.traffic_store
         cls.html = base.OpenWrtPortTests.build_dir / 'bjut-html'
         subprocess.run(['cc', '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror',
                         str(CORE / 'src/bjut-html.c'), '-o', str(cls.html)], check=True)

@@ -2,15 +2,25 @@
 # Billing-only deltas. Fine samples stay in RAM; bounded rollups checkpoint
 # every 15 minutes and on a normal stop, rather than writing flash each minute.
 traffic_history_prepare() {
- local persisted="${BJUT_TRAFFIC_HISTORY:-/etc/bjut-autologin/usage-samples.tsv}" curves="${BJUT_TRAFFIC_CURVES:-/etc/bjut-autologin/usage-curves.tsv}" size target source
+ local persisted="${BJUT_TRAFFIC_HISTORY:-/etc/bjut-autologin/usage-samples.tsv}" curves="${BJUT_TRAFFIC_CURVES:-/etc/bjut-autologin/usage-curves.tsv}" size target source kind temporary limit
  mkdir -p "$STATE_DIR/traffic-baselines" || return 1
  if [ ! -f "$STATE_DIR/traffic-switches.tsv" ] && [ -f "${persisted%/*}/usage-switches.tsv" ] && [ ! -L "${persisted%/*}/usage-switches.tsv" ];then tail -n 2000 "${persisted%/*}/usage-switches.tsv" >"$STATE_DIR/traffic-switches.tsv";fi
  for target in usage-samples.tsv usage-curves.tsv;do
   [ ! -e "$STATE_DIR/$target" ] || continue
   source="$persisted";[ "$target" != usage-curves.tsv ] || source="$curves"
-  if [ -f "$source" ] && [ ! -L "$source" ];then
+  [ ! -L "$source" ] && [ ! -L "$source.dict.gz" ] || return 1
+  kind=samples;[ "$target" != usage-curves.tsv ] || kind=curves
+  limit="$((${CFG_TRAFFIC_STORAGE_MB:-2}*1048576+4194304))"
+  temporary="$STATE_DIR/$target.restore.$$"
+  if [ -f "$source.dict.gz" ] && { [ ! -f "$source" ] || [ "$source.dict.gz" -nt "$source" ]; };then
+   "${BJUT_TRAFFIC_STORE:-/usr/libexec/bjut-traffic-store}" unpack "$kind" "$source.dict.gz" "$temporary" "$limit" || { log_message error '流量历史压缩文件校验失败，保留原文件';return 1; }
+   # Publish a complete restore only if another reader has not already done so.
+   ln "$temporary" "$STATE_DIR/$target" 2>/dev/null;rm -f "$temporary"
+  elif [ -f "$source" ] && [ ! -L "$source" ];then
    size="$(wc -c <"$source" | tr -d ' \011\012\015')"
-   is_uint "$size" && [ "$size" -le "$((${CFG_TRAFFIC_STORAGE_MB:-2}*1048576+4194304))" ] && cp "$source" "$STATE_DIR/$target"
+   if is_uint "$size" && [ "$size" -le "$limit" ];then
+    cp "$source" "$temporary" && ln "$temporary" "$STATE_DIR/$target" 2>/dev/null;rm -f "$temporary"
+   else return 1;fi
   fi
   [ -e "$STATE_DIR/$target" ] || : >"$STATE_DIR/$target"
  done
@@ -78,21 +88,33 @@ END_IDENTITY
 )
 
 traffic_history_checkpoint() {
- local now last persisted="${BJUT_TRAFFIC_HISTORY:-/etc/bjut-autologin/usage-samples.tsv}" curves="${BJUT_TRAFFIC_CURVES:-/etc/bjut-autologin/usage-curves.tsv}" target destination
+ local now last persisted="${BJUT_TRAFFIC_HISTORY:-/etc/bjut-autologin/usage-samples.tsv}" curves="${BJUT_TRAFFIC_CURVES:-/etc/bjut-autologin/usage-curves.tsv}" target destination kind work temporary
  now="$(date +%s)";last="$(cat "$STATE_DIR/traffic-history-saved" 2>/dev/null)"
  [ "${1:-}" = force ] || { is_uint "$last" && [ "$now" -ge "$last" ] && [ "$((now-last))" -lt 900 ] && return 0; }
  for target in usage-samples.tsv usage-curves.tsv;do
   destination="$persisted";[ "$target" != usage-curves.tsv ] || destination="$curves"
+  kind=samples;[ "$target" != usage-curves.tsv ] || kind=curves
   [ -f "$STATE_DIR/$target" ] || continue
-  [ ! -L "$destination" ] || return 1
+  [ ! -L "$destination" ] && [ ! -L "$destination.dict.gz" ] || return 1
   mkdir -p "${destination%/*}" && chmod 0700 "${destination%/*}" || return 1
+  work="$(mktemp -d "$STATE_DIR/traffic-checkpoint.XXXXXX")" || return 1
+  if ! "${BJUT_TRAFFIC_STORE:-/usr/libexec/bjut-traffic-store}" pack "$kind" "$STATE_DIR/$target" "$work/packed.gz" ||
+     ! "${BJUT_TRAFFIC_STORE:-/usr/libexec/bjut-traffic-store}" unpack "$kind" "$work/packed.gz" "$work/checked.tsv" "$((${CFG_TRAFFIC_STORAGE_MB:-2}*1048576+4194304))" ||
+     ! cmp -s "$STATE_DIR/$target" "$work/checked.tsv";then
+   rm -rf "$work";log_message error '流量历史压缩校验失败，保留上次文件';return 1
+  fi
   local available required
   available="$(df -Pk "${destination%/*}" 2>/dev/null | awk 'END{print $4}')"
-  required="$(wc -c <"$STATE_DIR/$target" | tr -d ' \011\012\015')"
+  required="$(wc -c <"$work/packed.gz" | tr -d ' \011\012\015')"
   if is_uint "$available" && is_uint "$required" && [ "$((available*1024))" -lt "$((required+131072))" ];then
-   log_message warning '流量历史保存空间不足，保留上次文件，当前采样仍在内存中';return 1
+   rm -rf "$work";log_message warning '流量历史保存空间不足，保留上次文件，当前采样仍在内存中';return 1
   fi
-  cp "$STATE_DIR/$target" "$destination.tmp" && chmod 0600 "$destination.tmp" && mv -f "$destination.tmp" "$destination" || return 1
+  temporary="$destination.dict.gz.tmp.$$"
+  [ ! -e "$temporary" ] && [ ! -L "$temporary" ] || { rm -rf "$work";return 1; }
+  if ! cp "$work/packed.gz" "$temporary" || ! chmod 0600 "$temporary" || ! mv -f "$temporary" "$destination.dict.gz";then rm -f "$temporary";rm -rf "$work";return 1;fi
+  rm -rf "$work"
+  # The verified compressed checkpoint now contains every original row.
+  rm -f "$destination"
  done
  if [ -f "$STATE_DIR/traffic-switches.tsv" ];then
   tail -n 2000 "$STATE_DIR/traffic-switches.tsv" >"$STATE_DIR/traffic-switches.tsv.$$" && mv -f "$STATE_DIR/traffic-switches.tsv.$$" "$STATE_DIR/traffic-switches.tsv"
@@ -103,6 +125,7 @@ traffic_history_checkpoint() {
 
 traffic_history_json() (
  local section user key prefix comma='' seen='' rows source="$STATE_DIR/usage-samples.tsv"
+ traffic_history_prepare || { printf '[]';return; }
  [ -f "$source" ] || source="${BJUT_TRAFFIC_HISTORY:-/etc/bjut-autologin/usage-samples.tsv}"
  [ -f "$source" ] && [ ! -L "$source" ] || { printf '[]';return; }
  printf '['
@@ -118,6 +141,7 @@ traffic_history_json() (
 
 traffic_series_json() (
  local map section user key prefix start end resolution monthly source="$STATE_DIR/usage-curves.tsv"
+ traffic_history_prepare || { printf '{"channels":[],"buckets":[]}';return; }
  start="$(request_value start 2>/dev/null)";end="$(request_value end 2>/dev/null)";resolution="$(request_value resolution 2>/dev/null)";monthly="$(request_value monthly 2>/dev/null)"
  is_uint "$start" || start=0;is_uint "$end" || end=41024448000
  case "$resolution" in 60|3600|86400) ;;*)resolution=0;;esac

@@ -306,7 +306,7 @@ return view.extend({
 
 		return m.render().then(function(root){root.append(bjut.style());
           let count=0;uci.sections('bjut-autologin','uplink',function(item){if(item.enabled!=='0')count++;});count=Math.max(1,count);
-          const update=function(){const get=function(key,fallback){const input=root.querySelector('input[id$=".'+key+'"]');return Number(input && input.value || uci.get('bjut-autologin','main',key) || fallback);};const rows=get('traffic_minute_hours',48)*60+get('traffic_hour_days',90)*24+get('traffic_day_days',366);const note=root.querySelector('[data-traffic-estimate]');if(note)note.textContent=_('按 ')+count+_(' 条上游预计约 ')+(count*rows*360/1048576).toFixed(1)+_(' MB（含保存时临时空间）。存储上限 ')+get('traffic_storage_mb',2)+_(' MB，达到上限时优先保留较新记录。全部设备的占用会更多。');};
+          const update=function(){const get=function(key,fallback){const input=root.querySelector('input[id$=".'+key+'"]');return Number(input && input.value || uci.get('bjut-autologin','main',key) || fallback);};const rows=get('traffic_minute_hours',48)*60+get('traffic_hour_days',90)*24+get('traffic_day_days',366);const note=root.querySelector('[data-traffic-estimate]');if(note)note.textContent=_('按 ')+count+_(' 条上游预计约 ')+(count*rows*360/1048576).toFixed(1)+_(' MB（含临时空间；文件压缩保存）。容量上限 ')+get('traffic_storage_mb',2)+_(' MB，按压缩前估算。全部设备的占用会更多。');};
           root.addEventListener('input',update);update();return root;});
 	}
 });

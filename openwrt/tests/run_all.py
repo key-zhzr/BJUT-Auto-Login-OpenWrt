@@ -191,6 +191,27 @@ def validate_security_invariants():
         raise RuntimeError("safe disabled example configuration changed unexpectedly")
 
 
+def validate_traffic_store_with_sanitizers():
+    import gzip
+    temp=Path(tempfile.mkdtemp(prefix='bjut-traffic-store-sanitizer-'))
+    try:
+        binary=temp/'store'
+        run(['cc','-std=c99','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',CORE/'src/bjut-traffic-store.c','-o',binary,'-lz'])
+        env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'}
+        raw=temp/'source.tsv';raw.write_text('60\t1792886400\tabc\tdev\tinterface:lan3\tlan3\t1\t0.000\t61\t1792886339\t1792886400\n')
+        run([binary,'pack','curves',raw,temp/'valid.gz'],env=env)
+        run([binary,'unpack','curves',temp/'valid.gz',temp/'roundtrip.tsv','1024'],env=env)
+        if (temp/'roundtrip.tsv').read_bytes()!=raw.read_bytes():raise RuntimeError('Compressed traffic checkpoint changed records')
+        cases=[b'',b'BJUT-TRAFFIC\t2\tcurves\n',b'BJUT-TRAFFIC\t1\tcurves\nP\t0\t60\t1\t0\t60\n',
+               b'BJUT-TRAFFIC\t1\tcurves\nD\t99999999999999999999999999999\ta\tb\tc\td\te\n',
+               b'BJUT-TRAFFIC\t1\tcurves\n'+b'x'*8192+b'\n']
+        for index,payload in enumerate(cases):
+            archive=temp/'bad.gz';archive.write_bytes(gzip.compress(payload));output=temp/f'bad-{index}.tsv'
+            result=subprocess.run([binary,'unpack','curves',archive,output,'1024'],env=env,capture_output=True)
+            if result.returncode!=1 or output.exists() or b'Sanitizer' in result.stderr:raise RuntimeError('Invalid traffic archive was not safely rejected')
+    finally:shutil.rmtree(temp)
+
+
 def main():
     validate_text_files()
     validate_json()
@@ -198,6 +219,7 @@ def main():
     validate_shell()
     validate_c_with_sanitizers()
     validate_html_with_sanitizers()
+    validate_traffic_store_with_sanitizers()
     validate_security_invariants()
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
     run([sys.executable, "openwrt/tests/test_multi_uplink.py"])
