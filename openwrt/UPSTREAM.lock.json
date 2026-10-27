@@ -1,9 +1,9 @@
 {
-  "upstream": "12b53b4881a5904a3a318f86f9bbb1f08ecea750",
+  "upstream": "0a5a95526ef2a4ee5e3b38f699e02a07b3d8dc15",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Reviewed shared traffic tooltip positioning, dashed discontinuities and switch reasons, plus matching App/LuCI setting dependencies. r28 adds validated dictionary+gzip checkpoints and selects confirmed upstream accounts before local-scope sampling."
+  "reviewNote": "Reviewed documentation-only follow-up. Installed formal r28 source 9f52af6 passed lossless compression, preservation of 4878 prior records and four stable active-account cohorts (zero-second skew, 60-second intervals)."
 }
