@@ -1,9 +1,9 @@
 {
-  "upstream": "b3ab9e500fbbb62bd994ed6795d9160b40096fa3",
+  "upstream": "4875f8971fb36f8e44bf776ec3fd057cbb422305",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Reviewed actual counter request timestamps and sampling documentation; router r27 retains live config indexes and preserves the next shared cohort after an immediate switch sample."
+  "reviewNote": "Reviewed documentation-only upstream changes. Formal router r27 passed six real six-account rounds with zero-second timestamp skew and 60-second intervals; timed eth1.41 switch and restore both retained the next shared cohort."
 }
