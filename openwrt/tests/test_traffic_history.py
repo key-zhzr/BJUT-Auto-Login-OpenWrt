@@ -226,4 +226,55 @@ cat "$STATE_DIR/traffic/$key-at"
         self.assertEqual(self.shell(script,BJUT_NETWORK_ADDRESSES_ONLY='1',MOCK_UBUS_IWINFO='1',**env),'')
         self.assertNotEqual(self.shell(script,MOCK_UBUS_IWINFO='1',**env),'')
 
+    def test_prepared_workers_do_not_reload_the_router_configuration_every_second(self):
+        env=self.config();trace=self.temp/'config-loads'
+        functions=self.temp/'functions.sh'
+        functions.write_text((base.MOCKS/'functions.sh').read_text().replace('config_load() {','config_load() {\n printf x >> "$MONITOR_CONFIG_TRACE"'))
+        worker=self.temp/'waiting-worker.sh'
+        worker.write_text('#!/bin/sh\n[ "$1" != --identities ] || exit 0\nprintf x >> "$BJUT_STATE_DIR/dispatched"\nsleep 20\n');worker.chmod(0o755)
+        (self.state/'traffic-identities.tsv').write_text('interface:lan3\tlan3\t-\t10.126.19.139\n')
+        process=subprocess.Popen(['sh',str(base.CORE/'files/usr/libexec/bjut-traffic-monitor')],env=self.environment('online',BJUT_FUNCTIONS_SH=functions,MONITOR_CONFIG_TRACE=trace,BJUT_SELF=base.SCRIPT,BJUT_TRAFFIC_SAMPLE=worker,BJUT_TRAFFIC_HISTORY=self.temp/'persistent.tsv',BJUT_TRAFFIC_CURVES=self.temp/'curves.tsv',**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            cutoff=time.monotonic()+10
+            while not (self.state/'dispatched').exists() and time.monotonic()<cutoff:time.sleep(.1)
+            self.assertTrue((self.state/'dispatched').exists())
+            time.sleep(5)
+            self.assertLessEqual(len(trace.read_text()),3,'Prepared minute waits must not keep reloading the full configuration')
+        finally:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.communicate()
+
+    def test_slow_counter_response_keeps_its_actual_request_start(self):
+        env=self.config();wrapper=self.temp/'slow-counter.sh';trace=self.temp/'counter-at'
+        wrapper.write_text('''#!/bin/sh
+[ "$1" != --version ] || exec "$REAL_CURL" "$@"
+payload=$(cat)
+case "$payload" in *'/Self/dashboard/getOnlineList'*)date +%s >"$COUNTER_TRACE";sleep 2;;esac
+printf '%s' "$payload" | "$REAL_CURL" "$@"
+''');wrapper.chmod(0o755)
+        code='load_configuration;ACCOUNT_SECTIONS=account1;traffic_collect;key=$(printf 25000001|sha256sum|awk \'{print $1}\');cat "$STATE_DIR/traffic/$key-at"'
+        at=int(self.shell(code,MOCK_SCENARIO='billing_success',BJUT_NETWORK_ADDRESSES_ONLY='1',BJUT_CURL=wrapper,REAL_CURL=base.MOCKS/'curl.sh',COUNTER_TRACE=trace,BJUT_HTML=self.html,BJUT_BILLING=base.CORE/'files/usr/libexec/bjut-billing',**env))
+        self.assertEqual(at,int(trace.read_text()))
+        self.assertGreaterEqual(int(time.time())-at,2)
+
+    def test_empty_online_accounts_do_not_recompact_other_accounts_history(self):
+        env=self.config();file=self.temp/'empty.json';file.write_text('[]')
+        curves=self.state/'usage-curves.tsv';before='60\t1792886400\told\tdevice\tinterface:lan3\tlan3\t1\t12.345\t60\n';curves.write_text(before)
+        self.shell('load_configuration;traffic_history_record fixture "$ONLINE" 1792886460',ONLINE=file,**env)
+        self.assertEqual(curves.read_text(),before)
+
+    def test_unchanged_mwan_rules_reuse_successful_configuration_but_edits_invalidate_it(self):
+        env=self.config();mwan=self.temp/'config'/'mwan3';mwan.write_text(json.dumps({'globals':{'.type':'globals','mmx_mask':'0x7f00'}}))
+        library=self.temp/'mwan.sh';library.write_text((base.CORE/'files/usr/lib/bjut-autologin/mwan.sh').read_text().replace('mwan_begin() {','mwan_begin_real() {'))
+        code='''load_configuration;select_uplink dorm_a;read_network_identity
+. "$MWAN_TEST_LIB"
+mwan_begin() { printf x >> "$STATE_DIR/mwan-prepares";mwan_begin_real; }
+sync_mwan_rules;sync_mwan_rules
+printf ' ' >> "$BJUT_MWAN_CONFIG"
+sync_mwan_rules
+wc -c < "$STATE_DIR/mwan-prepares"
+'''
+        self.assertEqual(self.shell(code,MWAN_TEST_LIB=library,BJUT_MWAN_CONFIG=mwan,**env).strip(),'2')
+
 if __name__=='__main__':unittest.main()

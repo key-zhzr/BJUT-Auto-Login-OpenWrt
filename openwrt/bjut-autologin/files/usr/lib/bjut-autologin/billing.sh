@@ -183,11 +183,20 @@ billing_publish_overview() {
 		fi
 	fi
 	rm -f "$BILLING_JOB/online.json"
+	# The observation time is the actual start of the successful counter
+	# request, not the scheduled boundary or response/parser completion time.
+	local online_started="$(date +%s)" online_finished
 	if billing_request /Self/dashboard/getOnlineList; then
 		# An HTTP-200 login page/error object is not an empty session list.
 		# Some portal versions return a literal null for an empty list, which
 		# jsonfilter builds differ on accepting as a root value.
-		billing_capture_online && date +%s >"$BILLING_JOB/online-at" || true
+		if billing_capture_online;then
+			printf '%s' "$online_started" >"$BILLING_JOB/online-at"
+			online_finished="$(date +%s)";printf '%s' "$online_finished" >"$BILLING_JOB/online-finished-at"
+		fi
+	fi
+	if [ "${BJUT_NETWORK_ADDRESSES_ONLY:-0}" = 1 ] && [ ! -s "$BILLING_JOB/online.json" ];then
+		billing_progress error 100 '在线设备查询未通过，等待切换可用出口';return 1
 	fi
 	if [ "${BILLING_MODULE:-}" = center ]; then billing_center_modules; else
 	 cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"

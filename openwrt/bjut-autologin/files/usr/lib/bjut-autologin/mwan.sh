@@ -32,6 +32,7 @@ mwan_begin() {
 
 mwan_finish() {
  local result="${1:-0}" newfile
+ MWAN_APPLIED_DIGEST=''
  if [ "$result" = 0 ] && [ "$MWAN_CHANGED" = 1 ]; then
   mwan_uci commit "$MWAN_PACKAGE" && mwan_uci export "$MWAN_PACKAGE" >/dev/null || result=1
   if [ "$result" = 0 ] && cmp -s "$MWAN_STAGE/original" "$MWAN_ORIGINAL" && [ -z "$("$UCI_BIN" -q changes mwan3 2>/dev/null)" ]; then
@@ -44,6 +45,7 @@ mwan_finish() {
    fi
   else result=1; fi
  fi
+ if [ "$result" = 0 ];then MWAN_APPLIED_DIGEST="$(sha256sum "$MWAN_STAGE/$MWAN_PACKAGE" | awk '{print $1}')";fi
  mwan_uci revert "$MWAN_PACKAGE" >/dev/null 2>&1 || true
  rm -rf -- "$MWAN_STAGE" "$STATE_DIR/mwan-lock"
  return "$result"
@@ -79,12 +81,23 @@ sync_mwan_rule() {
 }
 
 sync_mwan_rules() {
- local result=0
+ local result=0 fingerprint memo="$STATE_DIR/mwan-ready-$UPLINK_ID" current
  [ "$CFG_MWAN3" = 1 ] && [ -r "${BJUT_MWAN_CONFIG:-/etc/config/mwan3}" ] || return 0
+ # Rules are identical for accounts sharing this physical source. Cache only
+ # successful configurations and include the entire current file digest, so
+ # edits by LuCI/mwan3 or another uplink always invalidate this fast path.
+ fingerprint="$(sha256sum "${BJUT_MWAN_CONFIG:-/etc/config/mwan3}" | awk '{print $1}')"
+ [ "${#fingerprint}" = 64 ] || return 1
+ current="$(printf '%s\n' "$UPLINK_ID" "$LOCAL_IPV4" "$LOCAL_IPV6" "$fingerprint" | sha256sum | awk '{print $1}')"
+ [ "$current" != "$(cat "$memo" 2>/dev/null)" ] || return 0
  mwan_begin || return 1
  sync_mwan_rule 4 "$LOCAL_IPV4" || result=1
  sync_mwan_rule 6 "$LOCAL_IPV6" || result=1
- mwan_finish "$result"
+ mwan_finish "$result" || return 1
+ fingerprint="$MWAN_APPLIED_DIGEST"
+ [ "${#fingerprint}" = 64 ] || return 1
+ current="$(printf '%s\n' "$UPLINK_ID" "$LOCAL_IPV4" "$LOCAL_IPV6" "$fingerprint" | sha256sum | awk '{print $1}')"
+ printf '%s' "$current" >"$memo.$$" && mv -f "$memo.$$" "$memo"
 }
 
 prune_mwan_rules() {

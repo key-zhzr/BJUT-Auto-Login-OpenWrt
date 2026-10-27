@@ -24,7 +24,7 @@ traffic_history_record() (
  traffic_history_record_locked "$@"
 )
 traffic_history_record_locked() (
- local account_key="$1" file="$2" now="$3" prefix index=0 item mac ip ipv6 login down used device session previous_at previous_used high delta seconds day label identity interface_id interface_name local_device resolution at
+ local account_key="$1" file="$2" now="$3" prefix index=0 recorded=0 item mac ip ipv6 login down used device session previous_at previous_used high delta seconds day label identity interface_id interface_name local_device resolution at
  traffic_history_prepare || return 1
  prefix="$(billing_rows_prefix "$file")";day="$(printf '%s' "$now" | "$CODEC_BIN" timestamp-date | cut -c1-10)"
  [ -n "$day" ] || return 1
@@ -39,6 +39,7 @@ traffic_history_record_locked() (
 $identity
 END_IDENTITY
   [ "${CFG_TRAFFIC_SCOPE:-local}" = all ] || [ "$local_device" = 1 ] || continue
+  recorded=1
   label="$mac";[ -n "$label" ] || label="$ip";case "$label" in ''|*[!a-fA-F0-9:.-]*) label=device;;esac
   identity="$mac";[ -n "$identity" ] || identity="$ip"
   device="$(printf '%s' "$identity" | sha256sum | cut -c1-16)"
@@ -63,6 +64,9 @@ END_IDENTITY
   high="$(awk -v n="$used" -v p="$previous_used" 'BEGIN{printf "%.3f",(n>p?n:p)}')"
   printf '%s %s\n' "$now" "$high" >"$STATE_DIR/traffic-baselines/$session"
  done
+ # Empty accounts still publish their actual successful sample timestamp, but
+ # have no baseline/history to compact. Do not rewrite all rollups six times.
+ [ "$recorded" = 1 ] || return 0
  local oldest="$(printf '%s' "$((now-${CFG_TRAFFIC_DAY_DAYS:-366}*86400))" | "$CODEC_BIN" timestamp-date | cut -c1-10)"
  # Old six-column daily rows remain readable for the explicit all-device view.
  awk -F '\t' -v oldest="$oldest" '(NF==6 || NF==7) && $1>=oldest {k=$1 FS $2 FS $3 FS $4 FS ($7==1?1:0);amount[k]+=$5;seconds[k]+=$6} END{for(k in amount){split(k,a,FS);printf "%s\t%s\t%s\t%s\t%.3f\t%.0f\t%s\n",a[1],a[2],a[3],a[4],amount[k],seconds[k],a[5]}}' "$STATE_DIR/usage-samples.tsv" | sort | tail -n "$((${CFG_TRAFFIC_STORAGE_MB:-2}*1048576/1000))" >"$STATE_DIR/usage-samples.tsv.tmp" && mv -f "$STATE_DIR/usage-samples.tsv.tmp" "$STATE_DIR/usage-samples.tsv"

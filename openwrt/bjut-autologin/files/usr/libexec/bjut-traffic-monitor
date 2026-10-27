@@ -83,7 +83,14 @@ while :;do
   wake=0;[ ! -f "$STATE_DIR/traffic/$key-wake" ] || wake=1
   child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
   if job_alive "$child" "$stamp";then
-   if [ "$wake" = 1 ];then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;else delay=1;continue;fi
+   if [ "$wake" = 1 ];then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;else
+    # A prepared worker normally sleeps until the shared counter boundary.
+    # Poll only an overdue pending cohort; reloading every second during the
+    # preparation wait creates hundreds of needless processes on the router.
+    pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
+    is_uint "$pending" && delay=1
+    continue
+   fi
   fi
   pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
   if [ "$wake" = 1 ] || is_uint "$pending" || { [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -le "$now" ]; };then

@@ -51,7 +51,7 @@ traffic_candidates() {
  done | sort -n | awk '{print $2}'
 }
 traffic_collect() {
- local section user password key uplink ticket now result retry seen='' due started elapsed sampled previous candidates attempts message success
+ local section user password key uplink ticket now result retry seen='' due started elapsed sampled previous candidates attempts message success finished
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || return 0
  TRAFFIC_NEXT_AT="$(($(date +%s)+60))"
  [ "${BJUT_TRAFFIC_IDENTITIES_READY:-0}" = 1 ] && [ -s "$STATE_DIR/traffic-identities.tsv" ] || traffic_identity_prepare
@@ -86,7 +86,8 @@ traffic_collect() {
     traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
     traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled"
     printf '%s' "$sampled" >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key-error" "$STATE_DIR/traffic/$key.json"
-    elapsed=$(($(date +%s)-started));log_message info "流量采样：账号 ${user}，上游 ${uplink}，完成用时 ${elapsed} 秒"
+    finished="$(cat "$STATE_DIR/billing/$ticket/online-finished-at" 2>/dev/null)";is_uint "$finished" || finished="$sampled"
+    elapsed=$(($(date +%s)-started));log_message info "流量采样：账号 ${user}，上游 ${uplink}，总用时 ${elapsed} 秒，计数请求 $((finished-sampled)) 秒"
     if is_uint "$previous";then elapsed=$((sampled-previous));if [ "$elapsed" -lt 59 ] || [ "$elapsed" -gt 61 ];then log_message notice "流量采样间隔 ${elapsed} 秒：账号 ${user}，已保存真实区间";fi;fi
     success=1;rm -rf "$STATE_DIR/billing/$ticket";break
    fi
