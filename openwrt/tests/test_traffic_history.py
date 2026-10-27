@@ -288,4 +288,52 @@ printf '%s|%s|%s' "$CFG_TRAFFIC_SCOPE" "$ACCOUNT_SECTIONS" "$UPLINK_SECTIONS"
 '''
         self.assertEqual(self.shell(code,NEXT_CONFIG=next_config,**env),'all local|account1 account2|dorm_a dorm_b')
 
+    def check_switch_during_preparation(self,failed=False):
+        import hashlib
+        import shutil
+        env=self.config();tools=self.temp/'clock';tools.mkdir();real_date=shutil.which('date')
+        clock=tools/'date';clock.write_text(f'#!/bin/sh\n[ "$1" != +%s ] || {{ printf 1000;exit; }}\nexec {real_date} "$@"\n');clock.chmod(0o755)
+        worker=self.temp/'switch-worker.sh'
+        worker.write_text('''#!/bin/sh
+[ "$1" != --identities ] || exit 0
+printf '%s %s\\n' "$1" "${BJUT_TRAFFIC_SAMPLE_AT:-immediate}" >>"$BJUT_STATE_DIR/switch-dispatches"
+if [ -n "$BJUT_TRAFFIC_SAMPLE_AT" ];then sleep 20;else
+ sleep 1
+ if [ "$FAIL_IMMEDIATE" = 1 ];then
+  key=$(printf 25000001|sha256sum|awk '{print $1}')
+  printf 验证码 >"$BJUT_STATE_DIR/traffic/$key-error"
+  printf 999999 >"$BJUT_STATE_DIR/traffic/$key-next"
+ fi
+fi
+''');worker.chmod(0o755)
+        (self.state/'traffic-identities.tsv').write_text('interface:lan3\tlan3\t-\t10.126.19.139\n')
+        process=subprocess.Popen(['sh',str(base.CORE/'files/usr/libexec/bjut-traffic-monitor')],env=self.environment('online',PATH=str(tools)+os.pathsep+os.environ['PATH'],FAIL_IMMEDIATE='1' if failed else '0',BJUT_SELF=base.SCRIPT,BJUT_TRAFFIC_SAMPLE=worker,BJUT_TRAFFIC_HISTORY=self.temp/'persistent.tsv',BJUT_TRAFFIC_CURVES=self.temp/'curves.tsv',**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        calls=self.state/'switch-dispatches';key=hashlib.sha256(b'25000001').hexdigest()
+        try:
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline and (not calls.exists() or len(calls.read_text().splitlines())<2):time.sleep(.1)
+            self.assertTrue(calls.exists());self.assertGreaterEqual(len(calls.read_text().splitlines()),2)
+            (self.state/'traffic'/f'{key}-wake').write_text('1000');process.send_signal(signal.SIGUSR1)
+            deadline=time.monotonic()+12;rows=[]
+            while time.monotonic()<deadline:
+                rows=[line.split()[1] for line in calls.read_text().splitlines() if line.startswith('account1 ')]
+                if len(rows)>=3:break
+                time.sleep(.1)
+            if failed:
+                self.assertEqual(rows,['1030','immediate'])
+                self.assertFalse((self.state/'traffic'/f'{key}-pending').exists())
+                self.assertEqual((self.state/'traffic'/f'{key}-next').read_text(),'999999')
+            else:self.assertEqual(rows[:3],['1030','immediate','1030'])
+            self.assertEqual(sum(line.startswith('account2 ') for line in calls.read_text().splitlines()),1)
+        finally:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.communicate()
+
+    def test_switch_keeps_the_already_prepared_common_counter_boundary(self):
+        self.check_switch_during_preparation()
+
+    def test_failed_immediate_read_keeps_its_independent_error_backoff(self):
+        self.check_switch_during_preparation(failed=True)
+
 if __name__=='__main__':unittest.main()

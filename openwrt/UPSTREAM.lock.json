@@ -5,5 +5,5 @@
     "src/device-usage-model.ts",
     "src/usage-chart.ts"
   ],
-  "reviewNote": "Reviewed actual counter request timestamps and sampling documentation; router r26 independently reduces preparation polling, unchanged mwan3 work and empty-account history compaction."
+  "reviewNote": "Reviewed actual counter request timestamps and sampling documentation; router r27 retains live config indexes and preserves the next shared cohort after an immediate switch sample."
 }

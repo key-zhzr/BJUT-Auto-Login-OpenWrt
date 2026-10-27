@@ -81,11 +81,16 @@ while :;do
    printf '%s' "$sample_at" >"$STATE_DIR/traffic/$key-pending"
   fi
   wake=0;[ ! -f "$STATE_DIR/traffic/$key-wake" ] || wake=1
+  if [ "$wake" = 1 ];then
+   # A switch cancels a prepared request for this account. Keep its future
+   # cohort so the immediate read does not skip the upcoming common boundary.
+   if [ "$((round-60))" -gt "$now" ];then printf '%s' "$((round-60))" >"$STATE_DIR/traffic/$key-pending";else rm -f "$STATE_DIR/traffic/$key-pending";fi
+  fi
   child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
   if job_alive "$child" "$stamp";then
    if [ "$wake" = 1 ];then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;else
     # A prepared worker normally sleeps until the shared counter boundary.
-    # Poll only an overdue pending cohort; reloading every second during the
+    # Poll only a queued replacement; reloading every second during the
     # preparation wait creates hundreds of needless processes on the router.
     pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
     is_uint "$pending" && delay=1
@@ -93,9 +98,13 @@ while :;do
    fi
   fi
   pending="$(cat "$STATE_DIR/traffic/$key-pending" 2>/dev/null)"
+  if [ "$wake" != 1 ] && [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -gt "$now" ];then
+   rm -f "$STATE_DIR/traffic/$key-pending";pending=''
+  fi
   if [ "$wake" = 1 ] || is_uint "$pending" || { [ -s "$STATE_DIR/traffic/$key-error" ] && [ "$due" -le "$now" ]; };then
-   rm -f "$STATE_DIR/traffic/$key-wake" "$STATE_DIR/traffic/$key-pending"
-   target="$pending";[ "$wake" != 1 ] || target=''
+   rm -f "$STATE_DIR/traffic/$key-wake"
+   target="$pending"
+   if [ "$wake" = 1 ];then target='';else rm -f "$STATE_DIR/traffic/$key-pending";fi
    BJUT_NETWORK_ADDRESSES_ONLY=1 BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
    child="$!";stamp="$(proc_stamp "$child")"
    printf '%s %s\n' "$child" "$stamp" >"$STATE_DIR/traffic-jobs/$key";delay=1
