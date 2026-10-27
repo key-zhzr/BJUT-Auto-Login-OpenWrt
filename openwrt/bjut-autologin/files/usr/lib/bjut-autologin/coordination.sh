@@ -20,7 +20,7 @@ account_lock_acquire() {
    rmdir "$lock.recover" 2>/dev/null || true
   fi
   if [ "$(($(date +%s)-started))" -ge "$timeout" ];then rm -f "$candidate";return 1;fi
-  sleep 0.05 2>/dev/null || sleep 1
+  short_pause
  done
  rm -f "$candidate"
 }

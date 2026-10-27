@@ -18,8 +18,24 @@ REQUEST="$(mktemp "$STATE_DIR/rpc.XXXXXX")" || exit 1
 trap 'rm -f -- "$REQUEST"; configuration_unlock' 0
 head -c 131073 >"$REQUEST"
 [ "$(wc -c <"$REQUEST" | tr -d ' \011\012\015')" -le 131072 ] || exit 2
-load_configuration || exit 1
 . "$JSHN_SH"
+case "$2" in
+ status|dashboard|ports|accounts|traffic|billing_cached)
+  if [ "${BJUT_SNAPSHOT_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ];then
+   view_snapshot "$2" && exit 0
+   view_signature="$(configuration_fingerprint 2>/dev/null)"
+  fi
+  load_configuration || exit 1
+  if [ -n "$view_signature" ];then
+   view_context_write "$view_signature" || true
+   view_snapshot "$2" && exit 0
+  fi
+  ;;
+ # Polling an owned ticket reads only that task. It does not need UCI or
+ # credentials; the worker validates configuration before doing network I/O.
+ billing_poll) ;;
+ *) load_configuration || exit 1;;
+esac
 
 reply() {
 	json_init

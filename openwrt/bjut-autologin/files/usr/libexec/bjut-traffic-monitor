@@ -46,7 +46,11 @@ trap ':' USR1 HUP
 identity_at=0;identity_pid='';identity_stamp=''
 round="$(($(date +%s)+30))"
 while :;do
- CONFIG_LOADED=0;load_configuration || exit 1
+ generation="$(configuration_fingerprint 2>/dev/null)"
+ if [ -z "$generation" ] || [ "$generation" != "${configuration_generation:-}" ];then
+  CONFIG_LOADED=0;load_configuration || exit 1
+  configuration_generation="$generation"
+ fi
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || exit 0
  scope="$(cat "$STATE_DIR/traffic-scope" 2>/dev/null)"
  if [ -n "$scope" ] && [ "$scope" != "$CFG_TRAFFIC_SCOPE" ];then

@@ -212,6 +212,29 @@ def validate_traffic_store_with_sanitizers():
     finally:shutil.rmtree(temp)
 
 
+def validate_runtime_with_sanitizers():
+    temp=Path(tempfile.mkdtemp(prefix='bjut-runtime-sanitizer-'))
+    try:
+        binary=temp/'runtime'
+        run(['cc','-std=c99','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',CORE/'src/bjut-runtime.c','-o',binary,'-ljson-c'])
+        env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'}
+        config=temp/'config';config.write_text('fixture')
+        delta=temp/'delta';request=temp/'request.json';request.write_text('{}')
+        signature=subprocess.run([binary,'fingerprint',config,delta],env=env,check=True,capture_output=True,text=True).stdout.strip()
+        context={'schema':1,'fingerprint':signature,'interval':20,'configured':1,'trafficEnabled':1,'scope':'local','uplinks':[{'id':'one','device':'eth0'}],'accounts':[],'retention':{}}
+        (temp/'uplink-one.json').write_text('[]')
+        (temp/'operation-one.json').write_text('[]')
+        (temp/'usage-samples.tsv').write_text('invalid\n')
+        (temp/'usage-curves.tsv').write_text('invalid\n')
+        for variant in (context,[],{'schema':1,'fingerprint':signature,'uplinks':{},'accounts':[]}):
+            (temp/'view-context.json').write_text(json.dumps(variant))
+            for method in ('dashboard','accounts','ports','status','traffic','billing_cached'):
+                result=subprocess.run([binary,'snapshot',method,request,temp,temp,config,delta],env=env,capture_output=True)
+                if b'Sanitizer' in result.stderr or result.returncode not in (0,75):raise RuntimeError('Runtime snapshot failed sanitizer check')
+                if result.returncode==0:json.loads(result.stdout)
+    finally:shutil.rmtree(temp)
+
+
 def main():
     validate_text_files()
     validate_json()
@@ -220,6 +243,7 @@ def main():
     validate_c_with_sanitizers()
     validate_html_with_sanitizers()
     validate_traffic_store_with_sanitizers()
+    validate_runtime_with_sanitizers()
     validate_security_invariants()
     run([sys.executable, "-m", "unittest", "-v", "openwrt/tests/test_openwrt_port.py"])
     run([sys.executable, "openwrt/tests/test_multi_uplink.py"])
@@ -230,6 +254,7 @@ def main():
     run([sys.executable, "openwrt/tests/test_billing_center.py"])
     run([sys.executable, "openwrt/tests/test_traffic_history.py"])
     run([sys.executable, "openwrt/tests/test_traffic_cadence.py"])
+    run([sys.executable, "openwrt/tests/test_runtime.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

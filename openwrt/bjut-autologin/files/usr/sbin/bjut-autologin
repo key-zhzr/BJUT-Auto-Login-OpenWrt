@@ -16,6 +16,7 @@ UBUS_BIN="${BJUT_UBUS:-/bin/ubus}"
 IWINFO_BIN="${BJUT_IWINFO:-/usr/bin/iwinfo}"
 IP_BIN="${BJUT_IP:-/sbin/ip}"
 CODEC_BIN="${BJUT_CODEC:-/usr/libexec/bjut-codec}"
+RUNTIME_BIN="${BJUT_RUNTIME:-/usr/libexec/bjut-runtime}"
 LOGGER_BIN="${BJUT_LOGGER:-/usr/bin/logger}"
 SYS_NET="${BJUT_SYS_NET:-/sys/class/net}"
 STATE_DIR="${BJUT_STATE_DIR:-/var/run/bjut-autologin}"
@@ -57,6 +58,7 @@ WORK_DIR=""
 LOCK_HELD=0
 SLEEP_PID=""
 CHILD_PIDS=""
+CHILD_TOKENS=""
 SOURCE_LOCK=""
 SOURCE_STATE=""
 SOURCE_LOCK_HELD=0
@@ -85,6 +87,7 @@ RUNTIME_OFFLINE_COUNT=0
 RUNTIME_NEXT_ATTEMPT=0
 
 cleanup_runtime() {
+	children_stop
 	[ "$LOCK_HELD" != 1 ] || rm -f -- "$STATE_DIR/phase-$UPLINK_ID"
 	if [ "$SOURCE_LOCK_HELD" = 1 ]; then rm -rf -- "$SOURCE_LOCK"; fi
 	SOURCE_LOCK_HELD=0
@@ -99,8 +102,8 @@ cleanup_runtime() {
 }
 
 handle_signal() {
+	trap '' 1 2 15
 	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
-	for child in $CHILD_PIDS; do kill "$child" 2>/dev/null || true; done
 	cleanup_runtime
 	exit 143
 }
@@ -1342,7 +1345,11 @@ main() {
 	. "$LIB_DIR/mwan.sh" || return 2
 	. "$LIB_DIR/routing.sh" || return 2
 	case "$command" in
-		setup) prepare_router_identity && { load_configuration && prepare_log_destination; }; return $?;;
+		setup)
+			# Older packages could leave detached probes pointing at deleted work
+			# directories. The helper verifies parent, executable and fd ownership.
+			[ ! -x "$RUNTIME_BIN" ] || "$RUNTIME_BIN" reap-probes "$STATE_DIR" "$SELF_BIN" >/dev/null 2>&1 || true
+			prepare_router_identity && { load_configuration && prepare_log_destination; }; return $?;;
 		status)
 			load_configuration || return 2
 			if [ -n "$section" ]; then select_uplink "$section" || return 2; print_status;
@@ -1379,6 +1386,7 @@ main() {
 	esac
 }
 
+. "$LIB_DIR/runtime.sh" || exit 2
 [ ! -r "$LIB_DIR/uplinks.sh" ] || . "$LIB_DIR/uplinks.sh"
 . "$LIB_DIR/logging.sh" || exit 2
 . "$LIB_DIR/session-actions.sh" || exit 2

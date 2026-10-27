@@ -140,7 +140,7 @@ acquire_route_lock() {
 			rmdir "$STATE_DIR/route-recover.lock" 2>/dev/null || true
 		fi
 		if [ "$(($(date +%s)-started))" -ge 5 ]; then rm -f "$candidate"; return 1; fi
-		sleep 0.05 2>/dev/null || sleep 1
+		short_pause
 	done
 	rm -f "$candidate"
 }

@@ -142,33 +142,46 @@ bound_curl() {
 }
 
 probe_family() {
-	trap - 0
-	local family="$1" target directory workers="" pid code all_done success=0
+	CHILD_PIDS='';CHILD_TOKENS='';SLEEP_PID=''
+	trap children_stop 0
+	trap 'exit 143' 1 2 15
+	local family="$1" target directory pid success=0 owner line tokens attempts=0
 	[ "$family" != "ipv6" ] || [ -n "$LOCAL_IPV6" ] || { printf 'not_configured'; return; }
+	# /proc/self is opened by the read builtin in this shell, not by a command
+	# substitution (where $$ still names the outer shell on BusyBox ash).
+	line="$$";[ ! -r /proc/self/stat ] || IFS= read -r line </proc/self/stat
+	owner="${line%% *}";process_identity "$owner" || return 1
+	owner="$owner:$PROCESS_START"
 	for target in configured ustc alidns; do
 		directory="$WORK_DIR/$target"; mkdir -p "$directory"
 		rm -f "$directory/done" "$directory/ok"
 	done
 	for target in configured ustc alidns; do
 		directory="$WORK_DIR/$target"
-		probe_target "$family" "$target" "$directory" & workers="$workers $!"
+		probe_target "$family" "$target" "$directory" & child_register "$!"
 	done
-	while :; do
-		all_done=1
-		for target in configured ustc alidns; do
-			[ -e "$WORK_DIR/$target/done" ] || all_done=0
-			[ ! -e "$WORK_DIR/$target/ok" ] || success=1
+	if [ -x "$RUNTIME_BIN" ];then
+		tokens="$CHILD_TOKENS"
+		"$RUNTIME_BIN" wait-probes "$WORK_DIR" "$((${CFG_TIMEOUT:-3}+2))" "$owner" $tokens & pid=$!
+		child_register "$pid"
+		wait "$pid" && success=1
+		child_forget "$pid"
+	else
+		# Bounded compatibility path for an incomplete installation.
+		while [ "$attempts" -le "$((${CFG_TIMEOUT:-3}+2))" ] && [ -d "$WORK_DIR" ];do
+			for target in configured ustc alidns;do [ ! -e "$WORK_DIR/$target/ok" ] || success=1;done
+			[ "$success" = 0 ] || break
+			attempts=$((attempts+1));sleep 1
 		done
-		[ "$success" = 0 ] && [ "$all_done" = 0 ] || break
-		sleep 0.05 2>/dev/null || sleep 1
-	done
-	for pid in $workers; do kill "$pid" 2>/dev/null || true; done
-	for pid in $workers; do wait "$pid" 2>/dev/null || true; done
+	fi
+	children_stop
 	if [ "$success" = 1 ]; then printf 'reachable'; else printf 'unreachable'; fi
 }
 
 probe_target() {
-	trap - 0
+	CHILD_PIDS='';CHILD_TOKENS='';SLEEP_PID=''
+	trap children_stop 0
+	trap 'exit 143' 1 2 15
 	local family="$1" target="$2" directory="$3" url resolve="" code rc curl_pid
 	case "$target:$family" in
 		configured:*) url="$CFG_ONLINE_URL";;
@@ -185,8 +198,8 @@ probe_target() {
 	# exec gives the worker a directly owned curl PID, so early success can
 	# cancel the other targets without leaving requests or inherited pipes alive.
 	printf 'url = "%s"\n' "$url" | (BJUT_CURL_EXEC=1; bound_curl "$family" "$@" --config -) >"$directory/code" 2>"$directory/error" & curl_pid=$!
-	trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 0' 1 2 15
-	wait "$curl_pid"; rc=$?; trap - 1 2 15
+	child_register "$curl_pid"
+	wait "$curl_pid"; rc=$?;child_forget "$curl_pid"
 	code="$(cat "$directory/code")"
 	if [ "$rc" = 0 ]; then
 		if [ "$target" = configured ]; then [ "$code" != "$CFG_ONLINE_CODE" ] || : >"$directory/ok"
@@ -200,9 +213,13 @@ online_check() {
 	# Subshells own their response files; neither family can overwrite the
 	# other's result. A blocked IPv4 target cannot hide working IPv6.
 	(mkdir -p "$WORK_DIR/p4"; WORK_DIR="$WORK_DIR/p4"; probe_family ipv4) >"$WORK_DIR/probe4" & pid4=$!
+	child_register "$pid4"
 	(mkdir -p "$WORK_DIR/p6"; WORK_DIR="$WORK_DIR/p6"; probe_family ipv6) >"$WORK_DIR/probe6" & pid6=$!
+	child_register "$pid6"
 	wait "$pid4" 2>/dev/null || true
+	child_forget "$pid4"
 	wait "$pid6" 2>/dev/null || true
+	child_forget "$pid6"
 	PROBE4="$(cat "$WORK_DIR/probe4")"; PROBE6="$(cat "$WORK_DIR/probe6")"
 	[ "$PROBE4" = reachable ] || [ "$PROBE6" = reachable ]
 }
@@ -288,14 +305,14 @@ run_all_uplinks() {
 	fi
 	for section in $UPLINK_SECTIONS; do
 		(BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
-		CHILD_PIDS="$pids"
+		child_register "$!"
 		batch=$((batch + 1))
 		if [ "$batch" -ge 4 ]; then
-			for pid in $pids; do wait "$pid" || rc=1; CHILD_PIDS="${CHILD_PIDS# $pid}"; done
-			batch=0; pids=""; CHILD_PIDS=""
+			for pid in $pids; do wait "$pid" || rc=1; child_forget "$pid"; done
+			batch=0; pids=""
 		fi
 	done
-	for pid in $pids; do wait "$pid" || rc=1; CHILD_PIDS="${CHILD_PIDS# $pid}"; done
+	for pid in $pids; do wait "$pid" || rc=1; child_forget "$pid"; done
 	print_all_status >"$STATE_DIR/status.json.$$" && mv -f "$STATE_DIR/status.json.$$" "$STATE_DIR/status.json"
 	return "$rc"
 }

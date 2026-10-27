@@ -35,6 +35,8 @@ class OpenWrtPortTests(unittest.TestCase):
             mock.chmod(0o755)
         cls.traffic_store = cls.build_dir / 'bjut-traffic-store'
         subprocess.run(['cc','-std=c99','-O2','-Wall','-Wextra','-Werror',str(CORE/'src/bjut-traffic-store.c'),'-o',str(cls.traffic_store),'-lz'],check=True)
+        cls.runtime = cls.build_dir / 'bjut-runtime'
+        subprocess.run(['cc','-std=c99','-O2','-Wall','-Wextra','-Werror',str(CORE/'src/bjut-runtime.c'),'-o',str(cls.runtime),'-ljson-c'],check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -95,6 +97,8 @@ class OpenWrtPortTests(unittest.TestCase):
             "BJUT_LIB_DIR": str(CORE / "files/usr/lib/bjut-autologin"),
             "BJUT_CODEC": str(self.codec),
             "BJUT_TRAFFIC_STORE": str(self.traffic_store),
+            "BJUT_RUNTIME": str(self.codec.parent / 'bjut-runtime'),
+            "BJUT_SNAPSHOT_DISABLE": "1",
             "BJUT_LOGGER": str(MOCKS / "logger.sh"),
             "BJUT_SYS_NET": str(self.sys_net),
             "BJUT_STATE_DIR": str(self.state),

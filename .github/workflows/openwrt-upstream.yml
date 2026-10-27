@@ -37,7 +37,10 @@ jobs:
       - name: Merge and validate
         if: steps.pending.outputs.exists != 'true'
         id: merge
-        run: python3 openwrt/scripts/sync_upstream.py
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential dash openssl strace zlib1g-dev libjson-c-dev
+          python3 openwrt/scripts/sync_upstream.py
       - name: Publish verified merge
         id: publish
         if: steps.merge.outputs.state == 'ready'

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=28
+PKG_RELEASE:=29
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -15,7 +15,7 @@ define Package/bjut-autologin
   SUBMENU:=Captive Portals
   TITLE:=Low-overhead BJUT campus network auto-login
   URL:=https://github.com/key-zhzr/BJUT-Auto-Login-OpenWrt
-  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full +coreutils-sha256sum +zlib
+  DEPENDS:=+ca-bundle +curl +jshn +jsonfilter +rpcd-mod-iwinfo +rpcd +ip-full +coreutils-sha256sum +zlib +libjson-c
 endef
 
 define Package/bjut-autologin/description
@@ -31,10 +31,14 @@ define Build/Prepare
 	$(CP) ./src/bjut-html.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-codec.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-traffic-store.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/bjut-runtime.c $(PKG_BUILD_DIR)/
 	$(CP) ./LICENSE $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
+		-std=c99 -Wall -Wextra -Werror -o $(PKG_BUILD_DIR)/bjut-runtime \
+		$(PKG_BUILD_DIR)/bjut-runtime.c $(TARGET_LDFLAGS) -ljson-c
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
 		-std=c99 -Wall -Wextra -Werror \
 		-o $(PKG_BUILD_DIR)/bjut-codec \
@@ -61,6 +65,7 @@ define Package/bjut-autologin/install
 		$(1)/etc/hotplug.d/iface/95-bjut-autologin
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-codec $(1)/usr/libexec/bjut-codec
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-runtime $(1)/usr/libexec/bjut-runtime
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-traffic-store $(1)/usr/libexec/bjut-traffic-store
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bjut-html $(1)/usr/libexec/bjut-html
 	$(INSTALL_BIN) ./files/usr/libexec/bjut-billing $(1)/usr/libexec/bjut-billing

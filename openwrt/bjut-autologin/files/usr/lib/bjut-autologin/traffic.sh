@@ -97,7 +97,7 @@ traffic_collect() {
    . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin
    json_dump >"$STATE_DIR/billing/$ticket/request.json"
    /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" &
-   CHILD_PIDS="$!";wait "$CHILD_PIDS";CHILD_PIDS=''
+   child_register "$!";local billing_pid="$!";wait "$billing_pid";child_forget "$billing_pid"
    result="$STATE_DIR/billing/$ticket/result.json"
    if [ "$(json_file_value "$result" '@.state')" = ready ] && [ -s "$STATE_DIR/billing/$ticket/online.json" ];then
     sampled="$(cat "$STATE_DIR/billing/$ticket/online-at" 2>/dev/null)";is_uint "$sampled" || sampled="$(date +%s)"
