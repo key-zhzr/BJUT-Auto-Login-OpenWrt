@@ -277,4 +277,15 @@ wc -c < "$STATE_DIR/mwan-prepares"
 '''
         self.assertEqual(self.shell(code,MWAN_TEST_LIB=library,BJUT_MWAN_CONFIG=mwan,**env).strip(),'2')
 
+    def test_live_reloads_replace_account_indexes_and_refresh_main_settings(self):
+        env=self.config();next_config=self.temp/'next-config.json'
+        data=json.loads(Path(env['MOCK_CONFIG_JSON']).read_text());data['main']['traffic_scope']='local'
+        next_config.write_text(json.dumps(data))
+        code='''load_configuration;printf '%s ' "$CFG_TRAFFIC_SCOPE"
+cp "$NEXT_CONFIG" "$MOCK_CONFIG_JSON"
+for pass in 1 2 3 4 5 6 7 8;do CONFIG_LOADED=0;load_configuration;done
+printf '%s|%s|%s' "$CFG_TRAFFIC_SCOPE" "$ACCOUNT_SECTIONS" "$UPLINK_SECTIONS"
+'''
+        self.assertEqual(self.shell(code,NEXT_CONFIG=next_config,**env),'all local|account1 account2|dorm_a dorm_b')
+
 if __name__=='__main__':unittest.main()

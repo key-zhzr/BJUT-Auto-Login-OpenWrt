@@ -330,6 +330,13 @@ load_configuration() {
 		printf 'Unable to load /etc/config/%s\n' "$CONFIG_PACKAGE" >&2
 		return 1
 	}
+	# A long-lived sampler explicitly reloads configuration. Rebuild these
+	# indexes rather than appending duplicate accounts/uplinks each time, and
+	# let load_main_section actually refresh live settings on the next pass.
+	MAIN_SECTION=""
+	ACCOUNT_SECTIONS=""
+	UPLINK_SECTIONS=""
+	UPLINK_CONFIGURED=0
 	config_foreach load_main_section service
 	[ -n "$MAIN_SECTION" ] || {
 		printf 'Missing service section in /etc/config/%s\n' "$CONFIG_PACKAGE" >&2

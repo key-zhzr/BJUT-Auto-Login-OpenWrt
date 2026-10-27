@@ -207,6 +207,7 @@ def main():
     run([sys.executable, "openwrt/tests/test_login_order.py"])
     run([sys.executable, "openwrt/tests/test_billing_center.py"])
     run([sys.executable, "openwrt/tests/test_traffic_history.py"])
+    run([sys.executable, "openwrt/tests/test_traffic_cadence.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

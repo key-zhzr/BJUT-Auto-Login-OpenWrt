@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,11 @@ COMMIT = 'a' * 40
 
 
 class PackageBuildTests(unittest.TestCase):
+    def test_sampler_process_revision_tracks_the_package_revision(self):
+        init=Path(__file__).resolve().parents[1]/'bjut-autologin/files/etc/init.d/bjut-autologin'
+        revision=re.search(r'BJUT_TRAFFIC_REVISION=(\d+)',init.read_text()).group(1)
+        self.assertEqual(revision,build.package_revision())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='bjut-package-test-')
         self.root = Path(self.temp.name)

@@ -83,3 +83,16 @@ python3 -m http.server 1431 --bind 127.0.0.1 --directory openwrt
 
 
 流量统计专项：`python3 -m unittest discover -s openwrt/tests -p test_traffic_history.py` 验证默认关闭、旧配置重新确认、物理上游匹配、仅本机范围过滤、连续增量与分层汇总、缺采样/计数回退以及每分钟调度。LuCI 浏览器用例覆盖手动开启/暂停、接口对比、累计、悬停和键盘读数、CSV 及移动端无横向溢出。共享模型变更后运行 `node scripts/build-router-usage-ui.mjs .`，同时提交生成的 JS 和 CSS。
+
+## 实机采样节奏验收
+
+先安装与固件匹配的正式 SDK 包，保持所需统计开关和范围；等待正常采样时不要主动换号或修改设置。使用已有 SSH 密钥或复用连接运行：
+
+```sh
+python3 openwrt/scripts/check_traffic_cadence.py root@192.168.1.1 \
+  --seconds 380 --output /tmp/bjut-traffic-cadence.json
+```
+
+可通过重复 `--ssh-option` 传入 `ControlPath`、`UserKnownHostsFile` 等 SSH 选项；工具不接收或保存管理密码，不修改路由器设置，不关闭主机密钥校验。只在开始时读取一次公开账号元数据，之后每 5 秒直接读取更新时间文件，避免反复生成整段图表历史而增加负载。
+
+成功需至少五轮完整账号样本、每轮时间差不超过 5 秒，且相邻轮次每个账号间隔均为 59～61 秒。证据文件保留所有观察到的时间、错误账号标记和间隔；不统一或修饰账号时间，不输出账号明文。部分账号尚未更新时不当作完整轮次，退出码非零代表未通过。换号会额外触发即时采样，应单独验证对应设备、切换标记、退避解除以及原有其他上游状态。
