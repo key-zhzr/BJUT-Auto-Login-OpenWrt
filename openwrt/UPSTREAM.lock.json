@@ -1,5 +1,5 @@
 {
-  "upstream": "25a05369743e2b090f57bb7e82662dfe2ab2094a",
+  "upstream": "12b53b4881a5904a3a318f86f9bbb1f08ecea750",
   "reviewRequired": [
     "src-tauri/src/",
     "src/device-usage-model.ts",
