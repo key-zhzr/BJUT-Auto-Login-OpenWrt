@@ -176,6 +176,12 @@ class TrafficStoreTests(unittest.TestCase):
         self.assertFalse((self.state/'traffic-store-current').exists())
         self.assertEqual((self.flash/'usage-curves.tsv.dict.gz').read_bytes(), corrupt)
 
+    def test_oversize_paths_do_not_publish_an_empty_replacement(self):
+        state=self.temp/'another-state';state.mkdir()
+        result=subprocess.run([self.binary,'init',state,'x'*4096,self.flash/'usage-curves.tsv'],capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse((state/'traffic-store-current').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

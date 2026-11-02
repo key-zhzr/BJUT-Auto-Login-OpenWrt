@@ -201,6 +201,22 @@ test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-nex
         os.utime(self.temp/'curves.tsv.dict.gz',(10,10));os.utime(legacy,(20,20))
         self.assertEqual(self.shell('load_configuration;traffic_history_prepare;traffic_history_stream curves',**env),legacy.read_text())
 
+    def test_failed_flash_checkpoint_keeps_new_samples_without_retrying_every_account(self):
+        env=self.config();wrapper=self.temp/'failed-checkpoint.sh';trace=self.temp/'checkpoint-attempts'
+        wrapper.write_text('''#!/bin/sh
+if [ "$1" = compact ];then printf x >>"$CHECKPOINT_TRACE";exit 1;fi
+exec "$REAL_TRAFFIC_STORE" "$@"
+''');wrapper.chmod(0o755)
+        file=self.temp/'online.json'
+        row={'sessionId':'one','loginTime':'same','ip':'192.0.2.3','mac':'aabbccddeeff','downFlow':10240}
+        script='load_configuration;key=$(printf 25000001|sha256sum|awk \'{print $1}\');traffic_history_record "$key" "$ONLINE" "$AT";traffic_history_json'
+        for i in range(3):
+            row['downFlow']=10240+i*1024;file.write_text(json.dumps([row]))
+            result=json.loads(self.shell(script,ONLINE=file,AT=str(1792886400+i*60),BJUT_TRAFFIC_STORE=wrapper,REAL_TRAFFIC_STORE=self.traffic_store,CHECKPOINT_TRACE=trace,**env))
+        self.assertEqual(trace.read_text(),'x')
+        self.assertEqual(result[0]['usedMb'],2)
+        self.assertFalse((self.temp/'curves.tsv.dict.gz').exists())
+
     def test_local_scope_queries_only_accounts_confirmed_on_upstreams(self):
         env=self.config();worker=self.temp/'selected-billing.sh'
         worker.write_text('''#!/bin/sh

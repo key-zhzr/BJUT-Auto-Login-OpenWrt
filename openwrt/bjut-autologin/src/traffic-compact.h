@@ -13,7 +13,15 @@ typedef struct {
 } StoreRows;
 
 static int store_path(char *out, const char *directory, const char *name) {
-    return snprintf(out, PATH_MAX, "%s/%s", directory, name) < PATH_MAX;
+    size_t a = strlen(directory), b = strlen(name);
+    if (a >= PATH_MAX - 1 || b >= PATH_MAX - a - 1) return 0;
+    memcpy(out, directory, a); out[a] = '/';
+    memcpy(out + a + 1, name, b + 1); return 1;
+}
+static int store_suffix(char *out, const char *name, const char *suffix) {
+    size_t a = strlen(name), b = strlen(suffix);
+    if (a >= PATH_MAX || b >= PATH_MAX - a) return 0;
+    memcpy(out, name, a); memcpy(out + a, suffix, b + 1); return 1;
 }
 static int store_copy(const char *from, const char *to) {
     FILE *in = tio_file(from);
@@ -69,12 +77,13 @@ static int store_init(const char *state, const char *samples, const char *curves
     if (tio_directory(state, directory, sizeof(directory))) return 0;
     if (snprintf(directory, sizeof(directory), "%s/traffic-store.XXXXXX", state) >= (int)sizeof(directory) || !mkdtemp(directory)) return 1;
     const char *names[] = {"samples", "curves"}, *persisted[] = {samples, curves};
+    const char *journals[] = {"usage-samples.tsv", "usage-curves.tsv"};
+    const char *archives[] = {"usage-samples.tsv.dict.gz", "usage-curves.tsv.dict.gz"};
     int ok = 1;
     for (int i = 0; i < 2 && ok; i++) {
-        snprintf(raw, sizeof(raw), "%s/usage-%s.tsv", state, names[i]);
-        snprintf(packed, sizeof(packed), "%s/usage-%s.tsv.dict.gz", directory, names[i]);
+        if (!store_path(raw, state, journals[i]) || !store_path(packed, directory, archives[i])) { ok = 0; break; }
         struct stat st, gzst, rawst;
-        snprintf(input, sizeof(input), "%s.dict.gz", persisted[i]);
+        if (!store_suffix(input, persisted[i], ".dict.gz")) { ok = 0; break; }
         int have_raw = lstat(raw, &st) == 0 && S_ISREG(st.st_mode);
         int have_gz = lstat(input, &gzst) == 0 && S_ISREG(gzst.st_mode);
         int have_legacy = lstat(persisted[i], &rawst) == 0 && S_ISREG(rawst.st_mode);
@@ -82,17 +91,16 @@ static int store_init(const char *state, const char *samples, const char *curves
         else if (have_gz && (!have_legacy || gzst.st_mtime >= rawst.st_mtime)) {
             ok = store_copy(input, packed);
             if (i == 1) {
-                snprintf(input, sizeof(input), "%s.index", persisted[i]);
-                snprintf(raw, sizeof(raw), "%s/usage-curves.tsv.index", directory);
+                if (!store_suffix(input, persisted[i], ".index") || !store_path(raw, directory, "usage-curves.tsv.index")) { ok = 0; break; }
                 if (!access(input, F_OK)) ok = ok && store_copy(input, raw);
             }
         }
         else if (have_legacy) ok = pack(names[i], persisted[i], packed) == 0;
         else {
-            snprintf(input, sizeof(input), "%s/usage-%s.tsv", directory, names[i]);
+            if (!store_path(input, directory, journals[i])) { ok = 0; break; }
             ok = store_empty(input) && pack(names[i], input, packed) == 0;
         }
-        snprintf(input, sizeof(input), "%s/usage-%s.tsv", directory, names[i]);
+        if (!store_path(input, directory, journals[i])) { ok = 0; break; }
         if (access(input, F_OK) && !store_empty(input)) ok = 0;
         if (ok) ok = store_verify(names[i], packed);
     }
