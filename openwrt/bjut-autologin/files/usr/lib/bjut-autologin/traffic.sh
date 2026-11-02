@@ -105,8 +105,9 @@ traffic_collect() {
     cp "$STATE_DIR/billing/$ticket/online.json" "$STATE_DIR/traffic/$key.json.$$" && mv -f "$STATE_DIR/traffic/$key.json.$$" "$STATE_DIR/traffic/$key.json"
     cp "$result" "$STATE_DIR/traffic/$key-meta.json.$$" && mv -f "$STATE_DIR/traffic/$key-meta.json.$$" "$STATE_DIR/traffic/$key-meta.json"
     traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
-    traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled"
-    printf '%s' "$sampled" >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key-error" "$STATE_DIR/traffic/$key.json"
+    if traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled";then rm -f "$STATE_DIR/traffic/$key-error";
+    else printf '采样已取得，但历史记录写入失败，请查看运行日志' >"$STATE_DIR/traffic/$key-error";log_message error "流量记录写入失败：账号 ${user}，上游 ${uplink}";fi
+    printf '%s' "$sampled" >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key.json"
     finished="$(cat "$STATE_DIR/billing/$ticket/online-finished-at" 2>/dev/null)";is_uint "$finished" || finished="$sampled"
     elapsed=$(($(date +%s)-started));log_message info "流量采样：账号 ${user}，上游 ${uplink}，总用时 ${elapsed} 秒，计数请求 $((finished-sampled)) 秒"
     if is_uint "$previous";then elapsed=$((sampled-previous));if [ "$elapsed" -lt 59 ] || [ "$elapsed" -gt 61 ];then log_message notice "流量采样间隔 ${elapsed} 秒：账号 ${user}，已保存真实区间";fi;fi

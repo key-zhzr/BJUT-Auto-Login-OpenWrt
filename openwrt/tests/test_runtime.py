@@ -79,6 +79,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.state / 'view-context.json').stat().st_mode & 0o777, 0o600)
         self.assertNotIn('signature', json.dumps(native))
 
+    def test_native_and_shell_read_compressed_generations_and_hot_journals(self):
+        env = self.fixture()
+        expected = self.response('traffic', env, BJUT_SNAPSHOT_DISABLE='1')
+        self.assertEqual(self.stable(self.response('traffic', env)), self.stable(expected))
+        output = self.temp/'checkpoint'; output.mkdir()
+        subprocess.run([self.traffic_store, 'compact', self.state, output, '1793100060', '7200', '90', '366', '4194304', '0'], check=True, capture_output=True)
+        subprocess.run([self.traffic_store, 'commit', self.state, output], check=True)
+        native = self.response('traffic', env, BJUT_FUNCTIONS_SH='/missing-library')
+        self.assertEqual(self.stable(native), self.stable(expected))
+        directory = self.state/(self.state/'traffic-store-current').read_text().strip()
+        with (directory/'usage-curves.tsv').open('a') as f:
+            f.write(f'60\t1793100060\t{self.keys["25000001"][:16]}\tabcd\tinterface:lan3\tlan3\t1\t2.345\t60\t1793100001\t1793100061\n')
+        request = {'start':1793099940, 'end':1793100061, 'resolution':60}
+        native = self.response('traffic', env, request)
+        legacy = self.response('traffic', env, request, BJUT_SNAPSHOT_DISABLE='1')
+        self.assertEqual(self.stable(native), self.stable(legacy))
+        self.assertAlmostEqual(sum(r[3] for r in native['timeline']['buckets']), 3.579)
+
     def test_same_second_configuration_and_pending_delta_edits_invalidate_the_cache(self):
         env = self.fixture()
         first = self.response('accounts', env)

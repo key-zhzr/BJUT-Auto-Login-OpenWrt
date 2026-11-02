@@ -36,7 +36,7 @@ class OpenWrtPortTests(unittest.TestCase):
         cls.traffic_store = cls.build_dir / 'bjut-traffic-store'
         subprocess.run(['cc','-std=c99','-O2','-Wall','-Wextra','-Werror',str(CORE/'src/bjut-traffic-store.c'),'-o',str(cls.traffic_store),'-lz'],check=True)
         cls.runtime = cls.build_dir / 'bjut-runtime'
-        subprocess.run(['cc','-std=c99','-O2','-Wall','-Wextra','-Werror',str(CORE/'src/bjut-runtime.c'),'-o',str(cls.runtime),'-ljson-c'],check=True)
+        subprocess.run(['cc','-std=c99','-O2','-Wall','-Wextra','-Werror',str(CORE/'src/bjut-runtime.c'),'-o',str(cls.runtime),'-ljson-c','-lz'],check=True)
 
     @classmethod
     def tearDownClass(cls):

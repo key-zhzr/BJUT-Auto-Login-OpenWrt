@@ -263,7 +263,7 @@ return view.extend({
             o=s.option(form.Value,item[0],_(item[1]));o.default=item[2];o.datatype='range(1,'+item[3]+')';o.rmempty=false;
         }
         const TrafficEstimate=form.Value.extend({renderWidget:function(){return E('p',{'data-traffic-estimate':'1'});},formvalue:function(){return null;}});
-        o=s.option(TrafficEstimate,'_traffic_estimate',_('预计存储占用'));
+        o=s.option(TrafficEstimate,'_traffic_estimate',_('预计闪存占用'));
 		o = s.option(form.Flag, 'billing_background', _('后台计费检查'));
 		o.default = '0'; o.rmempty = false;
 		o.description = _('定期检查各账号余额和流量，App 关闭后也可运行。');
@@ -306,7 +306,7 @@ return view.extend({
 
 		return m.render().then(function(root){root.append(bjut.style());
           let count=0;uci.sections('bjut-autologin','uplink',function(item){if(item.enabled!=='0')count++;});count=Math.max(1,count);
-          const update=function(){const get=function(key,fallback){const input=root.querySelector('input[id$=".'+key+'"]');return Number(input && input.value || uci.get('bjut-autologin','main',key) || fallback);};const rows=get('traffic_minute_hours',48)*60+get('traffic_hour_days',90)*24+get('traffic_day_days',366);const note=root.querySelector('[data-traffic-estimate]');if(note)note.textContent=_('按 ')+count+_(' 条上游预计约 ')+(count*rows*360/1048576).toFixed(1)+_(' MB（含临时空间；文件压缩保存）。容量上限 ')+get('traffic_storage_mb',2)+_(' MB，按压缩前估算。全部设备的占用会更多。');};
+          const update=function(){const get=function(key,fallback){const input=root.querySelector('input[id$=".'+key+'"]');return Number(input && input.value || uci.get('bjut-autologin','main',key) || fallback);};const rows=get('traffic_minute_hours',48)*60+get('traffic_hour_days',90)*24+get('traffic_day_days',366);const note=root.querySelector('[data-traffic-estimate]');if(note)note.textContent=_('按 ')+count+_(' 条上游预计约 ')+(count*rows/1048576).toFixed(1)+'–'+(count*rows*12/1048576).toFixed(1)+_(' MB。闪存上限 ')+get('traffic_storage_mb',2)+_(' MB，内存临时数据不计入；实际占用随设备和流量变化。');};
           root.addEventListener('input',update);update();return root;});
 	}
 });

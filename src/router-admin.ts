@@ -44,7 +44,7 @@ const fields: Field[] = [
   {key:'traffic_minute_hours',label:'分钟明细保留（小时）',default:'48',min:1,max:8760},
   {key:'traffic_hour_days',label:'小时汇总保留（天）',default:'90',min:1,max:3660},
   {key:'traffic_day_days',label:'每日汇总保留（天）',default:'366',min:1,max:36600},
-  {key:'traffic_storage_mb',label:'统计存储上限（MB）',default:'2',min:1,max:128,hint:'达到上限时优先保留较新记录；保存时还需临时空间'},
+  {key:'traffic_storage_mb',label:'统计存储上限（MB）',default:'2',min:1,max:128,hint:'按闪存中的实际压缩大小计算，内存临时数据不计入'},
   {key:'prefer_remaining_flow',label:'优先使用余量充足的账号',hint:'依据已开启统计取得的新鲜计费数据排序，独立账号顺序优先',flag:true,default:'0'},
   {key:'billing_interval',label:'计费检查间隔（秒）',min:900,max:86400,default:'21600'},
   {key:'billing_alerts',label:'用量不足时推送',hint:'通过已配置的 PushPlus 提醒，每个账号每天最多一次',flag:true,default:'1'},
@@ -154,6 +154,7 @@ export class RouterAdmin {
     if(this.supports('traffic_charts')){
       const estimate=element('p','','traffic-note');more.append(estimate);
       const update=()=>{const read=(key:string,fallback:number)=>Number(this.controls.get(key)?.read()||fallback),n=Math.max(1,this.snapshot?.uplinks.length||1),retention={minuteHours:read('traffic_minute_hours',48),hourDays:read('traffic_hour_days',90),dayDays:read('traffic_day_days',366)};
+        if(this.supports('traffic_flash_quota')){const rows=n*(retention.minuteHours*60+retention.hourDays*24+retention.dayDays);estimate.textContent=`按 ${n} 条上游，预计保存约 ${(rows/1048576).toFixed(1)}–${(rows*12/1048576).toFixed(1)} MB。闪存上限 ${read('traffic_storage_mb',2)} MB，内存临时数据不计入；实际占用随设备和流量变化。`;return;}
         estimate.textContent=`按 ${n} 条上游预计约 ${(usageStorageEstimate(n,retention)/1048576).toFixed(1)} MB（含临时空间${this.supports('traffic_compression')?'；文件压缩保存':''}）。当前容量上限 ${read('traffic_storage_mb',2)} MB，按压缩前估算。全部设备的占用会更多。`;};
       more.oninput=update;update();
     }

@@ -202,7 +202,7 @@ def validate_traffic_store_with_sanitizers():
         run([binary,'pack','curves',raw,temp/'valid.gz'],env=env)
         run([binary,'unpack','curves',temp/'valid.gz',temp/'roundtrip.tsv','1024'],env=env)
         if (temp/'roundtrip.tsv').read_bytes()!=raw.read_bytes():raise RuntimeError('Compressed traffic checkpoint changed records')
-        cases=[b'',b'BJUT-TRAFFIC\t2\tcurves\n',b'BJUT-TRAFFIC\t1\tcurves\nP\t0\t60\t1\t0\t60\n',
+        cases=[b'',b'BJUT-TRAFFIC\t3\tcurves\n',b'BJUT-TRAFFIC\t1\tcurves\nP\t0\t60\t1\t0\t60\n',
                b'BJUT-TRAFFIC\t1\tcurves\nD\t99999999999999999999999999999\ta\tb\tc\td\te\n',
                b'BJUT-TRAFFIC\t1\tcurves\n'+b'x'*8192+b'\n']
         for index,payload in enumerate(cases):
@@ -216,7 +216,7 @@ def validate_runtime_with_sanitizers():
     temp=Path(tempfile.mkdtemp(prefix='bjut-runtime-sanitizer-'))
     try:
         binary=temp/'runtime'
-        run(['cc','-std=c99','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',CORE/'src/bjut-runtime.c','-o',binary,'-ljson-c'])
+        run(['cc','-std=c99','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',CORE/'src/bjut-runtime.c','-o',binary,'-ljson-c','-lz'])
         env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1'}
         config=temp/'config';config.write_text('fixture')
         delta=temp/'delta';request=temp/'request.json';request.write_text('{}')
@@ -257,6 +257,7 @@ def main():
     run([sys.executable, "openwrt/tests/test_login_order.py"])
     run([sys.executable, "openwrt/tests/test_billing_center.py"])
     run([sys.executable, "openwrt/tests/test_traffic_history.py"])
+    run([sys.executable, "openwrt/tests/test_traffic_store.py"])
     run([sys.executable, "openwrt/tests/test_traffic_cadence.py"])
     run([sys.executable, "openwrt/tests/test_runtime.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])

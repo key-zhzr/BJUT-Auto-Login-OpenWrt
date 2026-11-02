@@ -6,6 +6,7 @@ import time
 import subprocess
 import unittest
 import gzip
+import shutil
 from pathlib import Path
 import test_multi_uplink as multi
 import test_openwrt_port as base
@@ -177,24 +178,28 @@ test -f "$STATE_DIR/traffic/$key-wake" && test ! -f "$STATE_DIR/traffic/$key-nex
                 result=subprocess.run([self.traffic_store,'unpack',kind,invalid,out,limit],capture_output=True)
                 self.assertNotEqual(result.returncode,0);self.assertFalse(out.exists())
 
-    def test_checkpoint_converts_only_after_validation_and_restores_before_ui_read(self):
+    def test_checkpoint_converts_only_after_validation_and_reads_compressed_history(self):
         env=self.config();legacy=self.temp/'curves.tsv'
         value='60\t1792886400\tabc\tdev\tinterface:lan3\tlan3\t1\t1.234\t60\t1792886340\t1792886400\n'
         legacy.write_text(value)
-        self.shell('load_configuration;traffic_history_prepare;traffic_history_checkpoint force',**env)
+        self.shell('load_configuration;traffic_history_prepare;traffic_history_checkpoint force 1792886400',**env)
         self.assertFalse(legacy.exists());self.assertTrue((self.temp/'curves.tsv.dict.gz').exists())
-        (self.state/'usage-curves.tsv').unlink()
-        self.shell('load_configuration;traffic_series_json',**env)
-        self.assertEqual((self.state/'usage-curves.tsv').read_text(),value)
+        generation=self.state/(self.state/'traffic-store-current').read_text().strip()
+        self.assertEqual((generation/'usage-curves.tsv').read_bytes(),b'')
+        self.assertFalse((self.state/'usage-curves.tsv').exists())
+        # A reboot opens the compressed checkpoint with a fresh append journal.
+        shutil.rmtree(generation);(self.state/'traffic-store-current').unlink()
+        restored=self.shell('load_configuration;traffic_history_prepare;traffic_history_stream curves',**env)
+        self.assertEqual(restored,value)
         before=(self.temp/'curves.tsv.dict.gz').read_bytes()
         self.shell('load_configuration;traffic_history_checkpoint force || true',BJUT_TRAFFIC_STORE='/usr/bin/false',**env)
         self.assertEqual((self.temp/'curves.tsv.dict.gz').read_bytes(),before)
-        # A downgraded package may write a newer legacy checkpoint. Prefer it
-        # when upgrading again, rather than reviving an older gzip snapshot.
-        (self.state/'usage-curves.tsv').unlink();legacy.write_text(value.replace('1.234','2.345'))
+        # A newer legacy checkpoint from an older package still takes precedence.
+        generation=self.state/(self.state/'traffic-store-current').read_text().strip()
+        shutil.rmtree(generation);(self.state/'traffic-store-current').unlink()
+        legacy.write_text(value.replace('1.234','2.345'))
         os.utime(self.temp/'curves.tsv.dict.gz',(10,10));os.utime(legacy,(20,20))
-        self.shell('load_configuration;traffic_history_prepare',**env)
-        self.assertEqual((self.state/'usage-curves.tsv').read_text(),legacy.read_text())
+        self.assertEqual(self.shell('load_configuration;traffic_history_prepare;traffic_history_stream curves',**env),legacy.read_text())
 
     def test_local_scope_queries_only_accounts_confirmed_on_upstreams(self):
         env=self.config();worker=self.temp/'selected-billing.sh'

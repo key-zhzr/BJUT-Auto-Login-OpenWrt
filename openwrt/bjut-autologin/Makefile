@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=29
+PKG_RELEASE:=30
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -32,13 +32,14 @@ define Build/Prepare
 	$(CP) ./src/bjut-codec.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-traffic-store.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-runtime.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/traffic-*.h $(PKG_BUILD_DIR)/
 	$(CP) ./LICENSE $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
 		-std=c99 -Wall -Wextra -Werror -o $(PKG_BUILD_DIR)/bjut-runtime \
-		$(PKG_BUILD_DIR)/bjut-runtime.c $(TARGET_LDFLAGS) -ljson-c
+		$(PKG_BUILD_DIR)/bjut-runtime.c $(TARGET_LDFLAGS) -ljson-c -lz
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
 		-std=c99 -Wall -Wextra -Werror \
 		-o $(PKG_BUILD_DIR)/bjut-codec \
@@ -99,14 +100,8 @@ define Package/bjut-autologin/prerm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
  /etc/init.d/bjut-autologin stop >/dev/null 2>&1 || true
- # Materialize a legacy checkpoint before replacing/removing this decoder,
- # so downgrading to an older package does not strand compressed history.
- for kind in samples curves; do
-  stored="/etc/bjut-autologin/usage-$$kind.tsv"
-  if [ -f "$$stored.dict.gz" ]; then
-   /usr/libexec/bjut-traffic-store unpack "$$kind" "$$stored.dict.gz" "$$stored.restore.$$$$" 536870912 && mv -f "$$stored.restore.$$$$" "$$stored" || exit 1
-  fi
- done
+ # Keep verified gzip files in place. Expanding months of minute history onto
+ # Flash during an upgrade would exceed the user's persistent storage quota.
  /usr/sbin/bjut-autologin cleanup >/dev/null 2>&1 || true
 fi
 exit 0

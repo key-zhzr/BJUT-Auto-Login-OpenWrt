@@ -48,18 +48,21 @@ OpenWrt 24.10.8 没有官方 IPQ60xx SDK，因此该平台不生成 IPK；选择
 
 ## 安装
 
-先安装本体，再按需安装 LuCI；依赖由固件自己的软件源提供。下载路径替换为实际文件名：
+首次安装前请核对依赖与固件版本；缺少依赖时应从同一固件版本的软件源补齐。更新已有插件时，先模拟安装，只允许更改 BJUT 两个包；不要使用 `--upgrade` 或执行系统组件升级。下载路径替换为实际文件名：
 
 ```sh
 # 使用 opkg 的固件
-opkg update
-opkg install /tmp/openwrt-你的平台-24.10.8-ipk__bjut-autologin_*.ipk
-opkg install /tmp/openwrt-你的平台-24.10.8-ipk__luci-app-bjut-autologin_*.ipk
+opkg --noaction install \
+  /tmp/openwrt-你的平台-24.10.8-ipk__bjut-autologin_*.ipk \
+  /tmp/openwrt-你的平台-24.10.8-ipk__luci-app-bjut-autologin_*.ipk
+# 确认只更新两个 BJUT 包后，去掉 --noaction 执行相同命令。
 
 # 使用 apk 的固件：独立安装包尚未配置软件源签名
-apk update
-apk add --allow-untrusted /tmp/openwrt-你的平台-25.12.5-apk__bjut-autologin-*.apk
-apk add --allow-untrusted /tmp/openwrt-你的平台-25.12.5-apk__luci-app-bjut-autologin-*.apk
+apk --no-network --no-cache --repositories-file /dev/null add --simulate --allow-untrusted \
+  /tmp/openwrt-你的平台-25.12.5-apk__bjut-autologin-*.apk \
+  /tmp/openwrt-你的平台-25.12.5-apk__luci-app-bjut-autologin-*.apk
+# 确认计划只包含上述两个包后，去掉 --simulate 执行相同命令。
+# 若缺少依赖或出现任何其他包的变更，停止；核对固件/SDK 后再处理。
 ```
 
 从 Release 下载时，可先在下载目录执行 `sha256sum -c SHA256SUMS` 核对完整性。安装后配置见 [README.md](README.md)。SDK 编译通过不代表已经完成路由器实机安装和校园网认证测试。
@@ -75,6 +78,10 @@ opkg --force-downgrade install /tmp/openwrt-*__luci-app-bjut-autologin_0.1.6-*.i
 
 APK 仍使用对应固件的包管理器安装。安装后执行 `bjut-autologin version`，应显示 `0.1.6`；LuCI 包也使用相同版本。
 
-当前源码修订号为 29，SDK 生成的安装包标记为 `0.1.6-r29`。从对应提交的 Actions 附件下载，不覆盖此前 Release。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的逻辑。
+当前源码修订号为 30，SDK 生成的安装包标记为 `0.1.6-r30`。从对应提交的 Actions 附件下载，不覆盖此前 Release。更新后执行 `/etc/init.d/bjut-autologin restart`，使常驻服务加载新的逻辑。
 
 r29 修复探测进程退出并减少频繁页面查询的开销；保留流量历史及现有配置。原生读取器依赖固件软件源的 `libjson-c`，由包管理器处理依赖。App 协作接口不变。更新后若浏览器仍显示旧界面，请强制刷新页面。
+
+修订 30 修复分钟记录超过旧行数限制后停止更新的问题。容量上限按闪存中的压缩曲线、汇总、时间索引与换号记录合计计算，内存临时数据不计入。保留期可设为 7200 小时；若实际压缩数据先达到容量上限，仍优先清理最早记录。详细设计与迁移说明见 [流量存储](../docs/traffic-storage-v5.md)。
+
+升级不会要求更新 ucode、LuCI、rpcd、netifd、wpad 等基础组件。旧 r29 包卸载脚本会展开压缩历史；历史较大时，应在备份后使用禁用安装脚本的离线升级流程，并手动停止/启动本插件。不要在闪存空间不足时强制升级或删除已有历史。

@@ -2,6 +2,8 @@
 // Bounded process waits and read-only views. No credentials or network requests.
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -17,6 +19,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include "traffic-io.h"
 
 #define JSON_LIMIT (8U * 1024U * 1024U)
 #define MAX_CHILDREN 64
@@ -107,8 +110,7 @@ static uint64_t hash_file(uint64_t h, const char *file) {
     }
     char stamp[256];
 #ifdef __APPLE__
-    struct timespec modified = {st.st_mtime, st.st_mtimensec};
-    struct timespec changed = {st.st_ctime, st.st_ctimensec};
+    struct timespec modified = st.st_mtimespec, changed = st.st_ctimespec;
 #else
     struct timespec modified = st.st_mtim, changed = st.st_ctim;
 #endif
@@ -431,7 +433,7 @@ static J *statuses(J *ctx) {
         "billing_records",    "log_settings",    "pushplus",       "pushplus_status",
         "uplink_actions",     "billing_actions", "operations",     "account_limits",
         "billing_background", "device_usage",    "traffic_charts", "traffic_compression",
-        "billing_center",     "maintenance"};
+        "billing_center",     "maintenance", "traffic_flash_quota"};
     J *o = json_object_new_object(), *caps = json_object_new_array(),
       *rows = json_object_new_array(), *uplinks = get(ctx, "uplinks");
     number(o, "generated_at", now);
@@ -599,16 +601,16 @@ static J *account_map(J *ctx, int short_key) {
     return map;
 }
 static int history(J *out, J *ctx, J *request, int all) {
-    char file[PATH_MAX], line[4096], *v[12], key[1024];
+    char line[4096], *v[12], key[1024];
     J *daily = json_object_new_array(), *channels = json_object_new_array(),
       *buckets = json_object_new_array(), *timeline = json_object_new_object(),
       *map = account_map(ctx, 0), *short_map = account_map(ctx, 1),
       *totals = json_object_new_object(), *ids = json_object_new_object();
-    path(file, sizeof(file), state_dir, "usage-samples.tsv");
-    FILE *f = fopen(file, "r");
-    if (!f)
+    TioReader reader;
+    int read_code;
+    if (!tio_open_state(&reader, state_dir, "samples"))
         goto missing;
-    while (fgets(line, sizeof(line), f)) {
+    while ((read_code = tio_next(&reader, line, sizeof(line))) > 0) {
         int n = fields(line, v, 12);
         if ((n != 6 && n != 7) || (!all && (n != 7 || strcmp(v[6], "1"))) || !decimal(v[4]) ||
             !digits(v[5]))
@@ -635,7 +637,8 @@ static int history(J *out, J *ctx, J *request, int all) {
         json_object_object_add(row, "usedMb", json_object_new_double_s(amount, formatted));
         number(row, "sampledSeconds", num(row, "sampledSeconds") + strtoll(v[5], NULL, 10));
     }
-    fclose(f);
+    tio_close(&reader);
+    if (read_code < 0) goto missing;
     int64_t first = digits(str(request, "start")) ? num(request, "start") : 0,
             last = digits(str(request, "end")) ? num(request, "end") : INT64_C(41024448000),
             resolution = num(request, "resolution");
@@ -652,11 +655,14 @@ static int history(J *out, J *ctx, J *request, int all) {
     int monthly = !strcmp(str(request, "monthly"), "true") || !strcmp(str(request, "monthly"), "1");
     int64_t day = (first + 28800) / 86400 * 86400 - 28800,
             hour = (first + 28800) / 3600 * 3600 - 28800;
-    path(file, sizeof(file), state_dir, "usage-curves.tsv");
-    f = fopen(file, "r");
-    if (!f)
+    if (!tio_open_state(&reader, state_dir, "curves"))
         goto missing;
-    while (fgets(line, sizeof(line), f)) {
+    int64_t seek_first = monthly && first > 2764800 ? first - 2764800 :
+                         resolution ? (first + 28800) / resolution * resolution - 28800 : first;
+    if (!tio_seek(&reader, seek_first, last)) {
+        tio_close(&reader); goto missing;
+    }
+    while ((read_code = tio_next(&reader, line, sizeof(line))) > 0) {
         int n = fields(line, v, 12);
         if ((n != 9 && n != 11) || (!all && strcmp(v[6], "1")) || !digits(v[0]) || !digits(v[1]) ||
             !decimal(v[7]) || !digits(v[8]) || !safe_name(v[4]) || !safe_name(v[5]))
@@ -703,7 +709,8 @@ static int history(J *out, J *ctx, J *request, int all) {
         }
         json_object_array_add(buckets, b);
     }
-    fclose(f);
+    tio_close(&reader);
+    if (read_code < 0) goto missing;
     json_object_object_add(out, "history", daily);
     json_object_object_add(timeline, "channels", channels);
     json_object_object_add(timeline, "buckets", buckets);

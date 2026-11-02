@@ -1,4 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -6,9 +8,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <dirent.h>
+#include <inttypes.h>
+#include <sys/resource.h>
+#include <time.h>
+#include "traffic-io.h"
 
-/* Versioned, lossless dictionary TSV inside gzip. Only checkpoints use this
- * format: minute collection and chart reads retain their cheap RAM TSV. */
+/* Versioned, lossless dictionary TSV inside gzip, shared by checkpoints and
+ * streaming readers. Minute collection appends to a small RAM journal. */
 #define LINE_SIZE 4096
 #define MAX_CHANNELS 65536
 typedef struct { char **items; size_t count, capacity; } Dictionary;
@@ -37,15 +44,6 @@ static int fields(char *line,char **parts,int maximum) {
         *c='\0';parts[n++]=c+1;
     }
     return n;
-}
-static int number(const char *text,size_t *value) {
-    if(!*text)return 0;
-    size_t result=0;
-    for(const char *p=text;*p;p++){
-        if(*p<'0'||*p>'9'||result>MAX_CHANNELS)return 0;
-        result=result*10+(size_t)(*p-'0');
-    }
-    *value=result;return 1;
 }
 static int gz_line(gzFile file,const char *line) {
     size_t n=strlen(line);return gzwrite(file,line,(unsigned)n)==(int)n;
@@ -91,50 +89,40 @@ done:
     return ok?0:1;
 }
 static int unpack(const char *kind,const char *input,const char *output,size_t maximum) {
-    int curves=!strcmp(kind,"curves"),ok=0;gzFile source=gzopen(input,"rb");
-    if(!source)return 1;
-    int fd=open(output,O_WRONLY|O_CREAT|O_EXCL,0600);
-    if(fd<0){gzclose(source);return 1;}
+    TioReader reader;char line[TIO_LINE];size_t written=0;int code=0,ok=1;
+    if(!tio_open(&reader,kind,input,"/dev/null"))return 1;
+    int fd=open(output,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+    if(fd<0){tio_close(&reader);return 1;}
     FILE *destination=fdopen(fd,"w");
-    if(!destination){close(fd);gzclose(source);unlink(output);return 1;}
-    Dictionary dict={0};char line[LINE_SIZE],meta[LINE_SIZE],out[LINE_SIZE],header[64],*p[12];size_t written=0;
-    snprintf(header,sizeof(header),"BJUT-TRAFFIC\t1\t%s\n",kind);
-    if(!gzgets(source,line,sizeof(line))||strcmp(line,header))goto done;
-    while(gzgets(source,line,sizeof(line))){
-        /* Splitting mutates line; metadata definitions must be copied first. */
-        char original[LINE_SIZE];memcpy(original,line,strlen(line)+1);
-        int n=fields(line,p,12),size;size_t id=0;
-        if(n<3||!number(p[1],&id))goto done;
-        if(!strcmp(p[0],"D")){
-            if(n!=(curves?7:6)||id!=dict.count)goto done;
-            char *start=strchr(original,'\t');start=strchr(start+1,'\t')+1;
-            start[strlen(start)-1]='\0';
-            if(dictionary_add(&dict,start)<0)goto done;
-            continue;
-        }
-        if(strcmp(p[0],"P")||id>=dict.count)goto done;
-        if(curves){
-            if(n!=6&&n!=8)goto done;
-            size=snprintf(out,sizeof(out),"%s\t%s\t%s\t%s\t%s%s%s%s%s\n",p[2],p[3],dict.items[id],p[4],p[5],n==8?"\t":"",n==8?p[6]:"",n==8?"\t":"",n==8?p[7]:"");
-        }else{
-            if(n!=5)goto done;
-            snprintf(meta,sizeof(meta),"%s\n",dict.items[id]);char *m[5];
-            if(fields(meta,m,5)!=4)goto done;
-            size=snprintf(out,sizeof(out),"%s\t%s\t%s\t%s\t%s\t%s%s%s\n",p[2],m[0],m[1],m[2],p[3],p[4],!strcmp(m[3],"-")?"":"\t",!strcmp(m[3],"-")?"":m[3]);
-        }
-        if(size<0||(size_t)size>=sizeof(out)||(size_t)size>maximum-written)goto done;
-        if(fwrite(out,1,(size_t)size,destination)!=(size_t)size)goto done;
-        written+=(size_t)size;
+    if(!destination){close(fd);tio_close(&reader);unlink(output);return 1;}
+    while((code=tio_next(&reader,line,sizeof(line)))>0){
+        size_t n=strlen(line);
+        if(n>maximum-written||fwrite(line,1,n,destination)!=n){ok=0;break;}
+        written+=n;
     }
-    int error=Z_OK;gzerror(source,&error);ok=gzeof(source)&&(error==Z_OK||error==Z_STREAM_END);
-done:
+    if(code<0)ok=0;
+    tio_close(&reader);
     if(fclose(destination))ok=0;
-    if(gzclose(source)!=Z_OK)ok=0;
-    dictionary_free(&dict);
     if(!ok)unlink(output);
     return ok?0:1;
 }
+
+#include "traffic-compact.h"
+
 int main(int argc,char **argv) {
+    if(argc==5&&!strcmp(argv[1],"init"))return store_init(argv[2],argv[3],argv[4]);
+    if(argc==3&&!strcmp(argv[1],"path")){
+        char directory[PATH_MAX];
+        if(!tio_directory(argv[2],directory,sizeof(directory)))return 1;
+        puts(directory);return 0;
+    }
+    if((argc==4||argc==6)&&!strcmp(argv[1],"stream")){
+        int64_t first=0,last=0;
+        if(argc==6&&(!store_uint(argv[4],&first)||!store_uint(argv[5],&last)))return 2;
+        return store_stream(argv[2],argv[3],first,last);
+    }
+    if(argc==10&&!strcmp(argv[1],"compact"))return store_compact(argc,argv);
+    if(argc==4&&!strcmp(argv[1],"commit"))return store_commit(argv[2],argv[3]);
     if(argc<5||(strcmp(argv[2],"curves")&&strcmp(argv[2],"samples")))return 2;
     if(argc==5&&!strcmp(argv[1],"pack"))return pack(argv[2],argv[3],argv[4]);
     if(argc==6&&!strcmp(argv[1],"unpack")){
