@@ -1,9 +1,5 @@
 {
-  "upstream": "0a5a95526ef2a4ee5e3b38f699e02a07b3d8dc15",
-  "reviewRequired": [
-    "src-tauri/src/",
-    "src/device-usage-model.ts",
-    "src/usage-chart.ts"
-  ],
-  "reviewNote": "Reviewed documentation-only follow-up. Installed formal r28 source 9f52af6 passed lossless compression, preservation of 4878 prior records and four stable active-account cohorts (zero-second skew, 60-second intervals)."
+  "upstream": "8ee928588bf5632389295061601ddf8b2000cc87",
+  "reviewRequired": [],
+  "retainedWorkflows": []
 }
