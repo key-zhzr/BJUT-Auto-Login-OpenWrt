@@ -244,13 +244,7 @@ billing_worker() {
 	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid section enabled order saved_account observed_account candidate_account
 	BILLING_JOB="$STATE_DIR/billing/$ticket"
 	[ -s "$BILLING_JOB/request.json" ] || return 1
-	uplink="$(json_file_value "$BILLING_JOB/request.json" '@.uplink')"
-	account_id="$(json_file_value "$BILLING_JOB/request.json" '@.account')"
-	action="$(json_file_value "$BILLING_JOB/request.json" '@.action')"
-    BILLING_RECORD_KIND="$(json_file_value "$BILLING_JOB/request.json" '@.kind')"
-	BILLING_MODULE="$(json_file_value "$BILLING_JOB/request.json" '@.module')"
-	BILLING_OPERATION="$(json_file_value "$BILLING_JOB/request.json" '@.operation')"
-	code="$(json_file_value "$BILLING_JOB/request.json" '@.code')"
+	json_fields "$BILLING_JOB/request.json" uplink=@.uplink account_id=@.account action=@.action BILLING_RECORD_KIND=@.kind BILLING_MODULE=@.module BILLING_OPERATION=@.operation code=@.code
 	load_configuration && select_uplink "$uplink" || return 1
 	BILLING_CURRENT=0; BILLING_VERIFIED=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
 	if [ "$account_id" = current ]; then
@@ -262,13 +256,13 @@ billing_worker() {
 			config_get candidate_account "$section" username ""
 			[ -n "$observed_account" ] && [ "${candidate_account%@campus}" = "${observed_account%@campus}" ] || continue
 			BILLING_ACCOUNT="$candidate_account"
-			config_get password "$section" password ""
+			credential_get password "$section" || return 1
 			[ -z "$BILLING_ACCOUNT" ] || [ -z "$password" ] || break
 		done
 	else
 		case " $ACCOUNT_SECTIONS " in *" $account_id "*) ;; *) billing_progress error 100 "请先选择已保存的账号"; return 1 ;; esac
 		config_get BILLING_ACCOUNT "$account_id" username ""
-		config_get password "$account_id" password ""
+		credential_get password "$account_id" || return 1
 	fi
 	saved_account="$BILLING_ACCOUNT"
 	read_network_identity || { billing_progress error 100 "所选上游尚未取得校园网地址"; return 1; }

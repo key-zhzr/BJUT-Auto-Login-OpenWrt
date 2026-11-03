@@ -14,6 +14,13 @@ valid_pushplus_topic() {
 }
 
 pushplus_ready() {
+	if [ "${CONFIG_PREPARED:-0}" = 1 ];then
+		local ready
+		config_get ready "$MAIN_SECTION" bjut_pushplus_ready 0
+		[ "${CFG_PUSHPLUS_ENABLED:-0}" = 1 ] && [ "$ready" = 1 ] && valid_pushplus_topic "$CFG_PUSHPLUS_TOPIC" &&
+			valid_range "$CFG_PUSHPLUS_DELAY" 10 3600 && valid_range "$CFG_PUSHPLUS_INTERVAL" 60 86400
+		return $?
+	fi
 	[ "${CFG_PUSHPLUS_ENABLED:-0}" = 1 ] && [ -n "$CFG_PUSHPLUS_TOKEN" ] &&
 		valid_pushplus_token "$CFG_PUSHPLUS_TOKEN" && valid_pushplus_topic "$CFG_PUSHPLUS_TOPIC" &&
 		valid_range "$CFG_PUSHPLUS_DELAY" 10 3600 && valid_range "$CFG_PUSHPLUS_INTERVAL" 60 86400
@@ -144,6 +151,7 @@ pushplus_start_sender() {
 
 pushplus_send() {
 	local directory="$1" now="$2" job="$1/sending/message.json" sequence title content http code safe_http safe_code
+	[ "${CONFIG_PREPARED:-0}" != 1 ] || credential_get CFG_PUSHPLUS_TOKEN "$MAIN_SECTION" pushplus_token || return 1
 	mv "$directory/pending.json" "$job" || return 1
 	sequence="$(json_file_value "$job" '@.sequence')"
 	title="$(json_file_value "$job" '@.title')"

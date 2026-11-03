@@ -8,7 +8,7 @@ logout_protocol() {
    account="${OBSERVED_ACCOUNT:-$RUNTIME_ACCOUNT}"; account="${account%@campus}"
    for section in $ACCOUNT_SECTIONS; do
     config_get user "$section" username ""
-    if [ "${user%@campus}" = "$account" ]; then config_get password "$section" password ""; break; fi
+    if [ "${user%@campus}" = "$account" ]; then credential_get password "$section" || return 1; break; fi
    done
    [ -n "$account" ] && [ -n "$password" ] || { log_message warning '当前账号缺少已保存密码，可从计费系统下线'; return 1; }
    if [ "$CFG_COMPATIBILITY" = legacy_http ]; then base="http://$DORM_GATEWAY:801"; referer="http://$DORM_GATEWAY/"; profile=http

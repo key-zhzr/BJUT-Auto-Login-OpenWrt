@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bjut-autologin
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=30
+PKG_RELEASE:=31
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=key-zhzr
@@ -33,6 +33,7 @@ define Build/Prepare
 	$(CP) ./src/bjut-traffic-store.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/bjut-runtime.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/traffic-*.h $(PKG_BUILD_DIR)/
+	$(CP) ./src/runtime-*.h $(PKG_BUILD_DIR)/
 	$(CP) ./LICENSE $(PKG_BUILD_DIR)/
 endef
 

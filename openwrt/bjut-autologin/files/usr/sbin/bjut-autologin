@@ -52,6 +52,8 @@ MANUAL_ACCOUNT=""
 MANUAL_ACTION=login
 OPERATION_ID=''
 CONFIG_LOADED=0
+CONFIG_PREPARED=0
+CONFIG_GENERATION=''
 MAIN_SECTION=""
 ACCOUNT_SECTIONS=""
 WORK_DIR=""
@@ -329,10 +331,14 @@ load_configuration() {
 		return 1
 	}
 	. "$FUNCTIONS_SH"
+	if ! prepared_context_load;then
+	CONFIG_PREPARED=0
+	CONFIG_GENERATION="$(configuration_fingerprint 2>/dev/null)"
 	config_load "$CONFIG_PACKAGE" || {
 		printf 'Unable to load /etc/config/%s\n' "$CONFIG_PACKAGE" >&2
 		return 1
 	}
+	fi
 	# A long-lived sampler explicitly reloads configuration. Rebuild these
 	# indexes rather than appending duplicate accounts/uplinks each time, and
 	# let load_main_section actually refresh live settings on the next pass.
@@ -355,6 +361,8 @@ load_configuration() {
 validate_configuration() {
 	local section username password protocol enabled usable_accounts=0
 	load_configuration || return 1
+	# Only the private, fingerprint-checked parent snapshot can use this path.
+	[ "${CONFIG_PREPARED:-0}" != 1 ] || return 0
 	for dependency in "$CURL_BIN" "$JSONFILTER_BIN" "$UBUS_BIN" "$CODEC_BIN"; do
 		command_exists "$dependency" || {
 			printf 'Required executable is missing: %s\n' "$dependency" >&2
@@ -406,11 +414,12 @@ json_file_value() {
 }
 
 load_runtime_state() {
-	local value previous_file="$STATE_FILE" source_time own_time own_state
-	source_time="$(json_file_value "$SOURCE_STATE" '@.updated_at')"; own_time="$(json_file_value "$STATE_FILE" '@.updated_at')"
-	own_state="$(json_file_value "$STATE_FILE" '@.state')"
-	if [ -n "$SOURCE_STATE" ] && [ -s "$SOURCE_STATE" ] && { [ "$(json_file_value "$previous_file" '@.ipv4')" != "$LOCAL_IPV4" ] || [ "$own_state" = busy ] || { is_uint "$source_time" && is_uint "$own_time" && [ "$source_time" -gt "$own_time" ]; }; }; then
-		if [ "$(json_file_value "$SOURCE_STATE" '@.ipv4')" = "$LOCAL_IPV4" ] && [ "$(json_file_value "$SOURCE_STATE" '@.device')" = "$DEVICE" ]; then previous_file="$SOURCE_STATE"; fi
+	local previous_file="$STATE_FILE" source_time own_time own_state own_ip source_ip source_device failures count next
+	json_fields "$STATE_FILE" own_time=@.updated_at own_state=@.state own_ip=@.ipv4
+	if [ -n "$SOURCE_STATE" ] && [ -s "$SOURCE_STATE" ];then
+		json_fields "$SOURCE_STATE" source_time=@.updated_at source_ip=@.ipv4 source_device=@.device
+		if { [ "$own_ip" != "$LOCAL_IPV4" ] || [ "$own_state" = busy ] || { is_uint "$source_time" && is_uint "$own_time" && [ "$source_time" -gt "$own_time" ]; }; } &&
+		   [ "$source_ip" = "$LOCAL_IPV4" ] && [ "$source_device" = "$DEVICE" ];then previous_file="$SOURCE_STATE";fi
 	fi
 	RUNTIME_FAILURES=0
 	RUNTIME_OFFLINE_COUNT=0
@@ -420,13 +429,11 @@ load_runtime_state() {
 	RUNTIME_ACCOUNT=""
 	RUNTIME_PROTOCOL=""
 	[ -s "$previous_file" ] || return 0
-	value="$(json_file_value "$previous_file" '@.failures')"; is_uint "$value" && RUNTIME_FAILURES="$value"
-	value="$(json_file_value "$previous_file" '@.offline_count')"; is_uint "$value" && RUNTIME_OFFLINE_COUNT="$value"
-	value="$(json_file_value "$previous_file" '@.next_attempt')"; is_uint "$value" && RUNTIME_NEXT_ATTEMPT="$value"
-	RUNTIME_STATE="$(json_file_value "$previous_file" '@.state')"
-	RUNTIME_IPV4="$(json_file_value "$previous_file" '@.ipv4')"
-	RUNTIME_ACCOUNT="$(json_file_value "$previous_file" '@.account')"
-	RUNTIME_PROTOCOL="$(protocol_internal "$(json_file_value "$previous_file" '@.protocol')")"
+	json_fields "$previous_file" failures=@.failures count=@.offline_count next=@.next_attempt RUNTIME_STATE=@.state RUNTIME_IPV4=@.ipv4 RUNTIME_ACCOUNT=@.account RUNTIME_PROTOCOL=@.protocol
+	is_uint "$failures" && RUNTIME_FAILURES="$failures"
+	is_uint "$count" && RUNTIME_OFFLINE_COUNT="$count"
+	is_uint "$next" && RUNTIME_NEXT_ATTEMPT="$next"
+	case "$RUNTIME_PROTOCOL" in bjut-sushe)RUNTIME_PROTOCOL=type1;;bjut_wifi)RUNTIME_PROTOCOL=type2;;lgn)RUNTIME_PROTOCOL=type3;;esac
 	if [ "$RUNTIME_IPV4" != "$LOCAL_IPV4" ]; then
 		RUNTIME_FAILURES=0; RUNTIME_OFFLINE_COUNT=0; RUNTIME_NEXT_ATTEMPT=0; RUNTIME_STATE=""
 		RUNTIME_ACCOUNT=""; RUNTIME_PROTOCOL=""
@@ -560,23 +567,23 @@ network_json_value() {
 }
 
 read_network_identity() {
-	local status up detected_device info
+	local status up detected_device info fallback_device
 	DEVICE=""; DEVICE6=""; LOCAL_IPV4=""; LOCAL_IPV6=""; TRANSPORT=unknown
 	SSID=""; BSSID=""; NETWORK_JSON4=""; NETWORK_JSON6=""
+	if ! native_network_read;then
 	status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK" status 2>/dev/null)" || status=""
-	up="$(network_json_value "$status" '@.up')"
+	json_text_fields "$status" up=@.up detected_device=@.l3_device fallback_device=@.device 'LOCAL_IPV4=@["ipv4-address"][0].address'
 	case "$up" in 1|true) ;; *)
 		[ -n "$CFG_NETWORK6" ] || return 1
 		status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK6" status 2>/dev/null)" || return 1
-		up="$(network_json_value "$status" '@.up')";case "$up" in 1|true) ;; *)return 1;;esac
+		json_text_fields "$status" up=@.up detected_device=@.l3_device fallback_device=@.device 'LOCAL_IPV4=@["ipv4-address"][0].address'
+		case "$up" in 1|true) ;; *)return 1;;esac
 	;;esac
 	NETWORK_JSON4="$status"
-	detected_device="$(network_json_value "$status" '@.l3_device')"
-	[ -n "$detected_device" ] || detected_device="$(network_json_value "$status" '@.device')"
+	[ -n "$detected_device" ] || detected_device="$fallback_device"
 	DEVICE="${CFG_DEVICE:-$detected_device}"
 	valid_device_name "$DEVICE" || return 1
 	[ -d "$SYS_NET/$DEVICE" ] || return 1
-	LOCAL_IPV4="$(network_json_value "$status" '@["ipv4-address"][0].address')"
 	if [ -z "$LOCAL_IPV4" ] && command_exists "$IP_BIN"; then
 		LOCAL_IPV4="$("$IP_BIN" -4 -o addr show dev "$DEVICE" scope global 2>/dev/null | awk 'NR == 1 { split($4, value, "/"); print value[1] }')"
 	fi
@@ -592,6 +599,7 @@ read_network_identity() {
 		# normal TLS + protocol probes still run before any credentials.
 		case "$(printf '%s' "$LOCAL_IPV6" | tr A-F a-f)" in 2001:da8:216:*) LOCAL_IPV4='';;*)return 2;;esac
 	fi
+	fi
 
 	TRANSPORT="$CFG_TRANSPORT"
 	SSID=""
@@ -603,12 +611,17 @@ read_network_identity() {
 		[ "$TRANSPORT" != auto ] || TRANSPORT=unknown
 		return 0
 	fi
+	# Ethernet devices cannot have a Wi-Fi association. Avoid both wireless
+	# driver round trips for every wired authentication check.
+	if [ "$TRANSPORT" = ethernet ] || { [ "$TRANSPORT" = auto ] && [ ! -d "$SYS_NET/$DEVICE/wireless" ] && [ ! -d "$SYS_NET/$DEVICE/phy80211" ]; };then
+		TRANSPORT=ethernet
+		return 0
+	fi
 	# rpcd-mod-iwinfo works on both classic shell Wi-Fi scripts and newer
 	# wifi-scripts-ucode systems where the standalone iwinfo CLI may be absent.
 	info="$("$UBUS_BIN" -S call iwinfo info "{\"device\":\"$DEVICE\"}" 2>/dev/null)" || info=""
 	if [ -n "$info" ]; then
-		SSID="$(network_json_value "$info" '@.ssid')"
-		BSSID="$(network_json_value "$info" '@.bssid')"
+		json_text_fields "$info" SSID=@.ssid BSSID=@.bssid
 	fi
 	if [ -z "$SSID" ] && command_exists "$IWINFO_BIN"; then
 		info="$("$IWINFO_BIN" "$DEVICE" info 2>/dev/null)" || info=""
@@ -713,6 +726,9 @@ http_success() {
 
 load_jsonp() {
 	local first last
+	if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ];then
+		JSONP_PAYLOAD="$("$RUNTIME_BIN" jsonp "$HTTP_BODY")";return $?
+	fi
 	JSONP_PAYLOAD="$(sed -e '1s/^[^(]*(//' -e '$s/)[^)]*$//' "$HTTP_BODY" 2>/dev/null)"
 	first="$(printf '%s' "$JSONP_PAYLOAD" | cut -c1)"
 	last="$(printf '%s' "$JSONP_PAYLOAD" | tail -c 1)"
@@ -777,8 +793,7 @@ type1_probe_body_valid() {
 	local code data
 	http_success || return 1
 	load_jsonp || return 1
-	code="$(jsonp_value '@.code')"
-	data="$(jsonp_value '@.data')"
+	json_text_fields "$JSONP_PAYLOAD" code=@.code data=@.data
 	[ "$code" = "1" ] && [ -n "$data" ]
 }
 
@@ -1011,8 +1026,9 @@ portal_identity_signature() {
 
 verify_before_login() {
 	local protocol="$1" previous now
+	configuration_unchanged || { log_message warning '配置在认证前发生变化，已停止提交';return 1; }
 	previous="$(portal_identity_signature)"
-	read_network_identity && [ "$(portal_identity_signature)" = "$previous" ] && validate_network_identity "$protocol" || {
+	BJUT_NETWORK_FRESH=1 read_network_identity && [ "$(portal_identity_signature)" = "$previous" ] && validate_network_identity "$protocol" || {
 		log_message warning '网络身份在认证前发生变化，已停止提交'; return 1;
 	}
 	now="$(date +%s)"
@@ -1048,7 +1064,7 @@ try_accounts() {
 		config_get_bool enabled "$section" enabled 1
 		[ "$enabled" = "1" ] || [ "$section" = "$MANUAL_ACCOUNT" ] || continue
 		config_get username "$section" username ""
-		config_get password "$section" password ""
+		credential_get password "$section" || return 11
 		config_get account_protocol "$section" login_type "auto"
 		account_protocol="$(protocol_internal "$account_protocol")"
 		[ -n "$username" ] && [ -n "$password" ] || continue

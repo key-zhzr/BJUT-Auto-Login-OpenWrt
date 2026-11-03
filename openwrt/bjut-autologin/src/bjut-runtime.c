@@ -20,6 +20,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "traffic-io.h"
+#include "runtime-sha256.h"
 
 #define JSON_LIMIT (8U * 1024U * 1024U)
 #define MAX_CHILDREN 64
@@ -877,9 +878,37 @@ static int snapshot(int argc, char **argv) {
     json_object_put(ctx);
     return rc;
 }
+#include "runtime-batch.h"
+#include "runtime-traffic.h"
+#include "runtime-prepared.h"
+#include "runtime-network.h"
 int main(int argc, char **argv) {
     if (argc < 2)
         return 2;
+    if (!strcmp(argv[1], "fields"))
+        return batch_fields(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "jsonp") && argc == 3)
+        return jsonp_file(argv[2]);
+    if (!strcmp(argv[1], "traffic-rows"))
+        return traffic_process(argc - 2, argv + 2, 0);
+    if (!strcmp(argv[1], "traffic-ingest"))
+        return traffic_process(argc - 2, argv + 2, 1);
+    if (!strcmp(argv[1], "prepare-config"))
+        return prepare_config(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "prepared-config"))
+        return prepared_config(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "network-read"))
+        return network_read(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "network-identities"))
+        return network_identities(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "network-save"))
+        return network_save(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "sha256") && argc == 2) {
+        BjutSha s;sha_init(&s);char data[4096], digest[65];size_t n;
+        while ((n=fread(data,1,sizeof(data),stdin))) sha_update(&s,data,n);
+        if(ferror(stdin))return 1;
+        sha_final(&s,digest);puts(digest);return 0;
+    }
     if (!strcmp(argv[1], "snapshot"))
         return snapshot(argc - 2, argv + 2);
     if (!strcmp(argv[1], "fingerprint") && argc == 4) {

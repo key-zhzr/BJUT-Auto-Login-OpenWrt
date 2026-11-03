@@ -3,6 +3,9 @@
 # Match only observed upstream addresses/MACs; a billing query through an
 # uplink does not make all devices in that account belong to that uplink.
 traffic_identity_prepare() (
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ "$UPLINK_CONFIGURED" = 1 ] && [ -x "$RUNTIME_BIN" ] && { [ "$SYS_NET" = /sys/class/net ] || [ -n "${BJUT_NATIVE_ADDRESSES:-}" ]; };then
+  if network_context_refresh && "$RUNTIME_BIN" network-identities "$STATE_DIR/network-context.json" "$STATE_DIR/prepared-context.json" "$SYS_NET" "$STATE_DIR/traffic-identities.tsv" "$CONFIG_GENERATION";then return 0;fi
+ fi
  local candidate mac ip device addresses
  for candidate in $UPLINK_SECTIONS;do
   (select_uplink "$candidate" && read_network_identity || exit 0
@@ -46,9 +49,9 @@ traffic_active_prepare() {
  TRAFFIC_ACTIVE_ACCOUNTS=''
  [ "${CFG_TRAFFIC_SCOPE:-local}" = local ] || return 0
  for candidate in $UPLINK_SECTIONS;do
-  state="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.state')"
+  json_fields "$STATE_DIR/uplink-$candidate.json" state=@.state account=@.account
   case "$state" in online|authenticated_limited|login_accepted|probe_uncertain) ;;*)continue;;esac
-  account="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')";account="${account%@campus}"
+  account="${account%@campus}"
   case "$account" in ''|*[!A-Za-z0-9_@.,-]*)continue;;esac
   case " $TRAFFIC_ACTIVE_ACCOUNTS " in *" $account "*) ;;*)TRAFFIC_ACTIVE_ACCOUNTS="$TRAFFIC_ACTIVE_ACCOUNTS $account";;esac
  done
@@ -61,8 +64,7 @@ traffic_account_selected() {
 traffic_candidates() {
  local user="$1" candidate state account rank
  for candidate in $UPLINK_SECTIONS;do
-  state="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.state')"
-  account="$(json_file_value "$STATE_DIR/uplink-$candidate.json" '@.account')"
+  json_fields "$STATE_DIR/uplink-$candidate.json" state=@.state account=@.account
   rank=3
   case "$state" in online|authenticated_limited|login_accepted) rank=1;;esac
   if [ "${account%@campus}" = "${user%@campus}" ] && [ "$rank" = 1 ];then rank=0;fi
@@ -78,10 +80,10 @@ traffic_collect() {
  traffic_active_prepare
  for section in $ACCOUNT_SECTIONS;do
   [ -z "${TRAFFIC_ONLY_ACCOUNT:-}" ] || [ "$section" = "$TRAFFIC_ONLY_ACCOUNT" ] || continue
-  config_get user "$section" username '';config_get password "$section" password ''
-  [ -n "$user" ] && [ -n "$password" ] || continue
+  config_get user "$section" username '';[ -n "$user" ] || continue
   traffic_account_selected "$user" || continue
-  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')";password=''
+  account_metadata "$section" && [ "$ACCOUNT_HAS_PASSWORD" = 1 ] || continue
+  key="$ACCOUNT_KEY"
   case "|$seen|" in *"|$key|"*)continue;;esac;seen="$seen|$key"
   now="$(date +%s)";due="$(cat "$STATE_DIR/traffic/$key-next" 2>/dev/null)"
   if is_uint "$due" && [ "$due" -gt "$now" ];then traffic_schedule_next "$due";continue;fi
@@ -96,7 +98,7 @@ traffic_collect() {
    printf traffic | sha256sum | awk '{print $1}' >"$STATE_DIR/billing/$ticket/owner"
    . "$JSHN_SH";json_init;json_add_string uplink "$uplink";json_add_string account "$section";json_add_string action begin
    json_dump >"$STATE_DIR/billing/$ticket/request.json"
-   /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" &
+   BJUT_PREPARED_CONFIG=1 /bin/sh "${BJUT_BILLING:-/usr/libexec/bjut-billing}" "$ticket" &
    child_register "$!";local billing_pid="$!";wait "$billing_pid";child_forget "$billing_pid"
    result="$STATE_DIR/billing/$ticket/result.json"
    if [ "$(json_file_value "$result" '@.state')" = ready ] && [ -s "$STATE_DIR/billing/$ticket/online.json" ];then
@@ -104,8 +106,10 @@ traffic_collect() {
     previous="$(cat "$STATE_DIR/traffic/$key-at" 2>/dev/null)"
     cp "$STATE_DIR/billing/$ticket/online.json" "$STATE_DIR/traffic/$key.json.$$" && mv -f "$STATE_DIR/traffic/$key.json.$$" "$STATE_DIR/traffic/$key.json"
     cp "$result" "$STATE_DIR/traffic/$key-meta.json.$$" && mv -f "$STATE_DIR/traffic/$key-meta.json.$$" "$STATE_DIR/traffic/$key-meta.json"
-    traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
-    if traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled";then rm -f "$STATE_DIR/traffic/$key-error";
+    if [ "${BJUT_BATCH_DISABLE:-0}" = 1 ] || [ ! -x "$RUNTIME_BIN" ];then
+     traffic_rows "$STATE_DIR/traffic/$key.json" >"$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" && mv -f "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json.$$" "$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json"
+    fi
+    if TRAFFIC_DEVICES_OUTPUT="$STATE_DIR/traffic/$key-devices-$CFG_TRAFFIC_SCOPE.json" traffic_history_record "$key" "$STATE_DIR/traffic/$key.json" "$sampled";then rm -f "$STATE_DIR/traffic/$key-error";
     else printf '采样已取得，但历史记录写入失败，请查看运行日志' >"$STATE_DIR/traffic/$key-error";log_message error "流量记录写入失败：账号 ${user}，上游 ${uplink}";fi
     printf '%s' "$sampled" >"$STATE_DIR/traffic/$key-at";rm -f "$STATE_DIR/traffic/$key.json"
     finished="$(cat "$STATE_DIR/billing/$ticket/online-finished-at" 2>/dev/null)";is_uint "$finished" || finished="$sampled"
@@ -157,6 +161,10 @@ traffic_observe_account() {
 }
 
 traffic_rows() (
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ];then
+  "$RUNTIME_BIN" traffic-rows "$1" "$STATE_DIR" "${CFG_TRAFFIC_SCOPE:-local}"
+  return $?
+ fi
  local file="$1" prefix index=0 item key value down mac ip ipv6 identity interface_id interface_name local_device comma=''
  prefix="$(billing_rows_prefix "$file")";printf '['
  while [ "$index" -lt 500 ];do

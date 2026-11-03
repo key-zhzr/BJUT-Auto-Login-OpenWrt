@@ -27,9 +27,8 @@ account_lock_acquire() {
 # Auto capacity is conservative until a verified dashboard names VIP套餐 exactly.
 account_effective_limit() {
  local section="$1" user password key signature saved_signature updated package requested now
- config_get user "$section" username '';config_get password "$section" password ''
- key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
- signature="$(printf '%s\n' "$user" "$password" | sha256sum | awk '{print $1}')";password=''
+ config_get user "$section" username '';account_metadata "$section" || return 1
+ key="$ACCOUNT_KEY";signature="$ACCOUNT_SIGNATURE"
  ACCOUNT_LIMIT=3;ACCOUNT_PLAN='';now="$(date +%s)"
  if [ -r "$STATE_DIR/account-plan-$key" ];then
   { IFS= read -r saved_signature;IFS= read -r updated;IFS= read -r package; } <"$STATE_DIR/account-plan-$key"
@@ -45,9 +44,8 @@ account_record_plan() {
  [ "${#package}" -le 256 ] || return 0
  for section in $ACCOUNT_SECTIONS;do
   config_get user "$section" username '';[ "$user" = "$actual" ] || continue
-  config_get password "$section" password ''
-  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
-  signature="$(printf '%s\n' "$user" "$password" | sha256sum | awk '{print $1}')";password=''
+  account_metadata "$section" || continue
+  key="$ACCOUNT_KEY";signature="$ACCOUNT_SIGNATURE"
   (umask 077;printf '%s\n%s\n%s\n' "$signature" "$(date +%s)" "$package" >"$STATE_DIR/account-plan-$key.$$") && mv -f "$STATE_DIR/account-plan-$key.$$" "$STATE_DIR/account-plan-$key"
  done
 }
@@ -61,10 +59,7 @@ account_reserve() {
  now="$(date +%s)"
  for item in $UPLINK_SECTIONS; do
   [ "$item" != "$UPLINK_ID" ] || continue
-  assigned="$(json_file_value "$STATE_DIR/uplink-$item.json" '@.account')"
-  state="$(json_file_value "$STATE_DIR/uplink-$item.json" '@.state')"
-  session="$(json_file_value "$STATE_DIR/uplink-$item.json" '@.session')"
-  device="$(json_file_value "$STATE_DIR/uplink-$item.json" '@.device')"; address="$(json_file_value "$STATE_DIR/uplink-$item.json" '@.ipv4')"
+  json_fields "$STATE_DIR/uplink-$item.json" assigned=@.account state=@.state session=@.session device=@.device address=@.ipv4
   signature="$device:$address"
   if account_session_active "$state" "$session";then
    if [ -n "$assigned" ] && [ "${assigned%@campus}" = "${user%@campus}" ]; then

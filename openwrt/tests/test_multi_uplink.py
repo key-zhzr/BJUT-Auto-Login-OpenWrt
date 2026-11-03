@@ -141,16 +141,23 @@ class MultiUplinkTests(unittest.TestCase):
 
     def test_status_exposes_progress_without_replacing_online_snapshot(self):
         env=self.config(); self.run_service(scenario='multi_mapped',**env)
-        worker=subprocess.Popen(['sh',str(base.SCRIPT),'once','dorm_a'],env=self.environment('multi_mapped',MOCK_PROBE_DELAY='.5',**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        # Hold the worker while querying: a faster probe must not turn this
+        # concurrency assertion into a race with slow host-side UCI mocks.
+        gate=self.temp/'release-probe';curl=self.temp/'gated-curl'
+        curl.write_text(f'#!/bin/sh\nwhile [ ! -e "{gate}" ];do sleep .05;done\nexec "{MOCKS / "curl.sh"}" "$@"\n')
+        curl.chmod(0o755)
+        worker=subprocess.Popen(['sh',str(base.SCRIPT),'once','dorm_a'],env=self.environment('multi_mapped',BJUT_CURL=curl,**env),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             for _ in range(100):
                 if (self.state/'phase-dorm_a').exists(): break
                 time.sleep(.02)
             response=self.rpc('status',{},**env); item=json.loads(response.stdout)['uplinks'][0]
             self.assertEqual(item['state'],'online'); self.assertEqual(item['checking'],1); self.assertTrue(item['check_message'])
+            gate.touch()
             worker.communicate(timeout=20)
             self.assertFalse((self.state/'phase-dorm_a').exists())
         finally:
+            gate.touch()
             if worker.poll() is None: worker.kill(); worker.communicate()
 
     def test_disabled_managed_routes_prune_old_tables_even_with_globbing_disabled(self):

@@ -5,6 +5,14 @@ config_load() {
 }
 
 config_foreach() {
+ if [ "${CONFIG_PREPARED:-0}" = 1 ];then
+  local callback="$1" type="$2" section found
+  for section in $CONFIG_SECTIONS;do
+   config_get found "$section" TYPE
+   [ "$found" != "$type" ] || "$callback" "$section"
+  done
+  return 0
+ fi
  if [ -n "${MOCK_CONFIG_JSON:-}" ]; then
   local callback="$1" type="$2" section
   for section in $(python3 -c 'import json,sys; print(" ".join(k for k,v in json.load(open(sys.argv[1])).items() if v.get(".type") == sys.argv[2]))' "$MOCK_CONFIG_JSON" "$type"); do "$callback" "$section"; done
@@ -22,6 +30,10 @@ config_foreach() {
 
 config_get() {
 	local _mock_destination="$1" _mock_section="$2" _mock_option="$3" _mock_default="${4:-}" _mock_value
+ if [ "${CONFIG_PREPARED:-0}" = 1 ];then
+  eval "$_mock_destination=\${CONFIG_${_mock_section}_${_mock_option}:-\$_mock_default}"
+  return 0
+ fi
  if [ -n "${MOCK_CONFIG_JSON:-}" ]; then
   _mock_value="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2],{}).get(sys.argv[3],sys.argv[4]); print(" ".join(map(str,v)) if isinstance(v,list) else int(v) if isinstance(v,bool) else v)' "$MOCK_CONFIG_JSON" "$_mock_section" "$_mock_option" "$_mock_default")"
   eval "$_mock_destination=\$_mock_value"

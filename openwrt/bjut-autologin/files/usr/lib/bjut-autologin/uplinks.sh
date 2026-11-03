@@ -58,23 +58,22 @@ select_uplink() {
 }
 
 read_ipv6_identity() {
-	local status detected address
+	local status detected address up fallback_device mask
 	DEVICE6="$DEVICE"
 	NETWORK_JSON6="$NETWORK_JSON4"
 	LOCAL_IPV6=""; IPV6_PD=""
 	if [ -n "$CFG_NETWORK6" ]; then
 		status="$("$UBUS_BIN" -S call "network.interface.$CFG_NETWORK6" status 2>/dev/null)" || return 0
-		case "$(network_json_value "$status" '@.up')" in true|1) ;; *) return 0 ;; esac
+		json_text_fields "$status" up=@.up detected=@.l3_device fallback_device=@.device
+		case "$up" in true|1) ;; *) return 0 ;; esac
 		NETWORK_JSON6="$status"
-		detected="$(network_json_value "$status" '@.l3_device')"
-		[ -n "$detected" ] || detected="$(network_json_value "$status" '@.device')"
+		[ -n "$detected" ] || detected="$fallback_device"
 		DEVICE6="${CFG_DEVICE6:-$detected}"
 	else
 		DEVICE6="${CFG_DEVICE6:-$DEVICE}"
 	fi
 	valid_device_name "$DEVICE6" && [ -d "$SYS_NET/$DEVICE6" ] || return 0
-	address="$(network_json_value "$NETWORK_JSON6" '@["ipv6-prefix"][0].address')"
-	local mask="$(network_json_value "$NETWORK_JSON6" '@["ipv6-prefix"][0].mask')"
+	json_text_fields "$NETWORK_JSON6" 'address=@["ipv6-prefix"][0].address' 'mask=@["ipv6-prefix"][0].mask'
 	if is_uint "$mask" && [ "$mask" -le 128 ] && printf '%s' "$address" | "$CODEC_BIN" validate-ipv6 >/dev/null 2>&1;then IPV6_PD="$address/$mask";fi
 	if command_exists "$IP_BIN"; then
 		LOCAL_IPV6="$("$IP_BIN" -6 -o addr show dev "$DEVICE6" scope global 2>/dev/null |
@@ -102,7 +101,7 @@ curl_supports_ifhost() {
 
 mwan_mask() {
 	local mask
-	mask="$(cat "${BJUT_MWAN_MASK_FILE:-/var/run/mwan3/mmx_mask}" 2>/dev/null)"
+	IFS= read -r mask 2>/dev/null <"${BJUT_MWAN_MASK_FILE:-/var/run/mwan3/mmx_mask}" || true
 	[ -n "$mask" ] || mask="$("$UCI_BIN" -q get mwan3.globals.mmx_mask 2>/dev/null)"
 	[ -n "$mask" ] || mask=0x3f00
 	case "$mask" in 0x*) case "${mask#0x}" in ''|*[!0-9a-fA-F]*) return 1 ;; esac ;; *) is_uint "$mask" || return 1 ;; esac
@@ -127,7 +126,8 @@ bound_curl() {
 		interface="if!$device"
 	fi
 	if [ "$CFG_MWAN3" = "1" ] && [ -r "$MWAN_WRAPPER" ]; then
-		mark="$(mwan_mask)" || return 98
+		mark="${MWAN_MASK_CACHED:-}"
+		[ -n "$mark" ] || mark="$(mwan_mask)" || return 98
 		if [ "${BJUT_CURL_EXEC:-0}" = 1 ]; then
 			FAMILY="$family" DEVICE="$device" SRCIP="$source" FWMARK="$mark" LD_PRELOAD="$MWAN_WRAPPER"
 			export FAMILY DEVICE SRCIP FWMARK LD_PRELOAD
@@ -200,7 +200,7 @@ probe_target() {
 	printf 'url = "%s"\n' "$url" | (BJUT_CURL_EXEC=1; bound_curl "$family" "$@" --config -) >"$directory/code" 2>"$directory/error" & curl_pid=$!
 	child_register "$curl_pid"
 	wait "$curl_pid"; rc=$?;child_forget "$curl_pid"
-	code="$(cat "$directory/code")"
+	IFS= read -r code <"$directory/code" || true
 	if [ "$rc" = 0 ]; then
 		if [ "$target" = configured ]; then [ "$code" != "$CFG_ONLINE_CODE" ] || : >"$directory/ok"
 		else case "$code" in [1-5][0-9][0-9]) : >"$directory/ok";; esac; fi
@@ -210,6 +210,7 @@ probe_target() {
 
 online_check() {
 	local pid4 pid6
+	if [ "$CFG_MWAN3" = 1 ] && [ -r "$MWAN_WRAPPER" ];then MWAN_MASK_CACHED="$(mwan_mask)" || return 1;fi
 	# Subshells own their response files; neither family can overwrite the
 	# other's result. A blocked IPv4 target cannot hide working IPv6.
 	(mkdir -p "$WORK_DIR/p4"; WORK_DIR="$WORK_DIR/p4"; probe_family ipv4) >"$WORK_DIR/probe4" & pid4=$!
@@ -220,12 +221,13 @@ online_check() {
 	child_forget "$pid4"
 	wait "$pid6" 2>/dev/null || true
 	child_forget "$pid6"
-	PROBE4="$(cat "$WORK_DIR/probe4")"; PROBE6="$(cat "$WORK_DIR/probe6")"
+	IFS= read -r PROBE4 <"$WORK_DIR/probe4" || true
+	IFS= read -r PROBE6 <"$WORK_DIR/probe6" || true
 	[ "$PROBE4" = reachable ] || [ "$PROBE6" = reachable ]
 }
 
 read_portal_session() {
-	local protocol="$1" url base resolve profile host total result ips account index row_ip
+	local protocol="$1" url base resolve profile host total result ips account index row_ip rows message
 	SESSION_STATE=unknown
 	case "$protocol" in
 		type1)
@@ -238,18 +240,16 @@ read_portal_session() {
 			url="$base/eportal/portal/online_list?callback=dr1002&user_account=&user_password=&wlan_user_ip=$(urlencode "$LOCAL_IPV4")&jsVersion=4.X&v=$(request_id)&lang=zh"
 			http_request "$url" "$base/" "$resolve" "$host" "$profile" || return 0
 			load_jsonp || return 0
-			result="$(jsonp_value '@.result')"; total="$(jsonp_value '@.total')"
-			ips="$(printf '%s' "$JSONP_PAYLOAD" | "$JSONFILTER_BIN" -e '@.list[*].online_ip' 2>/dev/null)"
-			if [ "$result" = 1 ] && printf '%s\n' "$ips" | grep -Fxq "$LOCAL_IPV4"; then
-				SESSION_STATE=online
+			json_text_fields "$JSONP_PAYLOAD" result=@.result total=@.total rows=@.list message=@.msg
+			if [ "$result" = 1 ]; then
 				# External scripts may have switched this port's account. Report
 				# only the server-confirmed row for this exact physical source.
 				index=0
 				while [ "$index" -lt 64 ]; do
-					row_ip="$(jsonp_value "@.list[$index].online_ip")"
+					json_text_fields "$rows" "row_ip=@[$index].online_ip" "account=@[$index].user_account"
 					[ -n "$row_ip" ] || break
 					if [ "$row_ip" = "$LOCAL_IPV4" ]; then
-						account="$(jsonp_value "@.list[$index].user_account")"
+						SESSION_STATE=online
 						case "$account" in ''|*[!A-Za-z0-9_@.,-]*) ;; *)
 							OBSERVED_ACCOUNT="$(mask_username "$account")"; RUNTIME_ACCOUNT="$OBSERVED_ACCOUNT" ;;
 						esac
@@ -257,10 +257,9 @@ read_portal_session() {
 					fi
 					index=$((index + 1))
 				done
-			elif [ "$result" = 1 ] && [ "$total" = 0 ] && [ "$(jsonp_value '@.list' | tr -d ' \011\012\015')" = '[]' ]; then
-				SESSION_STATE=offline
+				[ "$total" != 0 ] || [ "$rows" != '[]' ] || SESSION_STATE=offline
 			elif [ "$result" = 0 ]; then
-				case "$(jsonp_value '@.msg')" in *未认证*|*未登录*|*未在线*|*不在线*|*not\ online*|*not\ authenticated*|*获取用户在线信息数据为空*) SESSION_STATE=offline ;; esac
+				case "$message" in *未认证*|*未登录*|*未在线*|*不在线*|*not\ online*|*not\ authenticated*|*获取用户在线信息数据为空*) SESSION_STATE=offline ;; esac
 			fi
 			;;
 		type2)
@@ -270,9 +269,8 @@ read_portal_session() {
 			;;
 		type3)
 			lgn_user_info_probe || return 0
-			result="$(jsonp_value '@.code')"
+			json_text_fields "$JSONP_PAYLOAD" result=@.code account=@.user_info.account
 			if [ "$result" = 1 ]; then
-				account="$(jsonp_value '@.user_info.account')"
 				if [ -z "$account" ]; then SESSION_STATE=offline; else
 					case "$account" in *[!A-Za-z0-9_@.,-]*) ;; *)
 						SESSION_STATE=online; OBSERVED_ACCOUNT="$(mask_username "$account")"; RUNTIME_ACCOUNT="$OBSERVED_ACCOUNT" ;;
@@ -296,15 +294,24 @@ print_all_status() {
 }
 
 run_all_uplinks() {
-	local section batch=0 pids="" pid rc=0 result
+	local section batch=0 pids="" pid rc=0 result generation
 	mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR" || return 1
+	generation="$(configuration_fingerprint 2>/dev/null)"
+	if [ -n "$generation" ] && [ "$generation" != "$CONFIG_GENERATION" ];then
+		CONFIG_LOADED=0;BJUT_PREPARED_CONFIG=0 validate_configuration || return 2
+	fi
+	if [ "${PREPARED_PUBLISHED:-}" != "$CONFIG_GENERATION" ];then
+		if prepared_context_write;then PREPARED_PUBLISHED="$CONFIG_GENERATION";
+		else PREPARED_PUBLISHED='';fi
+	fi
+	network_context_refresh || true
 	prune_uplink_routes
 	prune_mwan_rules || log_message error "出口规则暂未更新，请先应用 mwan3 中的待保存修改"
 	if [ "$UPLINK_CONFIGURED" = 0 ]; then
 		UPLINK_ID=main; run_once_locked; return $?
 	fi
 	for section in $UPLINK_SECTIONS; do
-		(BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
+		(BJUT_PREPARED_CONFIG=1 BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
 		child_register "$!"
 		batch=$((batch + 1))
 		if [ "$batch" -ge 4 ]; then

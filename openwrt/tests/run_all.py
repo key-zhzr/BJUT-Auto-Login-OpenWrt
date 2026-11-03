@@ -236,6 +236,15 @@ def validate_runtime_with_sanitizers():
         request.write_text('{"start":9223372036854775807,"end":9223372036854775807,"resolution":60,"monthly":true}')
         result=subprocess.run([binary,'snapshot','traffic',request,temp,temp,config,delta],env=env,capture_output=True)
         if result.returncode!=0 or b'Sanitizer' in result.stderr:raise RuntimeError('Extreme date bounds were not handled safely')
+        online=temp/'online.json'
+        for value in (None, [], {}, {'rows':[]}, [{'sessionId':'s','mac':'AA:BB:CC:DD:EE:FF','downFlow':'1e999','ip':'bad','ipv6':'2001:db8::1'}]):
+            online.write_text(json.dumps(value))
+            result=subprocess.run([binary,'traffic-rows',online,temp,'all'],env=env,capture_output=True)
+            if result.returncode!=0 or b'Sanitizer' in result.stderr:raise RuntimeError('Batched traffic normalization failed sanitizer check')
+            json.loads(result.stdout)
+        for expression in ('X=@["', 'X=@[999999999999999999999]', 'X=@.missing'):
+            result=subprocess.run([binary,'fields',online,expression],env=env,capture_output=True)
+            if result.returncode not in (0,2) or b'Sanitizer' in result.stderr:raise RuntimeError('Malformed projection was not handled safely')
     finally:shutil.rmtree(temp)
 
 
@@ -260,6 +269,7 @@ def main():
     run([sys.executable, "openwrt/tests/test_traffic_store.py"])
     run([sys.executable, "openwrt/tests/test_traffic_cadence.py"])
     run([sys.executable, "openwrt/tests/test_runtime.py"])
+    run([sys.executable, "openwrt/tests/test_runtime_batch.py"])
     run([sys.executable, "openwrt/tests/test_package_build.py"])
     print("All OpenWrt port checks passed.")
 

@@ -54,6 +54,160 @@ configuration_fingerprint() {
  "$RUNTIME_BIN" fingerprint "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}"
 }
 
+# One parser for a whole document. read assigns literal values, including
+# quotes and backslashes; the result is never evaluated as shell code.
+json_fields() {
+ local fields_file="$1" projection field pair wanted value
+ shift
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && projection="$("$RUNTIME_BIN" fields "$fields_file" "$@")";then
+  while IFS= read -r field;do
+   [ "$field" != BJUT_FIELDS_END ] || break
+   case "$field" in ''|*[!A-Za-z0-9_]*)return 1;;esac
+   IFS= read -r "$field" || return 1
+  done <<END_FIELDS
+$projection
+END_FIELDS
+ else
+  for pair in "$@";do
+   wanted="${pair#*=}";field="${pair%%=*}"
+   value="$(json_file_value "$fields_file" "$wanted")"
+   read -r "$field" <<END_VALUE
+$value
+END_VALUE
+  done
+ fi
+}
+json_text_fields() {
+ local fields_text="$1" projection field
+ shift
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && projection="$(printf '%s' "$fields_text" | "$RUNTIME_BIN" fields - "$@")";then
+  while IFS= read -r field;do
+   [ "$field" != BJUT_FIELDS_END ] || break
+   case "$field" in ''|*[!A-Za-z0-9_]*)return 1;;esac
+   IFS= read -r "$field" || return 1
+  done <<END_FIELDS
+$projection
+END_FIELDS
+ else
+  local pair wanted value
+  for pair in "$@";do
+   wanted="${pair#*=}";field="${pair%%=*}"
+   value="$(network_json_value "$fields_text" "$wanted")"
+   IFS= read -r "$field" <<END_VALUE
+$value
+END_VALUE
+  done
+ fi
+}
+
+prepared_section_write() {
+ local section="$1" type="$2" options option value
+ valid_section "$section" || return 1
+ case "$type" in
+ service)options='enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow';;
+ uplink)options='enabled network network6 device device6 source4 source6 accounts transport login_type compatibility expected_ssid expected_bssid';;
+ account)options='enabled username login_type max_sessions';;
+ *)return 1;;esac
+ json_add_object "$section";json_add_string TYPE "$type"
+ for option in $options;do config_get value "$section" "$option" '';json_add_string "$option" "$value";done
+ if [ "$type" = account ];then
+  account_metadata "$section" || return 1
+  json_add_string bjut_key "$ACCOUNT_KEY";json_add_string bjut_signature "$ACCOUNT_SIGNATURE";json_add_string bjut_has_password "$ACCOUNT_HAS_PASSWORD"
+ elif [ "$type" = service ];then
+  config_get value "$section" pushplus_token '';option=0
+  if [ -n "$value" ] && valid_pushplus_token "$value";then option=1;fi;value=''
+  json_add_string bjut_pushplus_ready "$option"
+ fi
+ json_close_object
+}
+prepared_context_write() (
+ [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && [ -n "$CONFIG_GENERATION" ] || return 75
+ mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR" || return 1
+ . "$JSHN_SH"
+ # No secret is passed to jshn (which uses exported variables internally).
+ {
+  json_init;json_add_object sections
+  prepared_section_write "$MAIN_SECTION" service
+  local section
+  for section in $ACCOUNT_SECTIONS;do prepared_section_write "$section" account;done
+  if [ "$UPLINK_CONFIGURED" = 1 ];then for section in $UPLINK_SECTIONS;do prepared_section_write "$section" uplink;done;fi
+  json_close_object;json_dump
+ } | "$RUNTIME_BIN" prepare-config "$STATE_DIR/prepared-context.json" "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}" "$CONFIG_GENERATION"
+)
+prepared_context_load() {
+ local projection field
+ [ "${BJUT_PREPARED_CONFIG:-0}" = 1 ] && [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] || return 75
+ projection="$("$RUNTIME_BIN" prepared-config "$STATE_DIR/prepared-context.json" "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}")" || return 75
+ while IFS= read -r field;do
+  [ "$field" != BJUT_FIELDS_END ] || break
+  case "$field" in CONFIG_* )case "$field" in *[!A-Za-z0-9_]*)return 75;;esac;;*)return 75;;esac
+  IFS= read -r "$field" || return 75
+ done <<END_PREPARED
+$projection
+END_PREPARED
+ [ "${CONFIG_PREPARED:-0}" = 1 ]
+}
+configuration_unchanged() {
+ [ -z "${CONFIG_GENERATION:-}" ] || [ "$(configuration_fingerprint)" = "$CONFIG_GENERATION" ]
+}
+credential_get() {
+ local destination="$1" section="$2" option="${3:-password}"
+ # Clear the destination on every failure, never continue with an old secret.
+ IFS= read -r "$destination" <<END_EMPTY
+
+END_EMPTY
+ if [ "${CONFIG_PREPARED:-0}" = 1 ];then
+  configuration_unchanged || return 1
+  config_load "$CONFIG_PACKAGE" || return 1
+  CONFIG_PREPARED=0
+ fi
+ config_get "$destination" "$section" "$option" ''
+}
+account_metadata() {
+ local section="$1" user password
+ config_get ACCOUNT_KEY "$section" bjut_key ''
+ config_get ACCOUNT_SIGNATURE "$section" bjut_signature ''
+ config_get ACCOUNT_HAS_PASSWORD "$section" bjut_has_password ''
+ [ "${#ACCOUNT_KEY}" != 64 ] || [ "${#ACCOUNT_SIGNATURE}" != 64 ] || return 0
+ config_get user "$section" username '';credential_get password "$section" || return 1
+ if [ -x "$RUNTIME_BIN" ];then
+  ACCOUNT_KEY="$(printf '%s' "$user" | "$RUNTIME_BIN" sha256)"
+  ACCOUNT_SIGNATURE="$(printf '%s\n' "$user" "$password" | "$RUNTIME_BIN" sha256)"
+ else
+  ACCOUNT_KEY="$(printf '%s' "$user" | sha256sum | cut -d ' ' -f 1)"
+  ACCOUNT_SIGNATURE="$(printf '%s\n' "$user" "$password" | sha256sum | cut -d ' ' -f 1)"
+ fi
+ ACCOUNT_HAS_PASSWORD=0;[ -z "$password" ] || ACCOUNT_HAS_PASSWORD=1;password=''
+ IFS= read -r "CONFIG_${section}_bjut_key" <<END_KEY
+$ACCOUNT_KEY
+END_KEY
+ IFS= read -r "CONFIG_${section}_bjut_signature" <<END_SIGNATURE
+$ACCOUNT_SIGNATURE
+END_SIGNATURE
+ IFS= read -r "CONFIG_${section}_bjut_has_password" <<END_PRESENT
+$ACCOUNT_HAS_PASSWORD
+END_PRESENT
+}
+
+network_context_refresh() {
+ [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && [ -n "$CONFIG_GENERATION" ] || return 75
+ "$UBUS_BIN" -S call network.interface dump 2>/dev/null |
+  "$RUNTIME_BIN" network-save "$STATE_DIR/network-context.json" "$CONFIG_GENERATION"
+}
+native_network_read() {
+ local projection field
+ [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ "${BJUT_NETWORK_FRESH:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] || return 75
+ [ "$SYS_NET" = /sys/class/net ] || [ -n "${BJUT_NATIVE_ADDRESSES:-}" ] || return 75
+ projection="$("$RUNTIME_BIN" network-read "$STATE_DIR/network-context.json" "$SYS_NET" "$CFG_NETWORK" "$CFG_DEVICE" "$CFG_NETWORK6" "$CFG_DEVICE6" "$CFG_SOURCE4" "$CFG_SOURCE6" "$CONFIG_GENERATION")" || return 75
+ while IFS= read -r field;do
+  [ "$field" != BJUT_FIELDS_END ] || break
+  case "$field" in DEVICE|DEVICE6|LOCAL_IPV4|LOCAL_IPV6|IPV6_PD|NETWORK_JSON4|NETWORK_JSON6) ;;*)return 75;;esac
+  IFS= read -r "$field" || return 75
+ done <<END_NETWORK
+$projection
+END_NETWORK
+}
+
 # This private cache contains display metadata, never plaintext credentials.
 # Its content fingerprint covers UCI edits and pending LuCI changes, including
 # multiple changes in the same second. Consumers parse JSON, never source it.

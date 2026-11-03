@@ -6,8 +6,8 @@ BJUT_SELF="${BJUT_SELF:-/usr/sbin/bjut-autologin}"
 . "$BJUT_SELF" || exit 1
 . "$LIB_DIR/billing.sh" || exit 1
 lock="$STATE_DIR/traffic-monitor.lock"
-proc_stamp() { is_uint "$1" && awk '{print $22}' "/proc/$1/stat" 2>/dev/null; }
-job_alive() { is_uint "$1" && [ -n "$2" ] && [ "$2" = "$(proc_stamp "$1")" ] && kill -0 "$1" 2>/dev/null; }
+proc_stamp() { is_uint "$1" && process_identity "$1" && printf '%s' "$PROCESS_START"; }
+job_alive() { is_uint "$1" && [ -n "$2" ] && process_identity "$1" && [ "$2" = "$PROCESS_START" ] && [ "$PROCESS_STATE" != Z ] && kill -0 "$1" 2>/dev/null; }
 stop_jobs() {
  local job child stamp
  for job in "$STATE_DIR"/traffic-jobs/*;do
@@ -48,7 +48,7 @@ round="$(($(date +%s)+30))"
 while :;do
  generation="$(configuration_fingerprint 2>/dev/null)"
  if [ -z "$generation" ] || [ "$generation" != "${configuration_generation:-}" ];then
-  CONFIG_LOADED=0;load_configuration || exit 1
+  CONFIG_LOADED=0;BJUT_PREPARED_CONFIG=1 load_configuration || exit 1
   configuration_generation="$generation"
  fi
  [ "${CFG_TRAFFIC_MONITOR:-0}" = 1 ] || exit 0
@@ -60,7 +60,7 @@ while :;do
  printf '%s' "$CFG_TRAFFIC_SCOPE" >"$STATE_DIR/traffic-scope"
  now="$(date +%s)"
  if [ "$((now-identity_at))" -ge 30 ] && ! job_alive "$identity_pid" "$identity_stamp";then
-  BJUT_NETWORK_ADDRESSES_ONLY=1 "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" --identities &
+  BJUT_PREPARED_CONFIG=1 BJUT_NETWORK_ADDRESSES_ONLY=1 "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" --identities &
   identity_pid="$!";identity_stamp="$(proc_stamp "$identity_pid")";identity_at="$now"
  fi
  if [ ! -s "$STATE_DIR/traffic-identities.tsv" ];then
@@ -75,9 +75,9 @@ while :;do
  seen=''
  traffic_active_prepare
  for section in $ACCOUNT_SECTIONS;do
-  config_get user "$section" username '';config_get password "$section" password ''
-  [ -n "$user" ] && [ -n "$password" ] || continue;password=''
-  key="$(printf '%s' "$user" | sha256sum | awk '{print $1}')"
+  config_get user "$section" username '';[ -n "$user" ] || continue
+  account_metadata "$section" && [ "$ACCOUNT_HAS_PASSWORD" = 1 ] || continue
+  key="$ACCOUNT_KEY"
   if ! traffic_account_selected "$user";then
    child='';stamp='';[ ! -f "$STATE_DIR/traffic-jobs/$key" ] || read -r child stamp <"$STATE_DIR/traffic-jobs/$key"
    if job_alive "$child" "$stamp";then kill "$child" 2>/dev/null;wait "$child" 2>/dev/null;fi
@@ -116,7 +116,7 @@ while :;do
    rm -f "$STATE_DIR/traffic/$key-wake"
    target="$pending"
    if [ "$wake" = 1 ];then target='';else rm -f "$STATE_DIR/traffic/$key-pending";fi
-   BJUT_NETWORK_ADDRESSES_ONLY=1 BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
+   BJUT_PREPARED_CONFIG=1 BJUT_NETWORK_ADDRESSES_ONLY=1 BJUT_TRAFFIC_IDENTITIES_READY=1 BJUT_TRAFFIC_ROUND="$round" BJUT_TRAFFIC_SAMPLE_AT="$target" "${BJUT_TRAFFIC_SAMPLE:-/usr/libexec/bjut-traffic-sample}" "$section" &
    child="$!";stamp="$(proc_stamp "$child")"
    printf '%s %s\n' "$child" "$stamp" >"$STATE_DIR/traffic-jobs/$key";delay=1
   fi

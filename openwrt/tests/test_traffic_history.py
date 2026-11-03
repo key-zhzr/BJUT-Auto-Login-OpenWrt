@@ -308,6 +308,9 @@ cat "$STATE_DIR/traffic/$key-at"
         env=self.config()
         script='load_configuration;select_uplink dorm_a;read_network_identity;test -n "$LOCAL_IPV4";printf "%s" "$SSID"'
         self.assertEqual(self.shell(script,BJUT_NETWORK_ADDRESSES_ONLY='1',MOCK_UBUS_IWINFO='1',**env),'')
+        self.assertEqual(self.shell(script,MOCK_UBUS_IWINFO='1',**env),'')
+        config=Path(env['MOCK_CONFIG_JSON']);data=json.loads(config.read_text())
+        data['dorm_a']['transport']='wifi';config.write_text(json.dumps(data))
         self.assertNotEqual(self.shell(script,MOCK_UBUS_IWINFO='1',**env),'')
 
     def test_prepared_workers_do_not_reload_the_router_configuration_every_second(self):
@@ -345,7 +348,7 @@ printf '%s' "$payload" | "$REAL_CURL" "$@"
     def test_empty_online_accounts_do_not_recompact_other_accounts_history(self):
         env=self.config();file=self.temp/'empty.json';file.write_text('[]')
         curves=self.state/'usage-curves.tsv';before='60\t1792886400\told\tdevice\tinterface:lan3\tlan3\t1\t12.345\t60\n';curves.write_text(before)
-        self.shell('load_configuration;traffic_history_record fixture "$ONLINE" 1792886460',ONLINE=file,**env)
+        self.shell('load_configuration;key=$(printf fixture | sha256sum | cut -d " " -f 1);traffic_history_record "$key" "$ONLINE" 1792886460',ONLINE=file,**env)
         self.assertEqual(curves.read_text(),before)
 
     def test_unchanged_mwan_rules_reuse_successful_configuration_but_edits_invalidate_it(self):

@@ -29,6 +29,17 @@ traffic_history_record() (
 traffic_history_record_locked() (
  local account_key="$1" file="$2" now="$3" prefix index=0 recorded=0 item mac ip ipv6 login down used device session previous_at previous_used high delta seconds day label identity interface_id interface_name local_device resolution at
  traffic_history_prepare || return 1
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ];then
+  local native_result native_count native_resets native_rollbacks
+  native_result="$("$RUNTIME_BIN" traffic-ingest "$file" "$STATE_DIR" "${CFG_TRAFFIC_SCOPE:-local}" "$account_key" "$now" "${TRAFFIC_DEVICES_OUTPUT:--}")" || return 1
+  read -r native_count native_resets native_rollbacks <<END_INGEST
+$native_result
+END_INGEST
+  [ "${native_resets:-0}" = 0 ] || log_message notice "流量基线重置：${native_resets} 个设备采样中断超过 180 秒"
+  [ "${native_rollbacks:-0}" = 0 ] || log_message notice "流量计数回退或时间未前进：${native_rollbacks} 个设备，保留前次高位"
+  [ "${native_count:-0}" = 0 ] || traffic_history_checkpoint periodic "$now" || true
+  return 0
+ fi
  local history_directory="$(traffic_history_directory)"
  [ -n "$history_directory" ] || return 1
  prefix="$(billing_rows_prefix "$file")";day="$(printf '%s' "$now" | "$CODEC_BIN" timestamp-date | cut -c1-10)"
