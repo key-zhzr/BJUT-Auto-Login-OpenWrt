@@ -333,6 +333,7 @@ load_configuration() {
 	. "$FUNCTIONS_SH"
 	if ! prepared_context_load;then
 	CONFIG_PREPARED=0
+	configuration_values_clear
 	CONFIG_GENERATION="$(configuration_fingerprint 2>/dev/null)"
 	config_load "$CONFIG_PACKAGE" || {
 		printf 'Unable to load /etc/config/%s\n' "$CONFIG_PACKAGE" >&2

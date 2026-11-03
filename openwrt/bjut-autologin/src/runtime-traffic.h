@@ -9,6 +9,10 @@ typedef struct { char id[128],name[128],mac[256],ip[INET6_ADDRSTRLEN]; } Traffic
 typedef struct {
     char key[65],used[64]; int64_t at;
 } TrafficBaseline;
+static void bounded_copy(char *out,size_t size,const char *s) {
+    if(!size)return;
+    size_t n=strnlen(s,size-1);memcpy(out,s,n);out[n]=0;
+}
 static void scalar(J *o,const char *key,char *out,size_t size) {
     const char *s=str(o,key);size_t n=strcspn(s,"\n");
     if(n>=size)n=size-1;
@@ -27,10 +31,10 @@ static void normalize_mac(const char *s,char *out,size_t size) {
 static void display_mac(const char *s,char *out,size_t size) {
     char compact[13];size_t n=0;
     for(const char *p=s;*p;p++)if(isxdigit((unsigned char)*p)) {
-        if(n>=12){snprintf(out,size,"%s",s);return;}
+        if(n>=12){bounded_copy(out,size,s);return;}
         compact[n++]=(char)toupper((unsigned char)*p);
     }
-    if(n!=12){snprintf(out,size,"%s",s);return;}
+    if(n!=12){bounded_copy(out,size,s);return;}
     snprintf(out,size,"%c%c-%c%c-%c%c-%c%c-%c%c-%c%c",compact[0],compact[1],compact[2],compact[3],compact[4],compact[5],compact[6],compact[7],compact[8],compact[9],compact[10],compact[11]);
 }
 static size_t traffic_identities(const char *state,TrafficIdentity *ids,size_t maximum) {
@@ -56,7 +60,7 @@ static int traffic_identity(TrafficIdentity *ids,size_t n,const char *mac,const 
     if(match>=0) {strcpy(id,ids[match].id);strcpy(name,ids[match].name);return 1;}
     sha_text(*mac?mac:(*v4?v4:v6),digest);
     snprintf(id,128,"device:%.16s",digest);
-    snprintf(name,256,"%s",*mac?mac:(*v4?v4:"device"));return 0;
+    bounded_copy(name,256,*mac?mac:(*v4?v4:"device"));return 0;
 }
 static int decimal_counter(const char *s,char used[64],double *value) {
     const char *p=s;if(!isdigit((unsigned char)*p))return 0;
@@ -132,7 +136,7 @@ static int traffic_process(int argc,char **argv,int ingest) {
         int valid=decimal_counter(down,used,&value);
         J *device=json_object_new_object();text(device,"interfaceId",id);text(device,"interfaceName",name);boolean(device,"local",local);
         text(device,"loginAt",strlen(login)<=256?login:"");text(device,"ip",strlen(ip)<=256?ip:"");text(device,"ipv6",strlen(ipv6)<=256?ipv6:"");
-        char formatted[256];display_mac(strlen(mac_raw)<=256?mac_raw:"",formatted,sizeof(formatted));text(device,"mac",formatted);
+        char formatted[257];display_mac(strlen(mac_raw)<=256?mac_raw:"",formatted,sizeof(formatted));text(device,"mac",formatted);
         text(device,"usedFlowMb",valid?used:"--");json_object_array_add(devices,device);
         if(!ingest || !valid)continue;
         TrafficBaseline *b=&baselines[nbaseline++];char digest[65],device_key[17],baseline_path[PATH_MAX],previous[128];
@@ -183,8 +187,8 @@ static int traffic_process(int argc,char **argv,int ingest) {
     } else puts(json_object_to_json_string_ext(devices,JSON_C_TO_STRING_PLAIN));
 done:
     if(!ok && !journal_committed) {
-        if(samples){fflush(samples);(void)ftruncate(fileno(samples),sample_size);}
-        if(curves){fflush(curves);(void)ftruncate(fileno(curves),curve_size);}
+        if(samples){fflush(samples);if(ftruncate(fileno(samples),sample_size))fputs("BJUT traffic: sample journal rollback failed\n",stderr);}
+        if(curves){fflush(curves);if(ftruncate(fileno(curves),curve_size))fputs("BJUT traffic: curve journal rollback failed\n",stderr);}
     }
     if(samples && fclose(samples))ok=0;
     if(curves && fclose(curves))ok=0;

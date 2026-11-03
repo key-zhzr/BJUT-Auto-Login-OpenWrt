@@ -138,6 +138,7 @@ prepared_context_load() {
  local projection field
  [ "${BJUT_PREPARED_CONFIG:-0}" = 1 ] && [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] || return 75
  projection="$("$RUNTIME_BIN" prepared-config "$STATE_DIR/prepared-context.json" "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}")" || return 75
+ configuration_values_clear
  while IFS= read -r field;do
   [ "$field" != BJUT_FIELDS_END ] || break
   case "$field" in CONFIG_* )case "$field" in *[!A-Za-z0-9_]*)return 75;;esac;;*)return 75;;esac
@@ -146,6 +147,18 @@ prepared_context_load() {
 $projection
 END_PREPARED
  [ "${CONFIG_PREPARED:-0}" = 1 ]
+}
+configuration_values_clear() {
+ local section option
+ # uci_load resets section/list indexes, but leaves old scalar variables.
+ # Remove this package's known values before either kind of reload, including
+ # private memo fields, so deleted options/credentials cannot survive an edit.
+ for section in $CONFIG_SECTIONS;do
+  valid_section "$section" || continue
+  for option in TYPE enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_token pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow username password max_sessions bjut_key bjut_signature bjut_has_password bjut_pushplus_ready;do
+   unset "CONFIG_${section}_${option}"
+  done
+ done
 }
 configuration_unchanged() {
  [ -z "${CONFIG_GENERATION:-}" ] || [ "$(configuration_fingerprint)" = "$CONFIG_GENERATION" ]
@@ -158,6 +171,7 @@ credential_get() {
 END_EMPTY
  if [ "${CONFIG_PREPARED:-0}" = 1 ];then
   configuration_unchanged || return 1
+  configuration_values_clear
   config_load "$CONFIG_PACKAGE" || return 1
   CONFIG_PREPARED=0
  fi

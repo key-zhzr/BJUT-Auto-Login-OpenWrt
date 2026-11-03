@@ -94,10 +94,7 @@ class BatchTests(unittest.TestCase):
         file = self.state/'prepared-context.json'
         args = ('prepared-config', file, env['BJUT_CONFIG_FILE'], env['BJUT_CONFIG_DELTA'])
         file.chmod(0o644)
-        native_env = {**os.environ, 'BJUT_NATIVE_ADDRESSES':str(env['BJUT_NATIVE_ADDRESSES'])}
-        self.assertEqual(self.native(*args, env=native_env).returncode, 75)
-        self.assertEqual(self.native('network-read', self.state/'network-context.json', self.sys_net,
-                                     'wan14', '', 'wan16', '', '', '', signature, env=native_env).returncode, 0)
+        self.assertEqual(self.native(*args).returncode, 75)
         file.chmod(0o600)
         self.assertEqual(self.native(*args).returncode, 0)
         config = Path(env['BJUT_CONFIG_FILE']);stat = config.stat()
@@ -106,6 +103,18 @@ class BatchTests(unittest.TestCase):
         result = self.native(*args)
         self.assertEqual(result.returncode, 75)
         self.assertEqual(result.stdout, '')
+
+    def test_reloads_clear_removed_scalars_secrets_and_memos_including_numeric_sections(self):
+        env = self.config()
+        config = Path(env['MOCK_CONFIG_JSON']);data = json.loads(config.read_text())
+        data['14'] = data.pop('dorm_a');config.write_text(json.dumps(data))
+        env.update(BJUT_CONFIG_FILE=config, BJUT_CONFIG_DELTA=self.temp/'delta')
+        result = self.shell('validate_configuration && prepared_context_write && '\
+                            'BJUT_PREPARED_CONFIG=1 prepared_context_load && select_uplink 14 && '\
+                            'CONFIG_account1_password=stale; CONFIG_account1_bjut_key=old; '\
+                            'configuration_values_clear; test -z "$CONFIG_account1_password" && '\
+                            'test -z "$CONFIG_account1_bjut_key" && test -z "$CONFIG_14_network"', **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_native_rows_match_legacy_wrappers_units_mac_and_scope(self):
         (self.state/'traffic-identities.tsv').write_text('interface:lan3\tlan3\taabbccddeeff\t2001:db8::1\n')
@@ -179,7 +188,10 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result.stdout, 'lan3|10.126.19.139|lan6|2001:da8:216::123')
         args = ('network-read', self.state/'network-context.json', self.sys_net,
                 'wan14', 'lan4', 'wan16', '', '', '', signature)
-        self.assertEqual(self.native(*args).returncode, 75)
+        native_env = {**os.environ, 'BJUT_NATIVE_ADDRESSES':str(env['BJUT_NATIVE_ADDRESSES'])}
+        self.assertEqual(self.native(*args, env=native_env).returncode, 75)
+        self.assertEqual(self.native('network-read', self.state/'network-context.json', self.sys_net,
+                                     'wan14', '', 'wan16', '', '', '', signature, env=native_env).returncode, 0)
         file = self.state/'network-context.json';stat = file.stat()
         os.utime(file, (stat.st_atime, stat.st_mtime-6))
         self.assertEqual(self.native('network-read', file, self.sys_net, 'wan14', '', 'wan16', '', '', '', signature, env=native_env).returncode, 75)

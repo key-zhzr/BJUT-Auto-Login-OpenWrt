@@ -18,7 +18,7 @@ static int prepared_valid(J *o) {
     J *sections=get(o,"sections");
     if(!json_object_is_type(sections,json_type_object) || json_object_object_length(sections)>256)return 0;
     json_object_object_foreach(sections,id,section) {
-        if(!variable_name(id,strlen(id)) || strlen(id)>64 || !*prepared_options(str(section,"TYPE")))return 0;
+        if(!*id || strlen(id)>64 || strspn(id,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")!=strlen(id) || !*prepared_options(str(section,"TYPE")))return 0;
         const char *type=str(section,"TYPE");
         json_object_object_foreach(section,option,value) {
             if(strcmp(option,"TYPE") && !prepared_option(type,option))return 0;
