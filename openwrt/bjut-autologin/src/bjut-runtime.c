@@ -882,6 +882,7 @@ static int snapshot(int argc, char **argv) {
 #include "runtime-traffic.h"
 #include "runtime-prepared.h"
 #include "runtime-network.h"
+#include "runtime-routes.h"
 int main(int argc, char **argv) {
     if (argc < 2)
         return 2;
@@ -893,6 +894,8 @@ int main(int argc, char **argv) {
         return traffic_process(argc - 2, argv + 2, 0);
     if (!strcmp(argv[1], "traffic-ingest"))
         return traffic_process(argc - 2, argv + 2, 1);
+    if (!strcmp(argv[1], "online-capture") && argc == 4)
+        return online_capture(argv[2], argv[3]);
     if (!strcmp(argv[1], "prepare-config"))
         return prepare_config(argc - 2, argv + 2);
     if (!strcmp(argv[1], "prepared-config"))
@@ -903,6 +906,8 @@ int main(int argc, char **argv) {
         return network_identities(argc - 2, argv + 2);
     if (!strcmp(argv[1], "network-save"))
         return network_save(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "routes-current"))
+        return routes_current(argc - 2, argv + 2);
     if (!strcmp(argv[1], "sha256") && argc == 2) {
         BjutSha s;sha_init(&s);char data[4096], digest[65];size_t n;
         while ((n=fread(data,1,sizeof(data),stdin))) sha_update(&s,data,n);

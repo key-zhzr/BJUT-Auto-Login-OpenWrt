@@ -146,6 +146,17 @@ acquire_route_lock() {
 }
 
 ensure_uplink_routes() {
+	# Audit live kernel tables/rules in one read-only process. A changed or
+	# missing rule, source, gateway or connected prefix uses the original path.
+	if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ "$CFG_MANAGED_ROUTES" = 1 ] && [ -x "$RUNTIME_BIN" ] && { [ "$SYS_NET" = /sys/class/net ] || [ -n "${BJUT_NATIVE_ROUTES:-}" ]; };then
+		local current_routes
+		if current_routes="$(printf '%s\n%s\n' "${NETWORK_JSON4:-null}" "${NETWORK_JSON6:-null}" | "$RUNTIME_BIN" routes-current "$STATE_DIR" "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$DEVICE6" "$LOCAL_IPV6")";then
+			read -r ROUTE4 ROUTE6 <<END_ROUTES
+$current_routes
+END_ROUTES
+			return 0
+		fi
+	fi
 	if ! acquire_route_lock; then ROUTE4=busy; ROUTE6=busy; return 1; fi
 	ensure_family_route 4 "$DEVICE" "$LOCAL_IPV4" "$NETWORK_JSON4" || ROUTE_RESULT=failed
 	ROUTE4="$ROUTE_RESULT"

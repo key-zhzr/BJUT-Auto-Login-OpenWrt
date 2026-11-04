@@ -114,9 +114,9 @@ billing_need_captcha() {
 }
 
 billing_publish_overview() {
-	local user actual status balance flow package used total balance_text flow_text used_text total_text reason detail cycle percent=85 unlimited=0
+	local user actual status balance flow package used total balance_text flow_text used_text total_text reason detail cycle left_money left_flow percent=85 unlimited=0
 	user="$(billing_extract user-json)" || return 1
-	actual="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.userName' 2>/dev/null)"
+	json_text_fields "$user" actual=@.userName package=@.serviceDefault.defaultName detail=@.serviceDefault.extend reason=@.stopReason left_money=@.leftMoney left_flow=@.leftFlow
 	case "$actual" in ''|*[!A-Za-z0-9_@.,-]*) return 1 ;; esac
 	[ "${#actual}" -le 256 ] || return 1
 	[ "${BILLING_CURRENT:-0}" != 1 ] || BILLING_ACCOUNT="$actual"
@@ -132,20 +132,18 @@ billing_publish_overview() {
 	# first, embedded leftMoney/leftFlow (MB) only when the metric is absent.
 	balance_text="$(billing_extract dashboard-metric '账户余额')"
 	if [ -z "$balance_text" ]; then
-		balance_text="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftMoney' 2>/dev/null | billing_number | awk 'NF{v=sprintf("%.4f",$0);sub(/0+$/,"",v);sub(/[.]$/,"",v);printf "%s",v}')"
+		balance_text="$(printf '%s' "$left_money" | billing_number | awk 'NF{v=sprintf("%.4f",$0);sub(/0+$/,"",v);sub(/[.]$/,"",v);printf "%s",v}')"
 	fi
 	balance="$(printf '%s' "$balance_text" | billing_number)"
 	case "$balance_text" in *元*) ;; *) [ -z "$balance" ] || balance_text="$balance 元";; esac
 	flow_text="$(billing_extract dashboard-metric '可用流量')"
 	[ -n "$flow_text" ] || flow_text="$(billing_extract dashboard-metric '剩余流量')"
-	[ -n "$flow_text" ] || flow_text="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.leftFlow' 2>/dev/null | billing_number)"
+	[ -n "$flow_text" ] || flow_text="$(printf '%s' "$left_flow" | billing_number)"
 	case "$flow_text:$(printf '%s' "$flow_text" | billing_number | awk '{if($0+0<0)printf "negative"}')" in *无限*|*不限*|*:negative) unlimited=1; flow=''; flow_text=无限;;
 		*) flow="$(printf '%s' "$flow_text" | billing_flow_mb)"; [ -z "$flow" ] || flow_text="$(awk -v n="$flow" 'BEGIN{printf "%.2f GB",n/1024}')";; esac
-	package="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.defaultName' 2>/dev/null)"
-	detail="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.serviceDefault.extend' 2>/dev/null)"
 	account_record_plan "$actual" "$package"
 	status="$(billing_extract status)"
-	reason="$(printf '%s' "$user" | "$JSONFILTER_BIN" -e '@.stopReason' 2>/dev/null)"; [ "$status" != 正常 ] || reason=''
+	[ "$status" != 正常 ] || reason=''
 	cycle="$(billing_extract cycle)"
     if [ -n "${BILLING_RECORD_KIND:-}" ]; then billing_publish_records "$actual"; return $?; fi
     used_text="$(billing_extract dashboard-metric '已用流量')"; used="$(printf '%s' "$used_text" | billing_flow_mb)"
@@ -396,6 +394,10 @@ billing_row_value() (
 
 billing_capture_online() {
  local source="$BILLING_JOB/online.json" prefix='@' rows index=0 row id
+ if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ];then
+  "$RUNTIME_BIN" online-capture "$WORK_DIR/billing-body" "$source" || { rm -f "$source";return 1; }
+  return 0
+ fi
  billing_normalize_json "$WORK_DIR/billing-body" "$source" || { rm -f "$source";return 1; }
  [ "$(cat "$source")" != null ] || printf '[]' >"$source"
  rows="$(json_file_value "$source" '@.rows')"

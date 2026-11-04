@@ -1,7 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # One retained operation per uplink. Queue files contain no credentials.
-operation_update() (
+operation_update() {
+ [ -n "${OPERATION_ID:-}" ] || return 0
+ operation_update_owned "$@"
+}
+operation_update_owned() (
  local state="$1" phase="$2" file="$STATE_DIR/operation-$UPLINK_ID.json" id action account created deadline now
  [ -s "$file" ] || return 0
  id="$(json_file_value "$file" '@.id')"

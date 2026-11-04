@@ -283,6 +283,7 @@ read_portal_session() {
 
 print_all_status() {
 	local section comma="" item
+	if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && "$RUNTIME_BIN" snapshot status /dev/null "$STATE_DIR" "$SYS_NET" "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}";then return 0;fi
 	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","traffic_charts","traffic_compression","billing_center","maintenance","traffic_flash_quota"],"uplinks":[' "$(date +%s)" "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
@@ -301,7 +302,9 @@ run_all_uplinks() {
 		CONFIG_LOADED=0;BJUT_PREPARED_CONFIG=0 validate_configuration || return 2
 	fi
 	if [ "${PREPARED_PUBLISHED:-}" != "$CONFIG_GENERATION" ];then
-		if prepared_context_write;then PREPARED_PUBLISHED="$CONFIG_GENERATION";
+		if prepared_context_write;then
+			view_context_write "$CONFIG_GENERATION" || true
+			PREPARED_PUBLISHED="$CONFIG_GENERATION";
 		else PREPARED_PUBLISHED='';fi
 	fi
 	network_context_refresh || true
