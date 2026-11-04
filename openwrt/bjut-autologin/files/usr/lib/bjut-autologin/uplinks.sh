@@ -302,8 +302,7 @@ run_all_uplinks() {
 		CONFIG_LOADED=0;BJUT_PREPARED_CONFIG=0 validate_configuration || return 2
 	fi
 	if [ "${PREPARED_PUBLISHED:-}" != "$CONFIG_GENERATION" ];then
-		if prepared_context_write;then
-			view_context_write "$CONFIG_GENERATION" || true
+		if prepared_context_write && view_context_write "$CONFIG_GENERATION";then
 			PREPARED_PUBLISHED="$CONFIG_GENERATION";
 		else PREPARED_PUBLISHED='';fi
 	fi

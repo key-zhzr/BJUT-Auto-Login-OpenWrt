@@ -78,6 +78,22 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '1|wan14|'+hashlib.sha256(b'25000001').hexdigest())
 
+    def test_background_publisher_initializes_its_own_json_writer(self):
+        env=self.prepare()
+        result=self.shell('load_configuration && prepared_context_write && '
+                          '! command -v json_init >/dev/null && '
+                          'view_context_write "$CONFIG_GENERATION" && print_all_status', **env)
+        self.assertEqual(result.returncode,0,result.stderr)
+        context=json.loads((self.state/'view-context.json').read_text())
+        self.assertEqual([r['id']for r in context['uplinks']],['dorm_a','dorm_b'])
+        self.assertEqual(len(context['accounts']),2)
+        self.assertNotIn('fixture password',json.dumps(context))
+        self.assertEqual(len(json.loads(result.stdout)['uplinks']),2)
+        warm=self.native('snapshot','status','/dev/null',self.state,self.sys_net,
+                         env['BJUT_CONFIG_FILE'],env['BJUT_CONFIG_DELTA'])
+        self.assertEqual(warm.returncode,0,warm.stderr)
+        self.assertEqual(len(json.loads(warm.stdout)['uplinks']),2)
+
     def test_credentials_are_lazy_and_configuration_change_clears_destination(self):
         env = self.prepare()
         result = self.shell('load_configuration; select_uplink dorm_a; credential_get secret account1; '\

@@ -228,6 +228,9 @@ END_NETWORK
 view_context_write() (
  local signature="$1" temporary section user password key value comma='' option
  [ -x "$RUNTIME_BIN" ] && [ -n "$signature" ] || return 0
+ # RPC already sources jshn; the independent daemon has no such caller.
+ # Initialize inside this subshell so every publisher has the same contract.
+ . "$JSHN_SH" || return 1
  temporary="$(mktemp "$STATE_DIR/view-context.XXXXXX")" || return 1
  trap 'rm -f "$temporary"' 0
  {
@@ -254,6 +257,9 @@ view_context_write() (
   done
   printf ']}\n'
  } >"$temporary" || return 1
+ json_load "$(cat "$temporary")" || return 1
+ json_get_type value uplinks;[ "$value" = array ] || return 1
+ json_get_type value accounts;[ "$value" = array ] || return 1
  [ "$(configuration_fingerprint)" = "$signature" ] || return 1
  chmod 0600 "$temporary" && mv -f "$temporary" "$STATE_DIR/view-context.json"
 )
