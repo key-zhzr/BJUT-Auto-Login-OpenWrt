@@ -73,6 +73,8 @@ static int decimal_counter(const char *s,char used[64],double *value) {
 }
 static J *traffic_array(J *o) {
     J *rows=get(o,"rows"),*data=get(o,"data");
+    if(json_object_is_type(data,json_type_string) && !json_object_get_string_len(data))data=NULL;
+    if(json_object_is_type(rows,json_type_string) && !json_object_get_string_len(rows))rows=NULL;
     if(data)o=data;else if(rows)o=rows;
     return json_object_is_type(o,json_type_array)?o:NULL;
 }

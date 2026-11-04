@@ -28,11 +28,11 @@ class RouteTests(unittest.TestCase):
             {'family':4,'device':device,'prefix':0,'scope':0,'proto':186,'table':table,'type':1,'gateway':gateway,'source':ip},
         ],'rules':[{'family':4,'device':device,'prefix':32,'proto':186,'priority':900,'table':table,'type':1,'source':ip}]}
 
-    def audit(self, facts=None):
+    def audit(self, facts=None, ipv6=''):
         env=os.environ.copy()
         if facts is not None:
             file=self.temp/'facts.json';file.write_text(json.dumps(facts));env['BJUT_NATIVE_ROUTES']=str(file)
-        return subprocess.run([self.codec.parent/'bjut-runtime','routes-current',self.state,'1','eth0','10.126.93.124','eth0',''],
+        return subprocess.run([self.codec.parent/'bjut-runtime','routes-current',self.state,'1','eth0','10.126.93.124','eth0',ipv6],
                               input='{}\nnull\n',env=env,text=True,capture_output=True)
 
     def test_exact_owned_rule_and_default_allow_the_read_only_path(self):
@@ -65,6 +65,20 @@ class RouteTests(unittest.TestCase):
         result=self.audit()
         self.assertEqual(result.returncode,75,result.stderr)
         self.assertEqual(result.stdout,'')
+
+    def test_ipv6_rules_and_preferred_sources_are_checked_independently(self):
+        facts=self.fixture();ip='2001:db8::1';gateway='fe80::1'
+        (self.state/'routes-1-6').write_text(f'6 41001 {ip}/128 eth0 {gateway} 1 2166136261\n')
+        facts['routes'] += [
+            {'family':6,'device':'eth0','prefix':0,'scope':0,'proto':16,'table':254,'type':1,'gateway':gateway},
+            {'family':6,'device':'eth0','prefix':0,'scope':0,'proto':186,'table':41001,'type':1,'gateway':gateway,'source':ip},
+        ]
+        facts['rules'] += [{'family':6,'device':'eth0','prefix':128,'proto':186,'priority':900,'table':41001,'type':1,'source':ip}]
+        result=self.audit(facts,ip)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout,'managed managed\n')
+        facts['rules'][-1]['prefix']=64
+        self.assertEqual(self.audit(facts,ip).returncode,75)
 
     def test_online_capture_rejects_login_and_error_bodies_and_unwraps_valid_lists(self):
         source=self.temp/'response';output=self.temp/'online'

@@ -908,6 +908,10 @@ int main(int argc, char **argv) {
         return network_save(argc - 2, argv + 2);
     if (!strcmp(argv[1], "routes-current"))
         return routes_current(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "route-facts") && argc == 2) {
+        J *facts=route_facts();if(!facts)return 75;
+        puts(json_object_to_json_string_ext(facts,JSON_C_TO_STRING_PLAIN));json_object_put(facts);return 0;
+    }
     if (!strcmp(argv[1], "sha256") && argc == 2) {
         BjutSha s;sha_init(&s);char data[4096], digest[65];size_t n;
         while ((n=fread(data,1,sizeof(data),stdin))) sha_update(&s,data,n);

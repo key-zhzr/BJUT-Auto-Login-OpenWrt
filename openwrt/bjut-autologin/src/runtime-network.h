@@ -111,6 +111,7 @@ static int network_read(int argc,char **argv) {
     json_object_object_foreach(o,key,value)printf("%s\n%s\n",key,json_object_get_string(value));
     puts("BJUT_FIELDS_END\n1");json_object_put(o);json_object_put(dump);return 0;
 }
+static int identity_line_compare(const void *a,const void *b){return strcmp(*(const char *const *)a,*(const char *const *)b);}
 static int network_identities(int argc,char **argv) {
     if(argc!=5)return 2;
     J *dump=load(argv[0]),*ctx=load(argv[1]),*sections=get(ctx,"sections"),*main=NULL;
@@ -138,7 +139,21 @@ static int network_identities(int argc,char **argv) {
         json_object_put(o);
     }
     int ok=!ferror(f);if(fclose(f))ok=0;
-    if(ok)ok=private_write(argv[3],output?output:"");
+    /* Keep the legacy sort -u order: shared MACs on different VLANs must
+     * resolve to the same first identity after an upgrade or UCI reorder. */
+    if(ok && length) {
+        char *lines[2048],*save=NULL,*line;size_t count=0;
+        for(line=strtok_r(output,"\n",&save);line;line=strtok_r(NULL,"\n",&save)) {
+            if(count>=2048){ok=0;break;}lines[count++]=line;
+        }
+        qsort(lines,count,sizeof(*lines),identity_line_compare);
+        char *sorted=malloc(length+1);size_t used=0;
+        if(!sorted)ok=0;
+        else {
+            for(size_t i=0;i<count;i++)if(!i || strcmp(lines[i-1],lines[i])){size_t nline=strlen(lines[i]);memcpy(sorted+used,lines[i],nline);used+=nline;sorted[used++]='\n';}
+            sorted[used]=0;if(ok)ok=private_write(argv[3],sorted);free(sorted);
+        }
+    }else if(ok)ok=private_write(argv[3],"");
     free(output);json_object_put(dump);json_object_put(ctx);return ok?0:1;
 }
 static int network_save(int argc,char **argv) {

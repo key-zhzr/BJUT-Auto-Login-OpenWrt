@@ -125,7 +125,7 @@ class BatchTests(unittest.TestCase):
             {'sessionId': 'private-4', 'mac': '7788.99aa.bbcc', 'ip': '192.0.2.4', 'downFlow': None},
         ]
         source = self.temp/'online.json'
-        for wrapped in (rows, {'rows': rows}, {'data': rows}, [], None, {'error': 'not a list'}):
+        for wrapped in (rows, {'rows': rows}, {'data': rows}, {'rows':rows, 'data':''}, [], None, {'error': 'not a list'}):
             source.write_text(json.dumps(wrapped))
             for scope in ('local', 'all'):
                 body = '. "$LIB_DIR/billing.sh"; . "$JSHN_SH"; CFG_TRAFFIC_SCOPE="$SCOPE"; traffic_rows "$INPUT"'
@@ -210,6 +210,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = (self.state/'identities.tsv').read_text().splitlines()
         self.assertEqual(len(rows), len(set(rows)))
+        self.assertEqual(rows, sorted(rows))
         self.assertIn('interface:lan3\tlan3\t-\t10.126.19.139', rows)
         self.assertIn('interface:lan6\tlan6\t-\t2001:da8:216::123', rows)
         self.assertFalse(any('::bad' in r for r in rows))
