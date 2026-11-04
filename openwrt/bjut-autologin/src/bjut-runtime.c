@@ -231,16 +231,16 @@ static int wait_children(int argc, char **argv) {
     } while (monotonic_ms() < deadline);
     return 1;
 }
-static int wait_probes(int argc, char **argv) {
+static int wait_probes(int argc, char **argv, int milliseconds) {
     if (argc < 3 || argc > MAX_CHILDREN + 3)
         return 2;
     const char *directory = argv[0];
     char *end;
-    long seconds = strtol(argv[1], &end, 10);
+    long timeout = strtol(argv[1], &end, 10);
     Child owner;
-    if (*end || seconds < 1 || seconds > 35 || !child_token(argv[2], &owner))
+    if (*end || timeout < 1 || timeout > (milliseconds ? 1000 : 35) || !child_token(argv[2], &owner))
         return 2;
-    int64_t deadline = monotonic_ms() + seconds * 1000;
+    int64_t deadline = monotonic_ms() + timeout * (milliseconds ? 1 : 1000);
     const char *targets[] = {"configured", "ustc", "alidns"};
     do {
         struct stat st;
@@ -929,7 +929,9 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "wait-probes"))
-        return wait_probes(argc - 2, argv + 2);
+        return wait_probes(argc - 2, argv + 2, 0);
+    if (!strcmp(argv[1], "wait-probes-ms"))
+        return wait_probes(argc - 2, argv + 2, 1);
     if (!strcmp(argv[1], "wait-children"))
         return wait_children(argc - 2, argv + 2);
     if (!strcmp(argv[1], "reap-probes") && argc == 4)

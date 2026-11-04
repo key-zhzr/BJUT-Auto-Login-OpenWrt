@@ -50,6 +50,22 @@ children_stop() {
 short_pause() {
  if [ -x "$RUNTIME_BIN" ];then "$RUNTIME_BIN" pause 50;else sleep 1;fi
 }
+# A short preparation offset keeps periodic uplinks from doing all local
+# work at once. Explicit operations and immediate switch samples bypass it.
+preparation_pause() {
+ local slots="${1:-0}" bypass="${2:-}" pid rc
+ case "$slots" in 0|1|2|3) ;;*)return 0;;esac
+ [ -x "$RUNTIME_BIN" ] || return 0
+ while [ "$slots" -gt 0 ];do
+  [ ! -s "$bypass" ] || break
+  "$RUNTIME_BIN" pause 750 & pid=$!
+  child_register "$pid"
+  wait "$pid";rc=$?
+  child_forget "$pid"
+  [ "$rc" = 0 ] || return "$rc"
+  slots=$((slots-1))
+ done
+}
 configuration_fingerprint() {
  "$RUNTIME_BIN" fingerprint "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}"
 }

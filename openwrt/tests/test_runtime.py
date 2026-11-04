@@ -141,6 +141,81 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['state'], 'error')
 
+    def run_probe_schedule(self, body):
+        work=self.temp/'probe-work';work.mkdir()
+        started=self.temp/'probe-started'
+        script=f'. "{base.SCRIPT}"\nWORK_DIR="$TEST_WORK";CFG_TIMEOUT=1\n{body}\nprobe_family ipv4\n'
+        env=self.environment('online',BJUT_SOURCE_ONLY=1,TEST_WORK=work,TEST_STARTED=started)
+        before=time.monotonic()
+        result=subprocess.run(['sh','-c',script],env=env,text=True,capture_output=True,timeout=6)
+        self.assertEqual(result.returncode,0,result.stderr)
+        return result.stdout,started.read_text().splitlines(),time.monotonic()-before
+
+    def test_fast_success_does_not_start_fallback_tls_requests(self):
+        output,started,_=self.run_probe_schedule('''probe_target() {
+ printf '%s\\n' "$2" >>"$TEST_STARTED";: >"$3/ok";: >"$3/done"
+}''')
+        self.assertEqual(output,'reachable')
+        self.assertEqual(started,['configured'])
+
+    def test_failed_primary_tries_secondary_without_starting_third_target(self):
+        output,started,_=self.run_probe_schedule('''probe_target() {
+ printf '%s\\n' "$2" >>"$TEST_STARTED"
+ [ "$2" != ustc ] || : >"$3/ok"
+ : >"$3/done"
+}''')
+        self.assertEqual(output,'reachable')
+        self.assertEqual(started,['configured','ustc'])
+
+    def test_slow_primary_does_not_hold_back_successful_fallback(self):
+        output,started,elapsed=self.run_probe_schedule('''probe_target() {
+ CHILD_PIDS='';CHILD_TOKENS='';trap children_stop 0;trap 'exit 143' TERM INT HUP
+ printf '%s\\n' "$2" >>"$TEST_STARTED"
+ if [ "$2" = configured ];then sleep 2 & child_register "$!";wait
+ else : >"$3/ok";fi
+ : >"$3/done"
+}''')
+        self.assertEqual(output,'reachable')
+        self.assertEqual(started,['configured','ustc'])
+        self.assertLess(elapsed,1.8)
+
+    def test_all_fallbacks_remain_available(self):
+        output,started,_=self.run_probe_schedule('''probe_target() {
+ printf '%s\\n' "$2" >>"$TEST_STARTED"
+ [ "$2" != alidns ] || : >"$3/ok"
+ : >"$3/done"
+}''')
+        self.assertEqual(output,'reachable')
+        self.assertEqual(started,['configured','ustc','alidns'])
+
+    def test_preparation_offset_is_cancellable_and_manual_work_bypasses_it(self):
+        marker=self.temp/'pause-pid';wrapper=self.temp/'runtime-wrapper'
+        wrapper.write_text('''#!/bin/sh
+if [ "$1" = pause ];then printf '%s\\n' "$$" >>"$TEST_PIDS";exec sleep 60;fi
+exec "$REAL_RUNTIME" "$@"
+''');wrapper.chmod(0o755)
+        env=self.environment('online',BJUT_SOURCE_ONLY=1,BJUT_RUNTIME=wrapper,
+                             REAL_RUNTIME=self.codec.parent/'bjut-runtime',TEST_PIDS=marker)
+        script=f'. "{base.SCRIPT}"; preparation_pause 3'
+        process=subprocess.Popen(['sh','-c',script],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            for _ in range(100):
+                if marker.exists() and marker.read_text().strip():break
+                time.sleep(.02)
+            self.assertTrue(marker.exists())
+            time.sleep(.05);process.terminate();process.communicate(timeout=5)
+            for pid in map(int,marker.read_text().splitlines()):
+                with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+        finally:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            if process.poll()is None:process.communicate()
+        before=marker.read_text();pending=self.temp/'manual';pending.write_text('login\n')
+        result=subprocess.run(['sh','-c',f'. "{base.SCRIPT}"; preparation_pause 3 "$TEST_PENDING"'],
+                              env={**env,'TEST_PENDING':str(pending)},capture_output=True,timeout=3)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(marker.read_text(),before)
+
     def fault(self, body, action=None):
         work = self.temp / 'work'; work.mkdir()
         pids = self.temp / 'children'

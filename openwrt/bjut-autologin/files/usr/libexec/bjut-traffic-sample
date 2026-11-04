@@ -9,6 +9,9 @@ if [ "${1:-}" = --identities ];then
  exit $?
 fi
 valid_section "$1" || exit 2
+if is_uint "${BJUT_TRAFFIC_SAMPLE_AT:-}" && [ "$((BJUT_TRAFFIC_SAMPLE_AT-$(date +%s)))" -gt 10 ];then
+ preparation_pause "${BJUT_PREPARE_SLOT:-0}" || exit 1
+fi
 load_configuration || exit 1
 TRAFFIC_ONLY_ACCOUNT="$1"
 account_metadata "$1" || exit 1

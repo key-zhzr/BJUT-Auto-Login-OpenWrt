@@ -157,16 +157,29 @@ probe_family() {
 		rm -f "$directory/done" "$directory/ok"
 	done
 	for target in configured ustc alidns; do
+		[ -d "$WORK_DIR" ] || break
 		directory="$WORK_DIR/$target"
 		probe_target "$family" "$target" "$directory" & child_register "$!"
+		# Give a healthy target time to finish before starting another TLS
+		# handshake. A failed/exited worker releases the head start immediately.
+		if [ "$target" != alidns ] && [ -x "$RUNTIME_BIN" ];then
+			tokens="$CHILD_TOKENS"
+			"$RUNTIME_BIN" wait-probes-ms "$WORK_DIR" 400 "$owner" $tokens & pid=$!
+			child_register "$pid"
+			wait "$pid" && success=1
+			child_forget "$pid"
+			[ "$success" = 0 ] || break
+		fi
 	done
-	if [ -x "$RUNTIME_BIN" ];then
+	if [ "$success" = 0 ] && [ -x "$RUNTIME_BIN" ];then
 		tokens="$CHILD_TOKENS"
-		"$RUNTIME_BIN" wait-probes "$WORK_DIR" "$((${CFG_TIMEOUT:-3}+2))" "$owner" $tokens & pid=$!
+		# Two head starts total at most 800 ms. Retain the original overall
+		# timeout budget rather than adding them to the end of that budget.
+		"$RUNTIME_BIN" wait-probes "$WORK_DIR" "$((${CFG_TIMEOUT:-3}+1))" "$owner" $tokens & pid=$!
 		child_register "$pid"
 		wait "$pid" && success=1
 		child_forget "$pid"
-	else
+	elif [ "$success" = 0 ];then
 		# Bounded compatibility path for an incomplete installation.
 		while [ "$attempts" -le "$((${CFG_TIMEOUT:-3}+2))" ] && [ -d "$WORK_DIR" ];do
 			for target in configured ustc alidns;do [ ! -e "$WORK_DIR/$target/ok" ] || success=1;done
@@ -313,7 +326,7 @@ run_all_uplinks() {
 		UPLINK_ID=main; run_once_locked; return $?
 	fi
 	for section in $UPLINK_SECTIONS; do
-		(BJUT_PREPARED_CONFIG=1 BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
+		(BJUT_PREPARED_CONFIG=1 BJUT_PREPARE_SLOT="$batch" BJUT_EVENT="$EVENT" /bin/sh "$SELF_BIN" "${FORCE_COMMAND:-once}" "$section") & pids="$pids $!"
 		child_register "$!"
 		batch=$((batch + 1))
 		if [ "$batch" -ge 4 ]; then

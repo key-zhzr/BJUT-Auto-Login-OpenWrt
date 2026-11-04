@@ -1382,6 +1382,9 @@ main() {
 		check-config|daemon|once|manual|logout|switch) ;;
 		*) usage >&2; return 2 ;;
 	esac
+	if [ "$command" = once ] && [ "${BJUT_EVENT:-}" = periodic ] && valid_section "$section";then
+		preparation_pause "${BJUT_PREPARE_SLOT:-0}" "$STATE_DIR/manual-$section" || return 1
+	fi
 	validate_configuration || return 2
 	if [ -n "$section" ]; then select_uplink "$section" || return 2; fi
 	MANUAL_ACCOUNT="${3:-}"
