@@ -22,7 +22,7 @@ route_gateway() {
 	# netifd may omit a disabled main-table default while mwan3 retains it in
 	# its interface table. Read only defaults associated with the chosen device.
 	"$IP_BIN" "-$family" route show table all dev "$device" 2>/dev/null |
-		awk '$1 == "default" {owned=0; for(i=1;i<NF;i++) if($i=="proto" && $(i+1)=="186") owned=1; if(owned) next;
+		awk '$1 == "default" {owned=0; for(i=1;i<NF;i++) if($i=="proto" && ($(i+1)=="186" || $(i+1)=="bgp")) owned=1; if(owned) next;
 		 for(i=1;i<NF;i++) if($i == "via") {print $(i+1); exit}; print "__direct"; exit}'
 }
 
@@ -61,8 +61,10 @@ ensure_family_route() {
 		4:*) printf '%s' "$gateway" | awk -F. 'NF!=4{exit 1} {for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i>255) exit 1}' || return 1; source="$address/32" ;;
 		6:*) printf '%s' "$gateway" | "$CODEC_BIN" validate-ipv6 >/dev/null || return 1; source="$address/128" ;;
 	esac
+	# iproute2 prints protocol 186 as "bgp" on standard rt_protos files.
+	# Accept either display form without copying our own routes into the hash.
 	connected="$("$IP_BIN" "-$family" route show table all dev "$device" scope link 2>/dev/null |
-		awk '{owned=0; for(i=1;i<NF;i++) if($i=="proto" && $(i+1)=="186") owned=1; if(!owned) print $1}' | sort -u)"
+		awk '{owned=0; for(i=1;i<NF;i++) if($i=="proto" && ($(i+1)=="186" || $(i+1)=="bgp")) owned=1; if(!owned) print $1}' | sort -u)"
 	connected_hash="$(printf '%s' "$connected" | "$CODEC_BIN" id32)" || return 1
 	key="$(printf '%s:%s' "$UPLINK_ID" "$family" | "$CODEC_BIN" id32)" || return 1
 	is_uint "$connected_hash" && is_uint "$key" || return 1
@@ -88,7 +90,7 @@ ensure_family_route() {
 	if [ "$current" = "$desired" ] && "$IP_BIN" "-$family" rule show 2>/dev/null |
 		awk -v host="$address" -v source="$source" -v device="$device" -v table="$table" '
 		{f="";o="";t="";p=""; for(i=1;i<NF;i++) {if($i=="from") f=$(i+1); if($i=="oif") o=$(i+1); if($i=="lookup") t=$(i+1); if($i=="protocol" || $i=="proto") p=$(i+1)}
-		 if((f==host || f==source) && o==device && t==table && p=="186") found=1} END{exit !found}'; then
+		 if((f==host || f==source) && o==device && t==table && (p=="186" || p=="bgp")) found=1} END{exit !found}'; then
 		ROUTE_RESULT=managed; return 0
 	fi
 	[ ! -f "$file" ] || remove_owned_route "$file"

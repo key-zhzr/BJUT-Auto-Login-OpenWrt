@@ -22,6 +22,14 @@ def value(option, default=''):
     return args[args.index(option) + 1] if option in args else default
 
 
+def display_protocol(text):
+    tokens = text.split()
+    for index in range(len(tokens) - 1):
+        if tokens[index] in ('proto', 'protocol') and tokens[index + 1] == '186':
+            tokens[index + 1] = os.environ.get('MOCK_ROUTE_PROTOCOL_LABEL', '186')
+    return ' '.join(tokens)
+
+
 table = value('table', value('lookup'))
 key = family + ':' + table
 if kind == 'route':
@@ -37,7 +45,7 @@ if kind == 'route':
                 continue
             if 'scope' in args and ('scope' not in tokens or tokens[tokens.index('scope') + 1] != value('scope')):
                 continue
-            print(route['text'])
+            print(display_protocol(route['text']))
     elif action == 'get':
         sys.exit(1)
     elif action == 'replace':
@@ -49,7 +57,7 @@ elif kind == 'rule':
     if action == 'show':
         for rule in data['rules']:
             if rule['family'] == family:
-                print('900: from %(source)s oif %(oif)s lookup %(table)s protocol %(protocol)s' % rule)
+                print(display_protocol('900: from %(source)s oif %(oif)s lookup %(table)s protocol %(protocol)s' % rule))
     elif action == 'add':
         if record not in data['rules']:
             data['rules'].append(record)

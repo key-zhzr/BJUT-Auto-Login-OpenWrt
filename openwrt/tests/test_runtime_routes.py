@@ -26,6 +26,8 @@ class RouteTests(unittest.TestCase):
             {'family':4,'device':device,'destination':'10.126.93.255','prefix':32,'scope':253,'proto':2,'table':255,'type':3},
             {'family':4,'device':device,'prefix':0,'scope':0,'proto':16,'table':254,'type':1,'gateway':gateway},
             {'family':4,'device':device,'prefix':0,'scope':0,'proto':186,'table':table,'type':1,'gateway':gateway,'source':ip},
+            {'family':4,'device':device,'destination':'10.126.93.0','prefix':24,'scope':253,'proto':186,'table':table,'type':1},
+            {'family':4,'device':device,'destination':gateway,'prefix':32,'scope':253,'proto':186,'table':table,'type':1},
         ],'rules':[{'family':4,'device':device,'prefix':32,'proto':186,'priority':900,'table':table,'type':1,'source':ip}]}
 
     def audit(self, facts=None, ipv6=''):

@@ -455,19 +455,29 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertNotIn('route flush table main',commands)
 
     def test_bound_routes_preserve_onlink_gateways_and_remain_stable_across_checks(self):
+        self.check_stable_bound_routes('186')
+
+    def test_named_bgp_protocol_does_not_rebuild_or_rediscover_owned_routes(self):
+        self.check_stable_bound_routes('bgp')
+
+    def check_stable_bound_routes(self, protocol_label):
         env=self.config()
         network=json.loads(Path(env['MOCK_NETWORK_JSON']).read_text())
         network['wan14']['route']=[{'target':'0.0.0.0','mask':0,'nexthop':'10.126.19.254'}]
+        network['wan16']['route']=[{'target':'::','mask':0,'nexthop':'fe80::1'}]
         Path(env['MOCK_NETWORK_JSON']).write_text(json.dumps(network))
         trace=self.temp/'routes.log'
         connected=json.dumps({'-4':['10.126.0.0/16 dev lan3 proto kernel scope link',
                                     '172.21.0.0/16 dev lan3 proto static scope link',
-                                    '192.168.99.0/24 dev lan4 proto kernel scope link']})
-        options=dict(scenario='multi_mapped',MOCK_ROUTE_TRACE=trace,MOCK_CONNECTED_ROUTES=connected,**env)
+                                    '192.168.99.0/24 dev lan4 proto kernel scope link'],
+                              '-6':['2001:da8:216::/64 dev lan6 proto kernel scope link']})
+        options=dict(scenario='multi_mapped',MOCK_ROUTE_TRACE=trace,MOCK_CONNECTED_ROUTES=connected,
+                     MOCK_ROUTE_PROTOCOL_LABEL=protocol_label,**env)
         first=self.run_service(**options)
         self.assertEqual(first.returncode,0,first.stderr)
         before=trace.read_text().splitlines()
         self.assertTrue(any('route replace 172.21.0.0/16 dev lan3 scope link' in line for line in before))
+        self.assertTrue(any('route replace 2001:da8:216::/64 dev lan6 scope link' in line for line in before))
         self.assertFalse(any('route replace 192.168.99.0/24 dev lan3' in line for line in before))
         second=self.run_service(command='once',**options)
         self.assertEqual(second.returncode,0,second.stderr)
@@ -475,11 +485,14 @@ class MultiUplinkTests(unittest.TestCase):
         self.assertFalse(any('route replace' in line or 'rule add' in line or 'route flush' in line for line in later),later)
         # A removed netifd default must not be rediscovered from our own table.
         network['wan14']['route']=[]
+        network['wan16']['route']=[]
         Path(env['MOCK_NETWORK_JSON']).write_text(json.dumps(network))
         third=self.run_service(command='once',**options)
         self.assertEqual(third.returncode,0,third.stderr)
         self.assertEqual(self.status()['uplinks'][0]['route4'],'missing_default')
+        self.assertEqual(self.status()['uplinks'][0]['route6'],'missing_default')
         self.assertFalse((self.state/'routes-dorm_a-4').exists())
+        self.assertFalse((self.state/'routes-dorm_a-6').exists())
 
     def test_device_override_cannot_use_an_address_owned_by_another_device(self):
         env=self.config(); cfg=json.loads(Path(env['MOCK_CONFIG_JSON']).read_text())
