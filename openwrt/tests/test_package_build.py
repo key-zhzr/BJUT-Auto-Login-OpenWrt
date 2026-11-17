@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +21,46 @@ class PackageBuildTests(unittest.TestCase):
         init=Path(__file__).resolve().parents[1]/'bjut-autologin/files/etc/init.d/bjut-autologin'
         revision=re.search(r'BJUT_TRAFFIC_REVISION=(\d+)',init.read_text()).group(1)
         self.assertEqual(revision,build.package_revision())
+
+    def test_luci_prepare_changes_view_and_dependency_urls_on_package_update(self):
+        package = build.ROOT / 'openwrt/luci-app-bjut-autologin'
+        sdk = self.root / 'sdk'
+        (sdk / 'feeds/luci').mkdir(parents=True)
+        (sdk / 'rules.mk').touch()
+        (sdk / 'feeds/luci/luci.mk').touch()
+        makefile = self.root / 'prepare.mk'
+        makefile.write_text(
+            f'include {package / "Makefile"}\n'
+            'prepare:\n\t$(call Build/Prepare/luci-app-bjut-autologin)\n'
+        )
+        for revision in (35, 36):
+            with self.subTest(revision=revision):
+                stage = self.root / f'build-r{revision}'
+                shutil.copytree(package / 'htdocs', stage / 'htdocs')
+                shutil.copytree(package / 'root', stage / 'root')
+                subprocess.run(
+                    ['make', '-f', str(makefile), 'prepare', f'TOPDIR={sdk}',
+                     f'PKG_BUILD_DIR={stage}', f'PKG_RELEASE={revision}',
+                     'SED=sed -i.bak -e', 'FIND=find'],
+                    capture_output=True, text=True, check=True,
+                )
+                assets = 'bjut-autologin-' + build.package_version().replace('.', '-') + f'-r{revision}'
+                menu = json.loads((stage / 'root/usr/share/luci/menu.d/luci-app-bjut-autologin.json').read_text())
+                resources = stage / 'htdocs/luci-static/resources'
+                views = [entry['action']['path'] for entry in menu.values() if entry['action']['type'] == 'view']
+                self.assertEqual(len(views), 6)
+                for path in views:
+                    self.assertTrue(path.startswith(assets + '/'), path)
+                    self.assertTrue((resources / 'view' / (path + '.js')).is_file(), path)
+                for view in ('overview', 'billing'):
+                    text = (resources / 'view' / assets / (view + '.js')).read_text()
+                    self.assertIn(f"'require {assets}.traffic as traffic';", text)
+                traffic = (resources / assets / 'traffic.js').read_text()
+                self.assertIn(f"'require {assets}.usage-model as usage';", traffic)
+                self.assertIn(f"L.resource('{assets}/usage-chart.css')", traffic)
+                self.assertTrue((resources / assets / 'usage-chart.css').is_file())
+                self.assertFalse((resources / 'bjut-autologin').exists())
+                self.assertFalse((resources / 'view/bjut-autologin').exists())
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='bjut-package-test-')
