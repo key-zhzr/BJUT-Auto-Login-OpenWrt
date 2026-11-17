@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import signal
 import subprocess
@@ -96,6 +97,45 @@ class RuntimeTests(unittest.TestCase):
         legacy = self.response('traffic', env, request, BJUT_SNAPSHOT_DISABLE='1')
         self.assertEqual(self.stable(native), self.stable(legacy))
         self.assertAlmostEqual(sum(r[3] for r in native['timeline']['buckets']), 3.579)
+
+    def test_long_minute_history_splits_without_losing_any_buckets(self):
+        env = self.fixture()
+        start = 1793100000
+        count = 6000
+        devices = [('25000001', 'lan3', 'aaaa'), ('25000002', 'lan4', 'bbbb')]
+        with (self.state / 'usage-curves.tsv').open('w') as output:
+            for offset in range(count):
+                at = start + 60 * offset
+                for account, device, key in devices:
+                    output.write(f'60\t{at}\t{self.keys[account][:16]}\t{key}\tinterface:{device}\t{device}\t1\t1.234\t60\t{at-59}\t{at+1}\n')
+        cutoff = datetime.fromtimestamp(time.time() + 28800, timezone.utc).date().isoformat()
+        with (self.state / 'usage-samples.tsv').open('a') as output:
+            output.write(f'{cutoff}\t{self.keys["25000001"]}\tabcd\taa:bb:cc:dd:ee:ff\t1.234\t60\t1\n')
+        summary = self.response('traffic', env, {'part': 'summary'})
+        self.assertIs(summary['enabled'], True)
+        self.assertEqual(summary['part'], 'summary')
+        self.assertNotIn('timeline', summary)
+        self.assertIn(cutoff, [row['day'] for row in summary['history']])
+        self.assertEqual(len(summary['switches']), 1)
+        end = start + 60 * (count - 1)
+        request = {'start': start, 'end': end, 'resolution': 60}
+        self.assertEqual(self.response('traffic', env, request)['state'], 'error')
+        request['part'] = 'series'
+        self.assertEqual(self.response('traffic', env, request), {'state': 'split'})
+
+        boundary = start + count // 2 * 60
+        pages = [self.response('traffic', env, {**request, 'end': boundary - 1}),
+                 self.response('traffic', env, {**request, 'start': boundary})]
+        for page in pages:
+            self.assertIs(page['enabled'], True)
+            self.assertEqual(page['part'], 'series')
+            self.assertEqual(page['accounts'], [])
+            self.assertEqual(page['history'], [])
+        buckets = [row for page in pages for row in page['timeline']['buckets']]
+        self.assertEqual(len(buckets), 2 * count)
+        self.assertEqual([row[2] for row in buckets],
+                         [start + 60 * offset for offset in range(count) for _ in devices])
+        self.assertTrue(all(row[3:] == [1.234, 60, row[2]-59, row[2]+1] for row in buckets))
 
     def test_same_second_configuration_and_pending_delta_edits_invalidate_the_cache(self):
         env = self.fixture()

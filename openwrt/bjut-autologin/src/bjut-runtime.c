@@ -601,20 +601,68 @@ static J *account_map(J *ctx, int short_key) {
     }
     return map;
 }
-static int history(J *out, J *ctx, J *request, int all) {
+
+/* ubus accepts up to 1 MiB of binary attributes. JSON text length is not
+ * predictive: even an unnamed number takes up to 16 bytes per attribute. */
+#define TRAFFIC_RPC_BUDGET (960U * 1024U)
+static size_t attribute_padding(size_t size) {
+    return (size + 3) & ~(size_t)3;
+}
+static size_t traffic_wire_size(J *value, const char *name) {
+    size_t size = 4 + attribute_padding(3 + strlen(name));
+    switch (json_object_get_type(value)) {
+    case json_type_array:
+        for (size_t i = 0; i < json_object_array_length(value) && size <= TRAFFIC_RPC_BUDGET; i++)
+            size += traffic_wire_size(json_object_array_get_idx(value, i), "");
+        break;
+    case json_type_object: {
+        json_object_object_foreach(value, key, item) {
+            size += traffic_wire_size(item, key);
+            if (size > TRAFFIC_RPC_BUDGET)
+                break;
+        }
+        break;
+    }
+    case json_type_string:
+        size += attribute_padding((size_t)json_object_get_string_len(value) + 1);
+        break;
+    case json_type_int: {
+        int64_t number = json_object_get_int64(value);
+        size += number >= INT32_MIN && number <= INT32_MAX ? 4 : 8;
+        break;
+    }
+    case json_type_double:
+        size += 8;
+        break;
+    case json_type_boolean:
+        size += 4;
+        break;
+    case json_type_null:
+        break;
+    }
+    return size;
+}
+
+static int traffic_daily(J *out, J *ctx, int all, int recent_only) {
     char line[4096], *v[12], key[1024];
-    J *daily = json_object_new_array(), *channels = json_object_new_array(),
-      *buckets = json_object_new_array(), *timeline = json_object_new_object(),
-      *map = account_map(ctx, 0), *short_map = account_map(ctx, 1),
-      *totals = json_object_new_object(), *ids = json_object_new_object();
     TioReader reader;
-    int read_code;
     if (!tio_open_state(&reader, state_dir, "samples"))
-        goto missing;
+        return 0;
+    char cutoff[16] = "";
+    if (recent_only) {
+        time_t first = (time_t)(now + 28800 - 7 * 86400);
+        struct tm tm;
+        if (gmtime_r(&first, &tm))
+            strftime(cutoff, sizeof(cutoff), "%Y-%m-%d", &tm);
+    }
+    J *daily = json_object_new_array(), *map = account_map(ctx, 0),
+      *totals = json_object_new_object();
+    size_t bytes = 0;
+    int read_code;
     while ((read_code = tio_next(&reader, line, sizeof(line))) > 0) {
         int n = fields(line, v, 12);
         if ((n != 6 && n != 7) || (!all && (n != 7 || strcmp(v[6], "1"))) || !decimal(v[4]) ||
-            !digits(v[5]))
+            !digits(v[5]) || strcmp(v[0], cutoff) < 0)
             continue;
         J *a = get(map, v[1]);
         if (!a)
@@ -631,6 +679,11 @@ static int history(J *out, J *ctx, J *request, int all) {
             boolean(row, "local", n == 7 && !strcmp(v[6], "1"));
             json_object_object_add(totals, key, row);
             json_object_array_add(daily, json_object_get(row));
+            bytes += traffic_wire_size(row, "") + 64; /* amount and duration */
+            if (bytes > TRAFFIC_RPC_BUDGET) {
+                read_code = -2;
+                break;
+            }
         }
         double amount = json_object_get_double(get(row, "usedMb")) + strtod(v[4], NULL);
         char formatted[128];
@@ -639,7 +692,18 @@ static int history(J *out, J *ctx, J *request, int all) {
         number(row, "sampledSeconds", num(row, "sampledSeconds") + strtoll(v[5], NULL, 10));
     }
     tio_close(&reader);
-    if (read_code < 0) goto missing;
+    json_object_put(map);
+    json_object_put(totals);
+    if (read_code < 0) {
+        json_object_put(daily);
+        return read_code == -2 ? -1 : 0;
+    }
+    json_object_object_add(out, "history", daily);
+    return 1;
+}
+
+static int traffic_timeline(J *out, J *ctx, J *request, int all) {
+    char line[4096], *v[12], key[1024];
     int64_t first = digits(str(request, "start")) ? num(request, "start") : 0,
             last = digits(str(request, "end")) ? num(request, "end") : INT64_C(41024448000),
             resolution = num(request, "resolution");
@@ -656,13 +720,19 @@ static int history(J *out, J *ctx, J *request, int all) {
     int monthly = !strcmp(str(request, "monthly"), "true") || !strcmp(str(request, "monthly"), "1");
     int64_t day = (first + 28800) / 86400 * 86400 - 28800,
             hour = (first + 28800) / 3600 * 3600 - 28800;
+    TioReader reader;
     if (!tio_open_state(&reader, state_dir, "curves"))
-        goto missing;
+        return 0;
     int64_t seek_first = monthly && first > 2764800 ? first - 2764800 :
                          resolution ? (first + 28800) / resolution * resolution - 28800 : first;
     if (!tio_seek(&reader, seek_first, last)) {
-        tio_close(&reader); goto missing;
+        tio_close(&reader);
+        return 0;
     }
+    J *channels = json_object_new_array(), *buckets = json_object_new_array(),
+      *short_map = account_map(ctx, 1), *ids = json_object_new_object();
+    size_t bytes = 0;
+    int read_code;
     while ((read_code = tio_next(&reader, line, sizeof(line))) > 0) {
         int n = fields(line, v, 12);
         if ((n != 9 && n != 11) || (!all && strcmp(v[6], "1")) || !digits(v[0]) || !digits(v[1]) ||
@@ -695,6 +765,7 @@ static int history(J *out, J *ctx, J *request, int all) {
             boolean(c, "local", !strcmp(v[6], "1"));
             json_object_array_add(channels, c);
             json_object_object_add(ids, key, json_object_new_int(index));
+            bytes += traffic_wire_size(c, "");
         } else
             index = json_object_get_int(id);
         J *b = json_object_new_array();
@@ -709,43 +780,70 @@ static int history(J *out, J *ctx, J *request, int all) {
             json_object_array_add(b, json_object_new_int64(strtoll(v[10], NULL, 10)));
         }
         json_object_array_add(buckets, b);
+        bytes += traffic_wire_size(b, "");
+        if (bytes > TRAFFIC_RPC_BUDGET) {
+            read_code = -2;
+            break;
+        }
     }
     tio_close(&reader);
-    if (read_code < 0) goto missing;
-    json_object_object_add(out, "history", daily);
+    json_object_put(short_map);
+    json_object_put(ids);
+    if (read_code < 0) {
+        json_object_put(channels);
+        json_object_put(buckets);
+        return read_code == -2 ? -1 : 0;
+    }
+    J *timeline = json_object_new_object();
     json_object_object_add(timeline, "channels", channels);
     json_object_object_add(timeline, "buckets", buckets);
     json_object_object_add(out, "timeline", timeline);
-    json_object_put(map);
-    json_object_put(short_map);
-    json_object_put(totals);
-    json_object_put(ids);
     return 1;
-missing:
-    json_object_put(daily);
-    json_object_put(channels);
-    json_object_put(buckets);
-    json_object_put(timeline);
-    json_object_put(map);
-    json_object_put(short_map);
-    json_object_put(totals);
-    json_object_put(ids);
-    return 0;
+}
+
+static J *traffic_limit_reply(J *out, int split) {
+    json_object_put(out);
+    J *reply = json_object_new_object();
+    text(reply, "state", split ? "split" : "error");
+    if (!split)
+        text(reply, "message", "流量历史数据较多，请更新客户端或缩短查看范围");
+    return reply;
 }
 static J *traffic(J *ctx, J *status, J *request) {
-    J *out = json_object_new_object(), *rows = json_object_new_array(),
-      *accts = get(ctx, "accounts"), *states = get(status, "uplinks"),
-      *seen = json_object_new_object();
+    J *out = json_object_new_object(), *rows = json_object_new_array();
     int enabled = (int)num(ctx, "trafficEnabled"), all = !strcmp(str(ctx, "scope"), "all");
+    const char *part = str(request, "part");
+    int summary = !strcmp(part, "summary"), series = !strcmp(part, "series");
     boolean(out, "enabled", enabled);
     text(out, "scope", str(ctx, "scope"));
     json_object_object_add(out, "accounts", rows);
     json_object_object_add(out, "series", json_object_new_array());
-    if (!enabled) {
+    if (summary || series)
+        text(out, "part", part);
+    if (!enabled || series)
         json_object_object_add(out, "history", json_object_new_array());
-        json_object_put(seen);
+    if (!enabled)
         return out;
+    if (!summary) {
+        int read = traffic_timeline(out, ctx, request, all);
+        if (read < 0)
+            return traffic_limit_reply(out, series);
+        if (!read) {
+            json_object_put(out);
+            return NULL;
+        }
+        if (series)
+            return out;
     }
+    int daily = traffic_daily(out, ctx, all, summary);
+    if (daily < 0)
+        return traffic_limit_reply(out, 0);
+    if (!daily) {
+        json_object_put(out);
+        return NULL;
+    }
+    J *accts = get(ctx, "accounts"), *states = get(status, "uplinks"),
+      *seen = json_object_new_object();
     for (size_t i = 0; i < json_object_array_length(accts); i++) {
         J *a = json_object_array_get_idx(accts, i);
         const char *user = str(a, "user"), *key = str(a, "key");
@@ -793,10 +891,6 @@ static J *traffic(J *ctx, J *status, J *request) {
     }
     json_object_put(seen);
     json_object_object_add(out, "retention", json_object_get(get(ctx, "retention")));
-    if (!history(out, ctx, request, all)) {
-        json_object_put(out);
-        return NULL;
-    }
     J *switches = json_object_new_array();
     char file[PATH_MAX], line[2048], *v[7];
     path(file, sizeof(file), state_dir, "traffic-switches.tsv");
@@ -862,6 +956,8 @@ static int snapshot(int argc, char **argv) {
         } else if (!strcmp(method, "traffic")) {
             request = load(argv[1]);
             out = traffic(ctx, status, request);
+            if (out && traffic_wire_size(out, "") > TRAFFIC_RPC_BUDGET)
+                out = traffic_limit_reply(out, !strcmp(str(request, "part"), "series"));
         }
     }
     int rc = 75;
