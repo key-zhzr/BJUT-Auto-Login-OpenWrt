@@ -1,5 +1,21 @@
 {
-  "upstream": "8ee928588bf5632389295061601ddf8b2000cc87",
-  "reviewRequired": [],
-  "retainedWorkflows": []
+  "upstream": "9c05032d105f6019ed23993a1ef53cdfe7295b1e",
+  "reviewRequired": [
+    ".github/workflows/release.yml",
+    "scripts/build-router-usage-ui.mjs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/macos_network.rs",
+    "src-tauri/src/network_inventory.rs",
+    "src-tauri/src/network_platform.rs",
+    "src-tauri/src/network_schedule.rs",
+    "src-tauri/src/router_control.rs",
+    "src-tauri/src/update_metadata.rs",
+    "src-tauri/src/window_geometry.rs",
+    "src/device-usage-model.ts",
+    "src/usage-chart.css",
+    "src/usage-chart.ts"
+  ],
+  "retainedWorkflows": [
+    ".github/workflows/release.yml"
+  ]
 }

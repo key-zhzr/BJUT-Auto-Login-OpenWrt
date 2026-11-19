@@ -1,8 +1,20 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
 // Load the current app markup so this regression page cannot drift from it.
+const memory = new Map<string, string>([['bjut_tos_accepted', 'true'], ['bjut_theme', 'basic'], ['bjut_color_mode', 'light']]);
+const initialScheme = memory.get('bjut_color_mode') === 'dark' ? 'dark' : 'light';
+document.documentElement.dataset.theme = memory.get('bjut_theme') || 'basic';
+document.documentElement.dataset.colorScheme = initialScheme;
+document.documentElement.style.colorScheme = initialScheme;
+const initialBg = initialScheme === 'dark' ? '#0f172a' : '#eef2f7';
+document.documentElement.style.backgroundColor = initialBg;
+document.documentElement.style.setProperty('--prepaint-body-bg', initialBg);
+
 const appDocument = new DOMParser().parseFromString(await (await fetch('/index.html')).text(), 'text/html');
 const styles = Array.from(appDocument.head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'));
+for (const styleEl of appDocument.head.querySelectorAll('style')) {
+  document.head.append(document.importNode(styleEl, true));
+}
 await Promise.all(styles.map(link => new Promise<void>((resolve, reject) => {
   link.addEventListener('load', () => resolve(), { once: true });
   link.addEventListener('error', () => reject(new Error(`样式加载失败：${link.href}`)), { once: true });
@@ -13,13 +25,16 @@ document.body.replaceChildren(...Array.from(appDocument.body.childNodes));
 
 // This harness has isolated memory-only preferences and synthetic IPC. It cannot
 // read/write the real app's credentials or send any campus or payment request.
-const memory = new Map<string, string>([['bjut_tos_accepted', 'true'], ['bjut_theme', 'basic'], ['bjut_color_mode', 'light']]);
 Object.defineProperty(window, 'localStorage', { value: {
   getItem: (key: string) => memory.get(key) ?? null,
   setItem: (key: string, value: string) => memory.set(key, String(value)),
   removeItem: (key: string) => memory.delete(key), clear: () => memory.clear(),
 } });
-const platform = new URL(location.href).searchParams.get('platform');
+const fixtureOptions = new URL(location.href).searchParams;
+const platform = fixtureOptions.get('platform');
+const routerAvailable = !fixtureOptions.has('no-router');
+const installedBuildTimestamp = 1_794_931_200;
+let updateManifestReads = 0;
 const mobileLayout = platform === 'android';
 Object.defineProperty(document,'hidden',{configurable:true,value:false});
 Object.defineProperty(navigator, 'userAgent', { value: mobileLayout ? 'Mozilla/5.0 (Linux; Android 15) Mobile MockApp' : platform === 'macos' ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) MockApp' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MockApp' });
@@ -76,7 +91,7 @@ const routerTickets = new Map<string,string>();
 const recordTickets = new Map<string, any>();
 const moduleTickets=new Map<string,string>();
 const bundlePolls=new Map<string,number>();
-let savedRouterInfo:any=new URL(location.href).searchParams.has('saved')?{address:'https://192.0.2.1',username:'root',certificate:'synthetic-pem',allowHttp:false}:null,routerFailures=0;
+let savedRouterInfo:any=fixtureOptions.has('saved')?{address:'https://192.0.2.1',username:'root',certificate:'synthetic-pem',allowHttp:false}:null,routerFailures=0;
 function usageFixture(enabled:boolean,scope:string) {
   const at=Math.floor(Date.now()/60000)*60;
   const channels=[{account:'25000001',device:'a',interfaceId:'en7',interfaceName:'USB LAN (en7)',local:true},{account:'25000001',device:'b',interfaceId:'en0',interfaceName:'Wi-Fi (en0)',local:true},{account:'25000001',device:'c',interfaceId:'device:other',interfaceName:'其他设备 AA:BB:CC:00:11:22',local:false}];
@@ -91,11 +106,12 @@ mockIPC(async (cmd, payload: any = {}) => {
   if(cmd==='create_diagnostic_bundle')return '测试诊断包：账号和网络标识已脱敏';
   if(cmd==='get_device_usage')return [{account:'25000001',updatedAt:Math.floor(Date.now()/1000),devices:[{loginAt:'2026-10-25 12:00',ip:'192.0.2.20',mac:'AA-BB-CC-DD-EE-FF',usedFlowMb:'1234.5'}]}];
   calls.push({cmd,payload,at:now()});
-  if (cmd === 'discover_routers') return [{name:'测试路由器',address:'https://192.0.2.1/',version:'0.1.6',secure:true}];
+  if (cmd === 'discover_routers') return routerAvailable ? [{name:'测试路由器',address:'https://192.0.2.1/',version:'0.1.6',secure:true}] : [];
   if (cmd === 'saved_router_connection') return savedRouterInfo;
   if (cmd === 'forget_router_password') {savedRouterInfo=null;return;}
   if (cmd === 'export_billing_csv') return '/mock-exports/router-usage.csv';
   if (cmd === 'reconnect_router') {
+    if (!routerAvailable) throw new Error('ROUTER_NETWORK_MISMATCH:当前网络与记住的路由器不匹配');
     if(payload.rememberPassword===false)savedRouterInfo=null;
     return routerSnapshot;
   }
@@ -160,7 +176,7 @@ mockIPC(async (cmd, payload: any = {}) => {
     await emit('network-diagnostic-step', {runId:payload.runId,step:{id:'dns',label:'DNS 解析',status:'success',message:'模拟 DNS 已完成',durationMs:3}});
     await emit('network-diagnostic-step', {runId:'old-run',step:{id:'dns',label:'DNS 解析',status:'error',message:'过期结果',durationMs:1}});
     await new Promise(resolve => setTimeout(resolve, 400));
-    if (diagnosticsCount > 1) throw new Error('模拟诊断失败');
+    if (diagnosticsCount === 2) throw new Error('模拟诊断失败');
     await emit('network-diagnostic-progress', {runId:payload.runId,percent:75,label:'正在确认认证网关'});
     await new Promise(resolve => setTimeout(resolve, 400));
     return {overall:'healthy',summary:'模拟诊断完成',createdAt:'2026-09-19',ssid:'',ip:'172.26.1.2',steps:[]};
@@ -181,7 +197,18 @@ mockIPC(async (cmd, payload: any = {}) => {
   if (cmd === 'get_network_schedule') return {intervalSeconds:15,interfacePollSeconds:4,reason:'模拟检查'};
   if (cmd === 'get_current_network_state') return {state:'BjutCampus',loginType:'lgn-wired',ip:'172.26.1.2',ssid:'',bssid:'',timestamp:'测试'};
   if (cmd === 'get_countdown_status') return {status:'ticking',seconds:15};
-  if (cmd === 'get_update_target') return {currentVersion:'test',platform:mobileLayout?'android':'windows',arch:mobileLayout?'aarch64':'x86_64'};
+  if (cmd === 'get_update_target') return {
+    currentVersion: '0.1.6',
+    currentBuildTimestamp: installedBuildTimestamp,
+    platform: mobileLayout ? 'android' : platform === 'macos' ? 'macos' : 'windows',
+    arch: mobileLayout ? 'arm64' : 'x64',
+    format: mobileLayout ? 'apk' : platform === 'macos' ? 'dmg' : 'exe',
+  };
+  if (cmd === 'fetch_official_update_manifest') return {
+    version: '0.1.6',
+    build_timestamp: installedBuildTimestamp + 60 * Math.min(updateManifestReads++, 1),
+    platforms: {},
+  };
   if (['get_logs','get_network_events','get_account_health','get_recoverable_recharges'].includes(cmd)) return [];
   if (cmd === 'plugin:window|is_visible' || cmd === 'plugin:window|is_focused') return true;
   if (cmd === 'plugin:window|is_minimized') return false;
@@ -336,6 +363,7 @@ button.addEventListener('click',async()=>{
     assert(document.querySelector('.billing-recharge-hours')!.textContent?.includes('08:00'), '充值时段未使用远端北京时间');
     note('通过：充值时段使用网络时间并显示绿色');
     click('[data-target="settings"]');
+    click('[data-settings-target="advanced"]');
     assert(!document.getElementById('btn-export-config-qr'), '设置页仍显示额外备份按钮');
     click('#btn-export-config');
     await wait(()=>!!document.querySelector('#config-transfer-modal:not(.hidden)'));
@@ -353,9 +381,13 @@ button.addEventListener('click',async()=>{
     const pixels = canvas.getContext('2d')!.getImageData(0,0,canvas.width,canvas.height);
     const {default:jsQR} = await import('jsqr');
     assert(jsQR(pixels.data,pixels.width,pixels.height)?.data.startsWith('BJUTALQR1:'),'生成二维码不能解码');
-    click('.config-qr-close');
-    assert(!document.querySelector('.config-qr-overlay'),'关闭后二维码仍驻留');
+    const qrClose = document.querySelector<HTMLButtonElement>('.config-qr-close')!;
+    await wait(() => document.activeElement === qrClose);
+    qrClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(()=>!document.querySelector('.config-qr-overlay'));
     note('通过：备份弹窗、3 位密码、按范围导出与二维码解码');
+    click('#btn-settings-back');
+    click('[data-settings-target="router"]');
     click('#btn-router-manual-connect');
     assert(!document.getElementById('router-connect-modal')!.classList.contains('hidden'),'手动连接弹窗未出现');
     (document.getElementById('router-address') as HTMLInputElement).value='https://192.0.2.1';
@@ -374,7 +406,8 @@ button.addEventListener('click',async()=>{
     assert(!memory.get('bjut_router_password'),'管理密码写入了 UI 存储');
     assert(savedRouterInfo && !JSON.stringify(savedRouterInfo).includes('synthetic-router-password'),'保存信息包含明文密码');
     click('[data-target="dashboard"]');
-    const portSelect=document.querySelector<HTMLElement>('.router-port-card .custom-select')!;
+    const portCard = document.querySelector<HTMLElement>('.router-port-card[data-uplink="dorm_b"]')!;
+    const portSelect = portCard.querySelector<HTMLElement>('.custom-select')!;
     const portTrigger=portSelect.querySelector<HTMLElement>('.custom-select-trigger')!;
     await new Promise(resolve=>setTimeout(resolve,260));
     portTrigger.scrollIntoView({block:'center'});
@@ -382,15 +415,19 @@ button.addEventListener('click',async()=>{
     portTrigger.click();
     await new Promise(resolve=>setTimeout(resolve,350));
     assert(portSelect.classList.contains('open'),'路由端口账号菜单打开后被收起');
-    const option=portSelect.querySelector<HTMLElement>('.custom-option')!,rect=option.getBoundingClientRect();
+    const option = portSelect.querySelector<HTMLElement>('.custom-option[data-value="account2"]')!, rect = option.getBoundingClientRect();
     const hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
-    assert(!!hit&&option.contains(hit),'路由端口账号菜单被卡片裁切或遮挡');portTrigger.click();
-    click('[data-target="settings"]');
-    note('通过：路由端口账号下拉可见，选项不被卡片裁切');
-    click('#router-uplink-select .custom-select-trigger'); click('#router-uplink-select [data-value="dorm_b"]');
-    click('#router-account-select .custom-select-trigger'); click('#router-account-select [data-value="account2"]');
-    click('#btn-router-login');
+    assert(!!hit&&option.contains(hit),'路由端口账号菜单被卡片裁切或遮挡');
+    option.click();
+    portCard.querySelector<HTMLButtonElement>('.router-port-login')!.click();
     await wait(()=>calls.some(call=>call.cmd==='router_login'&&call.payload.uplink==='dorm_b'&&call.payload.account==='account2'));
+    note('通过：路由端口账号菜单可见，并直接登录所选接口');
+    click('[data-target="diagnostics"]');
+    click('#btn-run-diagnostics');
+    await wait(()=>document.getElementById('diagnostic-summary-title')!.textContent==='模拟诊断完成');
+    assert(!document.querySelector('#diagnostic-steps [data-step-id^="router_"]'), '本机诊断仍包含路由上游结果');
+    click('[data-target="settings"]');
+    click('[data-settings-target="router"]');
     (document.getElementById('router-sync-details') as HTMLDetailsElement).open=true;
     await wait(()=>!!document.querySelector('#router-sync-accounts input[value="25000002"]'));
     (document.querySelector('#router-sync-accounts input[value="25000002"]') as HTMLInputElement).checked=true;
@@ -473,9 +510,17 @@ button.addEventListener('click',async()=>{
     click('.billing-mobile-nav [data-billing-section-target="upstreams"]');
     await wait(()=>document.querySelectorAll('#router-billing-summary-content .router-billing-card').length===2 && !document.querySelector('#router-billing-summary-content progress'));
     assert(document.querySelector('#router-billing-summary-content .billing-center-summary')!.textContent!.includes('84.25'),'余额汇总未按不同账号计算');
-    const billingNav=document.querySelector<HTMLElement>(mobileLayout?'.billing-mobile-nav':'.nav-billing-tree')!;
-    await wait(()=>{const rect=billingNav.getBoundingClientRect(),limit=mobileLayout?document.getElementById('nav')!.getBoundingClientRect().top:innerHeight;return rect.width>0 && rect.top>=0 && rect.bottom<=limit+1;});
-    if(mobileLayout){
+    const showMobileBillingDock = mobileLayout && window.innerWidth <= 768;
+    const billingNav=document.querySelector<HTMLElement>(showMobileBillingDock?'.billing-mobile-nav':'.nav-billing-tree')!;
+    await wait(()=>{
+      const rect=billingNav.getBoundingClientRect();
+      if(showMobileBillingDock){
+        const primaryNav=document.getElementById('nav')!;
+        return rect.width>0 && rect.top>=0 && rect.bottom<=innerHeight+1 && getComputedStyle(primaryNav).visibility==='hidden';
+      }
+      return rect.width>0 && rect.top>=0 && rect.bottom<=innerHeight+1;
+    });
+    if(showMobileBillingDock){
       const initialTheme=document.documentElement.dataset.theme;
       for(const theme of ['basic','apple27','winui']){
         document.documentElement.dataset.theme=theme;
@@ -519,19 +564,34 @@ button.addEventListener('click',async()=>{
     click('[data-target="logs"]');
     await wait(()=>document.getElementById('router-logs-content')!.textContent!.includes('lan3 认证'));
     click('[data-target="settings"]');
+    click('[data-settings-target="router"]');
     await wait(()=>(document.getElementById('router-service-interval') as HTMLInputElement).value==='20');
     (document.getElementById('router-service-interval') as HTMLInputElement).value='30';
     (document.getElementById('router-settings-form') as HTMLFormElement).requestSubmit();
     await wait(()=>calls.some(call=>call.cmd==='router_request'&&call.payload.operation==='save_settings'&&call.payload.args.interval==='30'));
     note('通过：路由计费统一界面、账号融合、日志与设置保存');
-    (document.getElementById('router-service-advanced') as HTMLDetailsElement).open=true;
+    const advanced = document.getElementById('router-service-advanced') as HTMLDetailsElement;
+    if (!advanced.open) advanced.querySelector('summary')!.click();
+    const routerPanel = advanced.closest<HTMLElement>('.settings-subpage')!;
+    await Promise.all([
+      ...document.getElementById('settings')!.getAnimations(),
+      ...routerPanel.getAnimations(),
+      ...advanced.getAnimations(),
+    ].map(animation => animation.finished.catch(() => undefined)));
     const logDirectory=document.querySelector<HTMLInputElement>('#router-service-more input[aria-label="日志目录"]')!;
     assert(logDirectory.closest<HTMLElement>('.router-setting-item')!.hidden,'系统日志仍显示自定义目录');
-    const chooseLog=(value:string)=>{click('#router-service-more [aria-label="日志保存位置"] .custom-select-trigger');click(`#router-service-more .custom-select.open [data-value="${value}"]`);};
-    chooseLog('file');await wait(()=>!logDirectory.closest<HTMLElement>('.router-setting-item')!.hidden);
-    logDirectory.value='/tmp/qa-draft-log';chooseLog('system');await wait(()=>logDirectory.disabled);
-    chooseLog('file');await wait(()=>!logDirectory.disabled);assert(logDirectory.value==='/tmp/qa-draft-log','切换日志位置丢失目录草稿');
-    chooseLog('system');await wait(()=>logDirectory.disabled);
+    const logLocation = document.querySelector<HTMLElement>('#router-service-more [aria-label="日志保存位置"] .custom-select-trigger')!;
+    const chooseLog = async (value: string) => {
+      logLocation.scrollIntoView({ block: 'center', behavior: 'instant' });
+      await new Promise(requestAnimationFrame);
+      logLocation.click();
+      assert(logLocation.getAttribute('aria-expanded') === 'true', `无法展开日志保存位置菜单（${value}）`);
+      click(`#router-service-more .custom-select.open [data-value="${value}"]`);
+    };
+    await chooseLog('file');await wait(()=>!logDirectory.closest<HTMLElement>('.router-setting-item')!.hidden);
+    logDirectory.value='/tmp/qa-draft-log';await chooseLog('system');await wait(()=>logDirectory.disabled);
+    await chooseLog('file');await wait(()=>!logDirectory.disabled);assert(logDirectory.value==='/tmp/qa-draft-log','切换日志位置丢失目录草稿');
+    await chooseLog('system');await wait(()=>logDirectory.disabled);
     note('通过：系统日志隐藏目录选项，自定义目录草稿切换后保留');
     await wait(()=>!!document.querySelector('#router-configured-uplinks button'));
     const editUplink=()=>Array.from(document.querySelectorAll<HTMLButtonElement>('#router-configured-uplinks button')).find(button=>button.textContent==='编辑')!.click();
