@@ -91,7 +91,10 @@ pub(crate) fn preferred_adapter<'a>(
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
+use crate::network_platform::macos_read_command as read;
+
+#[cfg(target_os = "linux")]
 fn read(program: &str, args: &[&str]) -> String {
     std::process::Command::new(program)
         .args(args)
@@ -166,11 +169,16 @@ fn parse_ifconfig(text: &str, wifi_names: &[String]) -> Vec<NetworkAdapter> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn adapters() -> Vec<NetworkAdapter> {
+pub(crate) fn macos_link_adapters() -> Vec<NetworkAdapter> {
     let wifi = corewlan::WiFiClient::shared()
         .map(|client| client.interface_names())
         .unwrap_or_default();
-    let mut adapters = parse_ifconfig(&read("/sbin/ifconfig", &[]), &wifi);
+    parse_ifconfig(&read("/sbin/ifconfig", &[]), &wifi)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn adapters() -> Vec<NetworkAdapter> {
+    let mut adapters = macos_link_adapters();
     let ports = read("/usr/sbin/networksetup", &["-listallhardwareports"]);
     let mut name = "";
     for line in ports.lines() {
