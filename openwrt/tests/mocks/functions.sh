@@ -45,6 +45,7 @@ config_get() {
 		main.device) _mock_value="${MOCK_DEVICE_OVERRIDE:-}" ;;
 		main.transport) _mock_value="${MOCK_TRANSPORT:-auto}" ;;
 		main.login_type) _mock_value="${MOCK_LOGIN_TYPE:-auto}" ;;
+		main.auth_stack) _mock_value="${MOCK_AUTH_STACK:-auto}" ;;
 		main.compatibility) _mock_value="${MOCK_COMPATIBILITY:-secure}" ;;
 		main.interval) _mock_value="${MOCK_INTERVAL:-5}" ;;
 		main.timeout) _mock_value="${MOCK_TIMEOUT:-1}" ;;

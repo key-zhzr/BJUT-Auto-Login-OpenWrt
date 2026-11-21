@@ -328,6 +328,72 @@ class OpenWrtPortTests(unittest.TestCase):
         expected = self.python_eportal(",0,25000000")
         self.assertIn(f"user_account={expected}", log)
 
+    def test_explicit_ipv6_login_for_each_campus_protocol(self):
+        for campus, device, transport, ssid in (
+            ('type1', 'wlan0', 'wifi', 'bjut_sushe'),
+            ('type2', 'wlan0', 'wifi', 'bjut_wifi'),
+            ('type3', 'eth0', 'ethernet', ''),
+        ):
+            with self.subTest(protocol=campus):
+                self.state = self.temp / campus
+                self.state.mkdir()
+                options = dict(MOCK_DEVICE=device, MOCK_DEVICE6=device, MOCK_TRANSPORT_ACTUAL=transport,
+                               MOCK_SSID=ssid, MOCK_LOGIN_TYPE=campus, MOCK_AUTH_STACK='ipv6',
+                               MOCK_IPV4='10.126.19.139')
+                result = self.run_service(scenario='type3_success', **options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                status = self.status()
+                self.assertEqual(status['session_stack'], 'ipv6')
+                log = self.requests().splitlines()
+                submitted = [i for i, line in enumerate(log) if '/eportal/portal/login?' in line]
+                self.assertEqual(len(submitted), 1)
+                index = submitted[0]
+                self.assertIn('--ipv6', log[index - 1])
+                self.assertIn('lgn6.bjut.edu.cn:802/eportal/portal/login', log[index])
+                self.assertIn('wlan_user_ip=&wlan_user_ipv6=' + self.python_eportal('2001:da8:216:2633::10'), log[index])
+                self.assertIn('login_ip_type=24&', log[index])
+                subprocess.run(["sh", str(SCRIPT), "logout", "main"],
+                               env=self.environment('type3_success', **options), capture_output=True, text=True)
+                self.assertIn('IPv6 单栈会话无法常规注销', self.status()['message'])
+                self.assertNotIn('/portal/logout?', self.requests())
+
+    def test_wifi_dual_stack_uses_one_lgn6_session(self):
+        result = self.run_service(scenario='type3_success', MOCK_DEVICE='wlan0', MOCK_DEVICE6='wlan0',
+                                  MOCK_TRANSPORT_ACTUAL='wifi', MOCK_SSID='bjut_wifi',
+                                  MOCK_LOGIN_TYPE='type2', MOCK_AUTH_STACK='dual')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status()['session_stack'], 'dual')
+        log = self.requests()
+        self.assertNotIn('/drcom/login?', log)
+        self.assertEqual(log.count('/eportal/portal/login?'), 1)
+        self.assertIn('https://lgn6.bjut.edu.cn:802/eportal/portal/login?', log)
+        self.assertIn('wlan_user_ip=' + self.python_eportal('10.21.2.3'), log)
+        self.assertIn('login_ip_type=26&', log)
+
+    def test_wifi_dual_stack_waits_for_existing_ipv4_session_to_log_out(self):
+        self.run_service(scenario='type3_success', MOCK_DEVICE='wlan0', MOCK_DEVICE6='wlan0',
+                         MOCK_TRANSPORT_ACTUAL='wifi', MOCK_SSID='bjut_wifi',
+                         MOCK_LOGIN_TYPE='type2', MOCK_AUTH_STACK='dual', MOCK_WLGN_ONLINE='1')
+        self.assertEqual(self.status()['state'], 'blocked')
+        self.assertIn('当前已有 wlgn IPv4 会话', self.status()['message'])
+        self.assertNotIn('/eportal/portal/login?', self.requests())
+
+    def test_explicit_lgn_ipv4_has_no_ipv6_discovery(self):
+        result = self.run_service(scenario='type3_success', MOCK_DEVICE='eth0',
+                                  MOCK_TRANSPORT_ACTUAL='ethernet', MOCK_LOGIN_TYPE='type3',
+                                  MOCK_AUTH_STACK='ipv4', MOCK_IPV4='172.26.33.104')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status()['session_stack'], 'ipv4')
+        log = self.requests()
+        self.assertNotIn('/drcom/getipv6?', log)
+        self.assertIn('wlan_user_ipv6=&', log)
+        self.assertIn('login_ip_type=27&', log)
+
+    def test_dual_stack_without_ipv6_does_not_send_credentials(self):
+        self.run_service(scenario='type2_success', MOCK_LOGIN_TYPE='type2', MOCK_AUTH_STACK='dual')
+        self.assertEqual(self.status()['state'], 'waiting_interface')
+        self.assertNotIn('/drcom/login?', self.requests())
+
     def test_type3_and_ssid_work_without_busybox_character_classes(self):
         path = self.minimal_tr_path()
         env = self.environment('online', PATH=path, BJUT_SOURCE_ONLY='1')

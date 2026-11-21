@@ -85,10 +85,10 @@ workbench_settings() {
  local section key value comma="" network dump
  printf '{"service":'
  json_init
- for key in enabled transport login_type compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
+ for key in enabled transport login_type auth_stack compatibility strict_network expected_ssid expected_bssid interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code managed_routes mwan3 log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_online pushplus_failure pushplus_delay pushplus_interval pushplus_topic prefer_remaining_flow traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb billing_background billing_interval billing_alerts balance_threshold flow_threshold; do
   case "$key" in
    prefer_remaining_flow) value="$CFG_PREFER_FLOW";; traffic_monitor) value="$CFG_TRAFFIC_MONITOR";; traffic_scope) value="$CFG_TRAFFIC_SCOPE";; billing_background) value="$CFG_BILLING_BACKGROUND";; billing_interval) value="$CFG_BILLING_INTERVAL";; billing_alerts) value="$CFG_BILLING_ALERTS";; balance_threshold) value="$CFG_BALANCE_THRESHOLD";; flow_threshold) value="$CFG_FLOW_THRESHOLD";;
-   enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
+   auth_stack) value="$CFG_AUTH_STACK";; enabled) value="$CFG_ENABLED";; interval) value="$CFG_INTERVAL";; timeout) value="$CFG_TIMEOUT";; offline_confirmations) value="$CFG_OFFLINE_CONFIRMATIONS";;
    managed_routes) value="$CFG_MANAGED_ROUTES";; mwan3) value="$CFG_MWAN3";; log_level) value="$CFG_LOG_LEVEL";; log_target) value="$CFG_LOG_TARGET";; log_directory) value="$CFG_LOG_DIRECTORY";; log_web) value="$CFG_LOG_WEB";; log_max_kb) value="$CFG_LOG_MAX_KB";;
    max_backoff) value="$CFG_MAX_BACKOFF";; credential_cooldown) value="$CFG_CREDENTIAL_COOLDOWN";; post_login_delay) value="$CFG_POST_LOGIN_DELAY";;
    pushplus_enabled) value="$CFG_PUSHPLUS_ENABLED";; pushplus_online) value="$CFG_PUSHPLUS_ONLINE";; pushplus_failure) value="$CFG_PUSHPLUS_FAILURE";;
@@ -106,7 +106,7 @@ workbench_settings() {
  for section in $UPLINK_SECTIONS; do
   [ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || continue
   json_init; json_add_string id "$section"
-  for key in enabled network network6 device device6 source4 source6 transport login_type accounts expected_ssid expected_bssid; do
+  for key in enabled network network6 device device6 source4 source6 transport login_type auth_stack accounts expected_ssid expected_bssid; do
    config_get value "$section" "$key" ""; [ "$key" != login_type ] || value="$(protocol_name "$value")"
    json_add_string "$key" "$value"
   done
@@ -194,6 +194,7 @@ workbench_validate_field() {
   max_sessions) valid_range "$value" 0 32; return $?;;
   transport) case "$value" in auto|wifi|ethernet) return 0;; esac;;
   login_type) case "$value" in auto|type1|type2|type3|bjut-sushe|bjut_wifi|lgn) return 0;; esac;;
+  auth_stack) valid_auth_stack "$value"; return $?;;
   compatibility) case "$value" in secure|legacy_http) return 0;; esac;;
   network|network6|device|device6) [ -z "$value" ] || valid_device_name "$value"; return $?;;
   source4) [ -z "$value" ] || printf '%s' "$value" | "$CODEC_BIN" validate-ipv4 >/dev/null 2>&1; return $?;;
@@ -214,7 +215,7 @@ workbench_save_settings() {
   # rpcd adds the authenticated caller ID to HTTP requests. ACL checks already
   # happened; this transport metadata is never a UCI setting.
   [ "$key" != ubus_rpc_session ] || continue
-  case "$key" in enabled|transport|login_type|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|traffic_minute_hours|traffic_hour_days|traffic_day_days|traffic_storage_mb|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
+  case "$key" in enabled|transport|login_type|auth_stack|compatibility|strict_network|expected_ssid|expected_bssid|interval|timeout|offline_confirmations|max_backoff|credential_cooldown|post_login_delay|online_url|online_code|managed_routes|mwan3|log_level|log_target|log_directory|log_web|log_max_kb|pushplus_enabled|pushplus_token|pushplus_topic|pushplus_online|pushplus_failure|pushplus_delay|pushplus_interval|prefer_remaining_flow|traffic_monitor|traffic_scope|traffic_minute_hours|traffic_hour_days|traffic_day_days|traffic_storage_mb|billing_background|billing_interval|billing_alerts|balance_threshold|flow_threshold) ;; *) reply error "设置项无效"; return;; esac
   value="$(request_value "$key")"; workbench_validate_field "$key" "$value" || { reply error "请检查设置内容"; return; }
   settings_keys="${settings_keys}${settings_keys:+ }$key"
  done
@@ -354,10 +355,12 @@ workbench_uplink_save() {
  patch="$(mktemp "$STATE_DIR/uplink-edit.XXXXXX")" || return 1; printf '%s' "$payload" >"$patch"
  json_load "$payload" && json_get_keys keys || { rm -f "$patch"; reply error "上游设置无效"; return; }
  for key in $keys; do
-  case "$key" in enabled|network|network6|device|device6|source4|source6|transport|login_type|accounts|expected_ssid|expected_bssid) ;; *) rm -f "$patch"; reply error "上游设置项无效"; return;; esac
-  value="$(json_file_value "$patch" "@.$key")"; workbench_validate_field "$key" "$value" || { rm -f "$patch"; reply error "请检查上游设置"; return; }
+  case "$key" in enabled|network|network6|device|device6|source4|source6|transport|login_type|auth_stack|accounts|expected_ssid|expected_bssid) ;; *) rm -f "$patch"; reply error "上游设置项无效"; return;; esac
+  value="$(json_file_value "$patch" "@.$key")"
+  if [ "$key" = auth_stack ] && [ -z "$value" ]; then continue; fi
+  workbench_validate_field "$key" "$value" || { rm -f "$patch"; reply error "请检查上游设置"; return; }
  done
- [ -n "$(json_file_value "$patch" '@.network')" ] || { rm -f "$patch"; reply error "请选择 IPv4 接口"; return; }
+ [ -n "$(json_file_value "$patch" '@.network')" ] || { rm -f "$patch"; reply error "请选择上游网络接口"; return; }
  for item in $UPLINK_SECTIONS; do [ "$item" = "$MAIN_SECTION" ] || count=$((count+1)); done
  if [ -z "$uplink" ]; then [ "$count" -lt 16 ] || { rm -f "$patch"; reply error "最多配置 16 条上游"; return; }; uplink="$(workbench_new_id)" || { rm -f "$patch"; reply error "无法创建上游，请更新路由端"; return; }; new=1
  else case " $UPLINK_SECTIONS " in *" $uplink "*) [ "$uplink" != "$MAIN_SECTION" ] || { rm -f "$patch"; reply error "请在服务设置中修改旧版上游"; return; };; *) rm -f "$patch"; reply error "上游不存在"; return;; esac; fi

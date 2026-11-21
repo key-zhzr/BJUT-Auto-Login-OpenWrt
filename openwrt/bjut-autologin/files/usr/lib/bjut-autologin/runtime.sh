@@ -120,8 +120,8 @@ prepared_section_write() {
  local section="$1" type="$2" options option value
  valid_section "$section" || return 1
  case "$type" in
- service)options='enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow';;
- uplink)options='enabled network network6 device device6 source4 source6 accounts transport login_type compatibility expected_ssid expected_bssid';;
+ service)options='enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type auth_stack compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow';;
+ uplink)options='enabled network network6 device device6 source4 source6 accounts transport login_type auth_stack compatibility expected_ssid expected_bssid';;
  account)options='enabled username login_type max_sessions';;
  *)return 1;;esac
  json_add_object "$section";json_add_string TYPE "$type"
@@ -171,7 +171,7 @@ configuration_values_clear() {
  # private memo fields, so deleted options/credentials cannot survive an edit.
  for section in $CONFIG_SECTIONS;do
   valid_section "$section" || continue
-  for option in TYPE enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_token pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow username password max_sessions bjut_key bjut_signature bjut_has_password bjut_pushplus_ready;do
+  for option in TYPE enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type auth_stack compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_token pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow username password max_sessions bjut_key bjut_signature bjut_has_password bjut_pushplus_ready;do
    unset "CONFIG_${section}_${option}"
   done
  done

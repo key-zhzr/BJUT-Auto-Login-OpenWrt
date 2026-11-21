@@ -129,11 +129,18 @@ case "$url" in
 	https://www.baidu.com/robots.txt|https://test6.ustc.edu.cn/|https://dns.alidns.com/)
 		if [ "$scenario" = online ] || [ "$scenario" = public_tls ] || [ -e "$success_marker" ]; then code=404; body=public; else exit 7; fi
 		;;
+	https://lgn6.bjut.edu.cn/drcom/chkstatus*)
+		code=200; body='dr1002({"result":0})'; [ ! -e "$success_marker" ] || body='dr1002({"result":1})'
+		;;
 	*/drcom/chkstatus*)
+		if [ "${MOCK_WLGN_ONLINE:-0}" = 1 ]; then
+			code=200; body='dr1002({"result":1})'
+		else
 		[ -z "${MOCK_PROBE_DELAY:-}" ] || sleep "$MOCK_PROBE_DELAY"
 		case "$scenario" in
 			type2_*|auth_rejected|ambiguous|oversized|unknown_result) code=200; body='dr1002({"result":0,"msg":"not online"});'; [ ! -e "$success_marker" ] || body='dr1002({"result":1})'; ;;
 		esac
+		fi
 		;;
     */drcom/logout*|*/eportal/portal/logout*)
         code=200;body='dr1004({"result":1})';rm -f "$success_marker";;

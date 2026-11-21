@@ -434,7 +434,7 @@ static J *statuses(J *ctx) {
         "billing_records",    "log_settings",    "pushplus",       "pushplus_status",
         "uplink_actions",     "billing_actions", "operations",     "account_limits",
         "billing_background", "device_usage",    "traffic_charts", "traffic_compression",
-        "billing_center",     "maintenance", "traffic_flash_quota"};
+        "billing_center",     "maintenance", "traffic_flash_quota","auth_stack"};
     J *o = json_object_new_object(), *caps = json_object_new_array(),
       *rows = json_object_new_array(), *uplinks = get(ctx, "uplinks");
     number(o, "generated_at", now);

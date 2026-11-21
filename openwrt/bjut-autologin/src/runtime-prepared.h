@@ -4,8 +4,8 @@
 #ifndef BJUT_RUNTIME_PREPARED_H
 #define BJUT_RUNTIME_PREPARED_H
 static const char *prepared_options(const char *type) {
-    if(!strcmp(type,"service"))return " enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow bjut_pushplus_ready ";
-    if(!strcmp(type,"uplink"))return " enabled network network6 device device6 source4 source6 accounts transport login_type compatibility expected_ssid expected_bssid ";
+    if(!strcmp(type,"service"))return " enabled network network6 device device6 source4 source6 accounts mwan3 managed_routes transport login_type auth_stack compatibility interval timeout offline_confirmations max_backoff credential_cooldown post_login_delay online_url online_code strict_network expected_ssid expected_bssid log_level log_target log_directory log_web log_max_kb pushplus_enabled pushplus_topic pushplus_online pushplus_failure pushplus_delay pushplus_interval billing_background billing_interval billing_alerts balance_threshold flow_threshold traffic_monitor traffic_scope traffic_minute_hours traffic_hour_days traffic_day_days traffic_storage_mb prefer_remaining_flow bjut_pushplus_ready ";
+    if(!strcmp(type,"uplink"))return " enabled network network6 device device6 source4 source6 accounts transport login_type auth_stack compatibility expected_ssid expected_bssid ";
     if(!strcmp(type,"account"))return " enabled username login_type max_sessions bjut_key bjut_signature bjut_has_password ";
     return "";
 }

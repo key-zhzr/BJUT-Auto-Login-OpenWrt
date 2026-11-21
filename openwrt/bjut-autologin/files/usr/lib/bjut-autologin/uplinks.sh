@@ -16,6 +16,31 @@ valid_section() {
 	[ "${#1}" -le 64 ]
 }
 
+valid_auth_stack() {
+	case "$1" in auto|ipv4|ipv6|dual) return 0 ;; *) return 1 ;; esac
+}
+
+is_campus_ipv6() {
+	case "$1" in 2001:da8:216:*) return 0 ;; *) return 1 ;; esac
+}
+
+ipv6_only_auth() {
+	[ "$CFG_AUTH_STACK" = ipv6 ] || { [ "${CFG_AUTH_STACK:-auto}" = auto ] && [ -z "$LOCAL_IPV4" ]; }
+}
+
+use_lgn6() {
+	ipv6_only_auth || { [ "$CFG_AUTH_STACK" = dual ] && [ "$1" = type2 ]; }
+}
+
+auth_stack_ready() {
+	case "$CFG_AUTH_STACK" in
+		ipv4) [ -n "$LOCAL_IPV4" ] ;;
+		ipv6) is_campus_ipv6 "$LOCAL_IPV6" ;;
+		dual) [ -n "$LOCAL_IPV4" ] && is_campus_ipv6 "$LOCAL_IPV6" ;;
+		*) return 0 ;;
+	esac
+}
+
 select_uplink() {
 	local section="$1" option value enabled
 	UPLINK_ID="$section"
@@ -24,7 +49,7 @@ select_uplink() {
 		case " $UPLINK_SECTIONS " in *" $section "*) ;; *) return 1 ;; esac
 		CFG_DEVICE=""; CFG_DEVICE6=""; CFG_SOURCE4=""; CFG_SOURCE6=""; CFG_NETWORK6=""
 		config_get CFG_NETWORK "$section" network ""
-		for option in network network6 device device6 source4 source6 transport login_type compatibility expected_ssid expected_bssid; do
+		for option in network network6 device device6 source4 source6 transport login_type auth_stack compatibility expected_ssid expected_bssid; do
 			config_get value "$section" "$option" ""
 			[ -n "$value" ] || continue
 			case "$option" in
@@ -32,6 +57,7 @@ select_uplink() {
 				device) CFG_DEVICE="$value" ;; device6) CFG_DEVICE6="$value" ;;
 				source4) CFG_SOURCE4="$value" ;; source6) CFG_SOURCE6="$value" ;;
 				transport) CFG_TRANSPORT="$value" ;; login_type) CFG_LOGIN_TYPE="$value" ;;
+				auth_stack) CFG_AUTH_STACK="$value" ;;
 				compatibility) CFG_COMPATIBILITY="$value" ;;
 				expected_ssid) CFG_EXPECTED_SSID="$value" ;; expected_bssid) CFG_EXPECTED_BSSID="$value" ;;
 			esac
@@ -46,6 +72,7 @@ select_uplink() {
 	case "$CFG_TRANSPORT" in auto|ethernet|wifi) ;; *) return 1 ;; esac
 	CFG_LOGIN_TYPE="$(protocol_internal "$CFG_LOGIN_TYPE")"
 	case "$CFG_LOGIN_TYPE" in auto|type1|type2|type3) ;; *) return 1 ;; esac
+	valid_auth_stack "$CFG_AUTH_STACK" || return 1
 	case "$CFG_COMPATIBILITY" in secure|legacy_http) ;; *) return 1 ;; esac
 	[ -z "$CFG_DEVICE" ] || valid_device_name "$CFG_DEVICE" || return 1
 	for value in $CFG_ACCOUNT_ORDER; do
@@ -236,12 +263,42 @@ online_check() {
 	child_forget "$pid6"
 	IFS= read -r PROBE4 <"$WORK_DIR/probe4" || true
 	IFS= read -r PROBE6 <"$WORK_DIR/probe6" || true
-	[ "$PROBE4" = reachable ] || [ "$PROBE6" = reachable ]
+	case "$CFG_AUTH_STACK" in
+		ipv4) [ "$PROBE4" = reachable ] ;;
+		ipv6) [ "$PROBE6" = reachable ] ;;
+		dual) [ "$PROBE4" = reachable ] && [ "$PROBE6" = reachable ] ;;
+		*) [ "$PROBE4" = reachable ] || [ "$PROBE6" = reachable ] ;;
+	esac
+}
+
+read_lgn6_session() {
+	local mode="$1" ipv4="" ipv6 url code account
+	SESSION_STATE=unknown
+	[ "$mode" != dual ] || ipv4="$(eportal_encrypt "$LOCAL_IPV4")" || return 0
+	ipv6="$(eportal_encrypt "$LOCAL_IPV6")" || return 0
+	url="https://lgn6.bjut.edu.cn:802/eportal/portal/page/loadUserInfo?callback=726427262620&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&user_account=&wlan_user_ip=$ipv4&wlan_user_ipv6=$ipv6&wlan_user_mac=262626262626262626262626&jsVersion=2238243824&encrypt=1&v=$(request_id)&lang=zh"
+	if lgn_request "$url" lgn6.bjut.edu.cn 802 'https://lgn6.bjut.edu.cn/' && load_jsonp; then
+		json_text_fields "$JSONP_PAYLOAD" code=@.code account=@.user_info.account
+		case "$code:$account" in
+			1:) SESSION_STATE=offline; return 0 ;;
+			1:*) case "$account" in *[!A-Za-z0-9_@.,-]*) ;; *)
+				SESSION_STATE=online; OBSERVED_ACCOUNT="$(mask_username "$account")"; RUNTIME_ACCOUNT="$OBSERVED_ACCOUNT"; return 0 ;;
+			esac ;;
+		esac
+	fi
+	url="https://lgn6.bjut.edu.cn/drcom/chkstatus?callback=dr1002&program_index=o4OBee1755497815&page_index=cHAmjX1755497856&jsVersion=4.X&v=$(request_id)&lang=zh"
+	if lgn_request "$url" lgn6.bjut.edu.cn 443 'https://lgn6.bjut.edu.cn/' && load_jsonp; then
+		case "$(jsonp_value '@.result')" in 0) SESSION_STATE=offline ;; 1) SESSION_STATE=online ;; esac
+	fi
 }
 
 read_portal_session() {
 	local protocol="$1" url base resolve profile host total result ips account index row_ip rows message
 	SESSION_STATE=unknown
+	if use_lgn6 "$protocol"; then
+		if ipv6_only_auth; then read_lgn6_session ipv6; else read_lgn6_session dual; fi
+		return 0
+	fi
 	case "$protocol" in
 		type1)
 			if [ "$CFG_COMPATIBILITY" = legacy_http ]; then
@@ -297,7 +354,7 @@ read_portal_session() {
 print_all_status() {
 	local section comma="" item
 	if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] && "$RUNTIME_BIN" snapshot status /dev/null "$STATE_DIR" "$SYS_NET" "${BJUT_CONFIG_FILE:-${BJUT_CONFIG_DIR:-/etc/config}/$CONFIG_PACKAGE}" "${BJUT_CONFIG_DELTA:-/tmp/.uci/$CONFIG_PACKAGE}";then return 0;fi
-	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","traffic_charts","traffic_compression","billing_center","maintenance","traffic_flash_quota"],"uplinks":[' "$(date +%s)" "$VERSION"
+	printf '{"generated_at":%s,"apiVersion":1,"version":"%s","capabilities":["dashboard","ports","billing","logs","settings","account_set","account_manage","uplink_manage","billing_records","log_settings","pushplus","pushplus_status","uplink_actions","billing_actions","operations","account_limits","billing_background","device_usage","traffic_charts","traffic_compression","billing_center","maintenance","traffic_flash_quota","auth_stack"],"uplinks":[' "$(date +%s)" "$VERSION"
 	for section in $UPLINK_SECTIONS; do
 		item="$STATE_DIR/uplink-$section.json"
 		[ "$section" != main ] || [ "$UPLINK_CONFIGURED" = 1 ] || item="$STATE_DIR/status.json"

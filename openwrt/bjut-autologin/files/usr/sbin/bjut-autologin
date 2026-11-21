@@ -275,6 +275,7 @@ load_main_section() {
 	config_get CFG_TRANSPORT "$1" transport "auto"
 	config_get CFG_LOGIN_TYPE "$1" login_type "auto"
 	CFG_LOGIN_TYPE="$(protocol_internal "$CFG_LOGIN_TYPE")"
+	config_get CFG_AUTH_STACK "$1" auth_stack auto
 	config_get CFG_COMPATIBILITY "$1" compatibility "secure"
 	config_get CFG_INTERVAL "$1" interval "20"
 	config_get CFG_TIMEOUT "$1" timeout "3"
@@ -376,6 +377,7 @@ validate_configuration() {
 	}
 	case "$CFG_TRANSPORT" in auto|wifi|ethernet) ;; *) printf 'Invalid transport: %s\n' "$CFG_TRANSPORT" >&2; return 1 ;; esac
 	case "$CFG_LOGIN_TYPE" in auto|type1|type2|type3) ;; *) printf 'Invalid login_type: %s\n' "$CFG_LOGIN_TYPE" >&2; return 1 ;; esac
+	valid_auth_stack "$CFG_AUTH_STACK" || { printf 'Invalid auth_stack\n' >&2; return 1; }
 	case "$CFG_COMPATIBILITY" in secure|legacy_http) ;; *) printf 'Invalid compatibility: %s\n' "$CFG_COMPATIBILITY" >&2; return 1 ;; esac
 	case "$CFG_LOG_LEVEL" in trace|debug|info|notice|warning|error) ;; *) printf 'Invalid log_level\n' >&2; return 1 ;; esac
 	case "$CFG_LOG_TARGET" in system|file) ;; *) printf 'Invalid log_target\n' >&2; return 1;; esac
@@ -415,7 +417,7 @@ json_file_value() {
 }
 
 load_runtime_state() {
-	local previous_file="$STATE_FILE" source_time own_time own_state own_ip source_ip source_device failures count next
+	local previous_file="$STATE_FILE" source_time own_time own_state own_ip source_ip source_device failures count next runtime_ipv6
 	json_fields "$STATE_FILE" own_time=@.updated_at own_state=@.state own_ip=@.ipv4
 	if [ -n "$SOURCE_STATE" ] && [ -s "$SOURCE_STATE" ];then
 		json_fields "$SOURCE_STATE" source_time=@.updated_at source_ip=@.ipv4 source_device=@.device
@@ -429,8 +431,9 @@ load_runtime_state() {
 	RUNTIME_IPV4=""
 	RUNTIME_ACCOUNT=""
 	RUNTIME_PROTOCOL=""
+	SESSION_STACK=""
 	[ -s "$previous_file" ] || return 0
-	json_fields "$previous_file" failures=@.failures count=@.offline_count next=@.next_attempt RUNTIME_STATE=@.state RUNTIME_IPV4=@.ipv4 RUNTIME_ACCOUNT=@.account RUNTIME_PROTOCOL=@.protocol
+	json_fields "$previous_file" failures=@.failures count=@.offline_count next=@.next_attempt RUNTIME_STATE=@.state RUNTIME_IPV4=@.ipv4 RUNTIME_ACCOUNT=@.account RUNTIME_PROTOCOL=@.protocol runtime_ipv6=@.ipv6 SESSION_STACK=@.session_stack
 	is_uint "$failures" && RUNTIME_FAILURES="$failures"
 	is_uint "$count" && RUNTIME_OFFLINE_COUNT="$count"
 	is_uint "$next" && RUNTIME_NEXT_ATTEMPT="$next"
@@ -439,6 +442,7 @@ load_runtime_state() {
 		RUNTIME_FAILURES=0; RUNTIME_OFFLINE_COUNT=0; RUNTIME_NEXT_ATTEMPT=0; RUNTIME_STATE=""
 		RUNTIME_ACCOUNT=""; RUNTIME_PROTOCOL=""
 	fi
+	[ "$runtime_ipv6" = "$LOCAL_IPV6" ] || SESSION_STACK=""
 }
 
 write_status() {
@@ -471,6 +475,8 @@ write_status() {
 	json_add_string internet4 "$PROBE4"
 	json_add_string internet6 "$PROBE6"
 	json_add_string session "$SESSION_STATE"
+	json_add_string auth_stack "$CFG_AUTH_STACK"
+	json_add_string session_stack "${SESSION_STACK:-}"
 	json_add_string route4 "$ROUTE4"
 	json_add_string route6 "$ROUTE6"
 	json_add_string ssid "$SSID"
@@ -852,16 +858,17 @@ probe_type2() {
 
 lgn_request() {
 	local url="$1" host="$2" port="$3" referer="$4" gateway
-	if [ "$host" = "lgn6.bjut.edu.cn" ] || [ -z "$LOCAL_IPV4" ]; then
+	if [ "$host" = "lgn6.bjut.edu.cn" ]; then
 		for gateway in '2001:da8:216:30c9::2' '2001:da8:216:30c9::a'; do
 			if http_request "$url" "$referer" "$host:$port:[$gateway]" "" "strict" ipv6 && http_success;then
-				[ "$host" = lgn6.bjut.edu.cn ] || { LGN_SELECTED_GATEWAY="[$gateway]";LGN_SELECTED_FAMILY=ipv6; };return 0
+				LGN6_SELECTED_GATEWAY="[$gateway]"
+				return 0
 			fi
 		done
 	else
 		for gateway in "$LGN_GATEWAY_PRIMARY" "$LGN_GATEWAY_SECONDARY"; do
 			if http_request "$url" "$referer" "$host:$port:$gateway" "" "strict" && http_success; then
-				LGN_SELECTED_GATEWAY="$gateway";LGN_SELECTED_FAMILY=ipv4
+				LGN_SELECTED_GATEWAY="$gateway"
 				return 0
 			fi
 		done
@@ -882,16 +889,26 @@ lgn_user_info_probe() {
 
 discover_lgn_ipv6() {
 	local url result address
+	OBSERVED_IPV6=""
 	url="https://lgn6.bjut.edu.cn/drcom/getipv6?callback=dr1004&program_index=o4OBee1755497815&page_index=cHAmjX1755497856&jsVersion=4.2.2&v=$(request_id)&lang=zh"
-	lgn_request "$url" "lgn6.bjut.edu.cn" 443 "https://lgn.bjut.edu.cn/" || return 1
-	load_jsonp || return 1
-	result="$(jsonp_value '@.result')"
-	address="$(jsonp_value '@.ip')"
-	[ "$result" = "1" ] || return 1
-	printf '%s' "$address" | "$CODEC_BIN" validate-ipv6 >/dev/null 2>&1 || return 1
-	case "$(printf '%s' "$address" | tr 'A-F' 'a-f')" in 2001:da8:216:*) ;; *) return 1 ;; esac
+	if lgn_request "$url" lgn6.bjut.edu.cn 443 'https://lgn6.bjut.edu.cn/' && load_jsonp; then
+		result="$(jsonp_value '@.result')"
+		[ "$result" != 1 ] || address="$(jsonp_value '@.ip')"
+	fi
+	if [ -z "$address" ] && lgn_request 'https://lgn6.bjut.edu.cn/' lgn6.bjut.edu.cn 443 'https://lgn6.bjut.edu.cn/'; then
+		address="$(sed -nE 's/.*(v46ip|myv6ip)=["'"'"']([0-9A-Fa-f:]+)["'"'"'].*/\2/p' "$HTTP_BODY" | head -n 1)"
+	fi
+	address="$(printf '%s' "$address" | "$CODEC_BIN" normalize-ip 2>/dev/null)" || return 1
+	is_campus_ipv6 "$address" || return 1
 	OBSERVED_IPV6="$address"
 	return 0
+}
+
+probe_lgn6() {
+	local source
+	[ -n "$LOCAL_IPV6" ] && discover_lgn_ipv6 || return 1
+	source="$(printf '%s' "$LOCAL_IPV6" | "$CODEC_BIN" normalize-ip 2>/dev/null)" || return 1
+	[ "$OBSERVED_IPV6" = "$source" ]
 }
 
 lgn_landing_probe() {
@@ -924,6 +941,10 @@ probe_type3() {
 }
 
 probe_protocol() {
+	if use_lgn6 "$1"; then
+		probe_lgn6
+		return $?
+	fi
 	case "$1" in
 		type1) probe_type1 ;;
 		type2) probe_type2 ;;
@@ -934,14 +955,10 @@ probe_protocol() {
 
 detect_protocol() {
 	local candidates candidate rc portal_only=""
-	if [ -z "$LOCAL_IPV4" ];then
-		[ "$CFG_LOGIN_TYPE" = auto ] || [ "$CFG_LOGIN_TYPE" = type3 ] || return 1
-		probe_type3 && { SELECTED_PROTOCOL=type3;VERIFIED_PROTOCOL=type3;VERIFIED_AT="$(date +%s)";VERIFIED_IDENTITY="$(portal_identity_signature)";return 0; };return 1
-	fi
 	if [ "$CFG_LOGIN_TYPE" != "auto" ]; then
 		candidates="$CFG_LOGIN_TYPE"
 	elif [ "$TRANSPORT" = "ethernet" ]; then
-		case "$LOCAL_IPV4" in 172.26.*) candidates="type3 type1" ;; *) candidates="type1 type3" ;; esac
+		case "$LOCAL_IPV4" in ''|172.26.*) candidates="type3 type1" ;; *) candidates="type1 type3" ;; esac
 	elif known_public_ssid "$SSID"; then
 		candidates="type2 type1"
 	else
@@ -1007,17 +1024,33 @@ type2_login() {
 }
 
 type3_login() {
-	local username="$1" password="$2" account enc_account enc_password enc_ipv4 enc_ipv6 url
-	OBSERVED_IPV6=""
-	discover_lgn_ipv6 || OBSERVED_IPV6=""
+	local username="$1" password="$2" protocol="$3" account enc_account enc_password enc_ipv4 enc_ipv6 url
+	local ipv4="$LOCAL_IPV4" ip_type=26 host=lgn.bjut.edu.cn family=ipv4 gateway
+	if use_lgn6 "$protocol"; then
+		[ -n "$LGN6_SELECTED_GATEWAY" ] && [ -n "$OBSERVED_IPV6" ] || probe_lgn6 || return 11
+		if [ "$CFG_AUTH_STACK" = dual ] && probe_type2 && [ "$(jsonp_value '@.result')" = 1 ]; then
+			LOGIN_FAILURE_MESSAGE='当前已有 wlgn IPv4 会话，请先用 IPv4 模式注销，避免占用两个设备名额'; return 15
+		fi
+		host=lgn6.bjut.edu.cn; family=ipv6; gateway="$LGN6_SELECTED_GATEWAY"
+		if ipv6_only_auth; then ipv4=''; ip_type=24; fi
+	else
+		gateway="$LGN_SELECTED_GATEWAY"
+		OBSERVED_IPV6=""
+		if [ "$CFG_AUTH_STACK" = ipv4 ]; then
+			ip_type=27
+		elif ! discover_lgn_ipv6 && [ "$CFG_AUTH_STACK" = dual ]; then
+			LOGIN_FAILURE_MESSAGE='双栈认证未提交，未能取得校园 IPv6 地址'; return 15
+		fi
+	fi
 	case "$username" in ,0,*) account="$username" ;; *) account=",0,$username" ;; esac
 	enc_account="$(eportal_encrypt "$account")" || return 11
 	enc_password="$(eportal_encrypt "$password")" || return 11
-	enc_ipv4="$(eportal_encrypt "$LOCAL_IPV4")" || return 11
+	enc_ipv4="$(eportal_encrypt "$ipv4")" || return 11
 	enc_ipv6="$(eportal_encrypt "$OBSERVED_IPV6")" || return 11
-	url="https://lgn.bjut.edu.cn:802/eportal/portal/login?callback=726427262623&login_method=27&user_account=$enc_account&user_password=$enc_password&wlan_user_ip=$enc_ipv4&wlan_user_ipv6=$enc_ipv6&wlan_user_mac=262626262626262626262626&wlan_vlan_id=26&wlan_ac_ip=&wlan_ac_name=&authex_enable=&jsVersion=2238243824&login_ip_type=26&terminal_type=25&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&encrypt=1&v=$(request_id)&lang=zh"
+	url="https://$host:802/eportal/portal/login?callback=726427262623&login_method=27&user_account=$enc_account&user_password=$enc_password&wlan_user_ip=$enc_ipv4&wlan_user_ipv6=$enc_ipv6&wlan_user_mac=262626262626262626262626&wlan_vlan_id=26&wlan_ac_ip=&wlan_ac_name=&authex_enable=&jsVersion=2238243824&login_ip_type=$ip_type&terminal_type=25&lang=6c7e3b7578&program_index=79225954737327212323222f212e2723&page_index=755e577b7c4e27212323222f212e2320&encrypt=1&v=$(request_id)&lang=zh"
 	# Never replay credential submission on another gateway after a timeout.
-	http_request "$url" "https://lgn.bjut.edu.cn/" "lgn.bjut.edu.cn:802:$LGN_SELECTED_GATEWAY" "" "strict" "${LGN_SELECTED_FAMILY:-ipv4}" || return 11
+	[ -n "$gateway" ] || return 11
+	http_request "$url" "https://$host/" "$host:802:$gateway" "" strict "$family" || return 11
 	parse_login_response
 }
 
@@ -1043,10 +1076,15 @@ verify_before_login() {
 
 login_protocol() {
 	verify_before_login "$1" || return 11
+	if use_lgn6 "$1"; then type3_login "$2" "$3" "$1"; return $?; fi
 	case "$1" in
-		type1) type1_login "$2" "$3" ;;
+		type1)
+			if [ "$CFG_AUTH_STACK" = ipv4 ] && is_campus_ipv6 "$LOCAL_IPV6"; then
+				LOGIN_FAILURE_MESSAGE='bjut-sushe 门户会同时认证 IPv4 和 IPv6，请选择双栈、IPv6 单栈或自动'; return 15
+			fi
+			type1_login "$2" "$3" ;;
 		type2) type2_login "$2" "$3" ;;
-		type3) type3_login "$2" "$3" ;;
+		type3) type3_login "$2" "$3" "$1" ;;
 		*) return 11 ;;
 	esac
 }
@@ -1092,9 +1130,17 @@ try_accounts() {
 		password=""
 		[ "$rc" = 0 ] || account_release
 		case "$rc" in
-			0) account_clear_rejection "$section";SELECTED_ACCOUNT="$masked"; return 0 ;;
+			0)
+				if ipv6_only_auth; then
+					SESSION_STACK=ipv6
+				elif [ "$CFG_AUTH_STACK" = dual ] || { [ "$protocol" = type3 ] && [ -n "$OBSERVED_IPV6" ]; } || { [ "$protocol" = type1 ] && is_campus_ipv6 "$LOCAL_IPV6"; }; then
+					SESSION_STACK=dual
+				else
+					SESSION_STACK=ipv4
+				fi
+				account_clear_rejection "$section";SELECTED_ACCOUNT="$masked"; return 0 ;;
 			10) log_message notice "账号 $masked 被认证网关拒绝：${LOGIN_FAILURE_MESSAGE:-网关未提供原因}；尝试下一个账号" ;;
-			13) return 13 ;;
+			13|15) return "$rc" ;;
 			*) [ -z "$LOGIN_FAILURE_MESSAGE" ] || log_message warning "认证暂未完成：$LOGIN_FAILURE_MESSAGE";return 11 ;;
 		esac
 	done
@@ -1117,7 +1163,8 @@ run_once_impl() {
 	local now rc failures delay offline_count requested_user internet_ok=0 portal_rc=1 explicit_auth=0
 	local TRAFFIC_SWITCH_REASON=''
 	if [ -f "$STATE_DIR/paused-$UPLINK_ID" ] && [ "$FORCE" != 1 ]; then return 0; fi
-	SESSION_STATE=unknown; OBSERVED_ACCOUNT=""; OBSERVED_IPV6=""; PROBE4=unknown; PROBE6=unknown
+	SESSION_STATE=unknown; SESSION_STACK=""; OBSERVED_ACCOUNT=""; OBSERVED_IPV6=""; PROBE4=unknown; PROBE6=unknown
+	LGN6_SELECTED_GATEWAY=""
 	VERIFIED_PROTOCOL=""; VERIFIED_AT=0; VERIFIED_IDENTITY=""
 	ROUTE4=unknown; ROUTE6=unknown
 	[ "$FORCE" != 1 ] || [ -z "$MANUAL_ACCOUNT" ] || explicit_auth=1
@@ -1126,7 +1173,7 @@ run_once_impl() {
 	rc=$?
 	if [ "$rc" -ne 0 ]; then
 		if [ "$rc" -eq 2 ]; then
-			write_status "blocked" "上游接口 IPv4 不属于已知校园网网段，未发送凭据" "" "" 0 0 0
+			write_status "blocked" "上游接口没有已知校园网地址，未发送凭据" "" "" 0 0 0
 			log_message error "上游接口地址不属于已知校园网网段，登录已阻止"
 		else
 			write_status "waiting_interface" "等待已配置的上游接口及校园网地址" "" "" 0 0 0
@@ -1145,6 +1192,10 @@ run_once_impl() {
 	fi
 	sync_mwan_rules || log_message error "mwan3 出口规则更新失败，请核对路由设置"
 	load_runtime_state
+	if [ "$MANUAL_ACTION" = login ] && ! auth_stack_ready; then
+		write_status waiting_interface '上游尚未取得所选认证模式需要的校园网地址' "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+		return 1
+	fi
 	if ! curl_supports_ifhost && { [ "$CFG_MWAN3" != 1 ] || [ ! -r "$MWAN_WRAPPER" ]; }; then
 		write_status blocked "当前 curl 无法同时指定设备和源地址，请升级 curl 或安装 mwan3" "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
 		return 1
@@ -1167,6 +1218,15 @@ run_once_impl() {
 		[ "${requested_user%@campus}" = "${RUNTIME_ACCOUNT%@campus}" ] || MANUAL_ACTION=switch
 	fi
 	if [ "$FORCE" = 1 ] && [ "$MANUAL_ACTION" != login ]; then
+		if [ "$SESSION_STACK" = ipv6 ] || ipv6_only_auth; then
+			if [ "$SESSION_STACK" = ipv6 ] && ! ipv6_only_auth; then read_lgn6_session ipv6; fi
+			if [ "$SESSION_STATE" != offline ]; then
+				[ "$MANUAL_ACTION" != logout ] || : >"$STATE_DIR/paused-$UPLINK_ID"
+				write_status logout_failed 'IPv6 单栈会话无法常规注销。停止该接口流量后，等待计费系统约 20 分钟清理。' "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0
+				return 1
+			fi
+			SESSION_STACK=""
+		fi
 		if [ "$MANUAL_ACTION" = switch ] && ! account_reserve "$MANUAL_ACCOUNT"; then
 			write_status account_busy '所选账号已达到并发上限，保留当前登录' "$RUNTIME_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0; return 1
 		fi
@@ -1181,6 +1241,7 @@ run_once_impl() {
 			fi
 		fi
 		if [ "$MANUAL_ACTION" = logout ]; then
+			SESSION_STACK=""
 			account_release
 			write_status logged_out '已注销，自动登录已暂停；点击登录可恢复' "$SELECTED_PROTOCOL" '' 0 0 0; return 0
 		fi
@@ -1245,6 +1306,7 @@ run_once_impl() {
 	case "$rc" in
 		0)
 			log_message notice "$SELECTED_PROTOCOL 认证网关已接受账号 $SELECTED_ACCOUNT"
+			[ "$SESSION_STACK" != ipv6 ] || log_message notice 'IPv6 单栈会话需等待校园网清理，常规注销不可用'
 			write_status login_accepted '网关已受理登录，正在复核联网' "$SELECTED_PROTOCOL" "$SELECTED_ACCOUNT" 0 0 0
 			write_phase '正在复核 IPv4 / IPv6 联网'
 			online_check; rc=$?
@@ -1290,6 +1352,9 @@ run_once_impl() {
 			;;
 		14)
 			write_status account_busy '适用账号均已达到并发上限，请选择其他账号或调整上限' "$SELECTED_PROTOCOL" '' 0 0 "$offline_count"; return 1;;
+		15)
+			write_status blocked "$LOGIN_FAILURE_MESSAGE" "$SELECTED_PROTOCOL" "$RUNTIME_ACCOUNT" 0 0 0 "$CFG_INTERVAL"
+			return 1 ;;
 		*)
 			failures=$((RUNTIME_FAILURES + 1))
 			delay="$(calculate_backoff "$failures")"

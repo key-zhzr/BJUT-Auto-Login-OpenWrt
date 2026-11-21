@@ -12,6 +12,18 @@
 const testPushPlus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_test' });
 const queryPushPlusStatus = rpc.declare({ object: 'bjut-autologin', method: 'pushplus_status' });
 
+function authStackOption(section, inherit) {
+	const option = section.option(form.ListValue, 'auth_stack', _('认证地址族'));
+	if (inherit) option.value('', _('跟随服务设置'));
+	option.value('auto', _('自动'));
+	option.value('ipv4', _('IPv4 单栈'));
+	option.value('ipv6', _('IPv6 单栈'));
+	option.value('dual', _('IPv4 + IPv6 双栈'));
+	option.default = inherit ? '' : 'auto';
+	option.rmempty = inherit;
+	option.description = _('IPv6 单栈会话需等待校园网清理。bjut-sushe 已取得 IPv6 时，宿舍网门户会同时认证两栈。');
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -43,8 +55,9 @@ return view.extend({
 		o.value('auto', _('自动探测'));
 		o.value('type1', _('bjut-sushe（宿舍网）'));
 		o.value('type2', _('bjut_wifi（公共无线网）'));
-		o.value('type3', _('lgn（有线 IPv4 + IPv6）'));
+		o.value('type3', _('lgn（有线）'));
 		o.default = 'auto';
+		authStackOption(s, false);
 
 		o = s.option(form.ListValue, 'compatibility', _('安全兼容模式'));
 		o.value('secure', _('安全模式（推荐）'));
@@ -282,7 +295,7 @@ return view.extend({
 		s.anonymous = false; s.addremove = true; s.sortable = true;
 		s.description = _('每条上游独立检测、认证与重试。IPv6 接口留空时跟随 IPv4 设备。');
 		o = s.option(form.Flag, 'enabled', _('启用')); o.default = o.enabled; o.rmempty = false;
-		o = s.option(widgets.NetworkSelect, 'network', _('IPv4 接口')); o.rmempty = false; o.nocreate = true;
+		o = s.option(widgets.NetworkSelect, 'network', _('上游网络接口')); o.rmempty = false; o.nocreate = true;
 		o = s.option(widgets.NetworkSelect, 'network6', _('IPv6 接口')); o.nocreate = true; o.optional = true;
 		o = s.option(form.Value, 'device', _('IPv4 设备')); o.placeholder = _('自动'); o.modalonly = true;
 		o = s.option(form.Value, 'device6', _('IPv6 设备')); o.placeholder = _('自动'); o.modalonly = true;
@@ -292,6 +305,7 @@ return view.extend({
 		o.value('auto', _('自动')); o.value('ethernet', _('有线')); o.value('wifi', _('Wi-Fi')); o.default = 'auto';
 		o = s.option(form.ListValue, 'login_type', _('认证方式'));
 		o.value('auto', _('自动')); o.value('type1', 'bjut-sushe'); o.value('type2', 'bjut_wifi'); o.value('type3', 'lgn'); o.default = 'auto';
+		authStackOption(s, true);
 		const accountChoices=[];
 		uci.sections('bjut-autologin', 'account', function(account) { accountChoices.push({id:account['.name'],user:account.username || account['.name'],enabled:account.enabled!=='0'}); });
 		const OrderedAccounts=form.Value.extend({
