@@ -1,6 +1,6 @@
 import type { DiagnosticReport, DiagnosticStep, DualStackReport } from './models';
 import { animateResize, setVisible } from './layout-motion';
-import { diagnosticAdvice } from './network-quality-model';
+import { diagnosticAdvice } from './diagnostic-advice';
 
 export function renderDiagnosticReportView(report: DiagnosticReport, options: { busy: boolean; renderHealth: (health: DualStackReport) => void; formatTime: (time: string) => string }) {
   const adapterRepairPanel = document.getElementById('diagnostic-adapter-repair')!;
@@ -62,7 +62,7 @@ const diagnosticOrder = ['network_identity', 'campus_route', 'campus_environment
 export function renderDiagnosticStep(step: DiagnosticStep, animate = true) {
   const diagnosticSteps = document.getElementById('diagnostic-steps')!;
   const row = document.createElement('div');
-  row.className = `diagnostic-step ${step.status}`;
+  row.className = `diagnostic-step ${step.status}${animate ? ' diagnostic-step-enter' : ''}`;
   const marker = document.createElement('span');
   marker.className = 'diagnostic-step-marker';
   marker.textContent = step.status === 'checking' ? '…' : step.status === 'success' ? '✓' : step.status === 'warning' ? '!' : step.status === 'skipped' ? '–' : '×';

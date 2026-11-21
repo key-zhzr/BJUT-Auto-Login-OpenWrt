@@ -1,15 +1,22 @@
+import { createUpperHalfScrollAnchor, type ScrollAnchorHandle } from './layout-motion';
+
 /** Expand/fade a small status panel without leaving hidden space in the page. */
 export class AnimatedVisibility {
   private visible: boolean;
   private animation: Animation | null = null;
+  private scrollAnchor: ScrollAnchorHandle | null = null;
 
   constructor(private readonly element: HTMLElement) {
     this.visible = !element.hidden;
   }
 
-  setVisible(visible: boolean) {
+  setVisible(visible: boolean, options?: { autoAnchor?: boolean }) {
     if (visible === this.visible) return;
     this.visible = visible;
+    this.scrollAnchor?.stop();
+    this.scrollAnchor?.release?.();
+    const anchor = createUpperHalfScrollAnchor(this.element, Boolean(options?.autoAnchor));
+    this.scrollAnchor = anchor;
     const wasHidden = this.element.hidden;
     // Read the interpolated state before cancelling, so a new check can reverse
     // an in-flight exit without jumping or being hidden by its old completion.
@@ -23,6 +30,9 @@ export class AnimatedVisibility {
     this.element.hidden = false;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !this.element.animate) {
       this.element.hidden = !visible;
+      anchor.sync();
+      anchor.release?.();
+      this.scrollAnchor = null;
       return;
     }
     const expanded = this.frame();
@@ -30,6 +40,9 @@ export class AnimatedVisibility {
     // final state, rather than animate invisible content or poll for layout.
     if (!(Number.parseFloat(expanded.height) > 0)) {
       this.element.hidden = !visible;
+      anchor.sync();
+      anchor.release?.();
+      this.scrollAnchor = null;
       return;
     }
     const collapsed = { height: '0px', minHeight: '0px', marginTop: '0px', marginBottom: '0px', paddingTop: '0px', paddingBottom: '0px', borderTopWidth: '0px', borderBottomWidth: '0px', opacity: '0', transform: 'translateY(-4px)' };
@@ -39,12 +52,18 @@ export class AnimatedVisibility {
       { duration: visible ? 220 : 180, easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)', fill: 'both' },
     );
     this.animation = animation;
+    anchor.sync();
+    anchor.startLoop();
     animation.onfinish = () => {
       if (this.animation !== animation) return;
       this.element.hidden = !this.visible;
       this.element.classList.remove('progress-animating');
       this.animation = null;
       animation.cancel();
+      anchor.stop();
+      anchor.sync();
+      anchor.release?.();
+      if (this.scrollAnchor === anchor) this.scrollAnchor = null;
     };
   }
 
