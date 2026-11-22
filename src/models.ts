@@ -29,6 +29,7 @@ export interface BackendConfig {
   traffic_retention?: {minuteHours:number;hourDays:number;dayDays:number;storageMb?:number};
   prefer_remaining_flow?: boolean;
   preferred_interface?: string;
+  auth_stack?: 'auto' | 'ipv4' | 'ipv6' | 'dual';
   adaptive_network_checks?: boolean;
   accounts?: Partial<AccountView>[];
   auto_login: boolean;
@@ -179,6 +180,7 @@ export interface OfficialUpdateManifest {
   version: string;
   notes?: string;
   pub_date?: string;
+  build_timestamp?: number;
   platforms?: Record<string, {
     url: string;
     signature: string;
@@ -190,6 +192,7 @@ export interface UpdateTarget {
   arch: string;
   format: string;
   currentVersion: string;
+  currentBuildTimestamp?: number;
 }
 
 export interface UpdateProgress {

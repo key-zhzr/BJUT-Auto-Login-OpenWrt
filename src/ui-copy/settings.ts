@@ -9,6 +9,7 @@ export const SETTINGS_COPY = {
   pageDescription: '自定义应用程序行为',
   groups: {
     appearance: '外观',
+    interface: '界面与托盘',
     automation: '自动化设置',
     networkSecurity: '网络与安全',
     androidNotifications: 'Android 通知',
@@ -21,12 +22,13 @@ export const SETTINGS_COPY = {
       description: '按 SSID 或有线环境绑定账号顺序、协议和检测策略',
     },
     usage: '流量与余额提醒',
-    advanced: '高级设置',
+    trafficStats: '设备流量统计',
+    advanced: '数据与维护',
   },
   items: {
     'setting-theme': {
       title: '界面主题',
-      description: 'Basic 保留项目视觉；Apple OS 27 与 WinUI 分别遵循 Liquid Glass 和 Fluent 材质层级。',
+      description: 'Basic 保留项目视觉；WinUI 遵循 Windows 11 Fluent 材质层级。',
     },
     'setting-color-mode': {
       title: '明暗模式',

@@ -1,88 +1,73 @@
 //! Shared macOS physical-link selection and interface-scoped IPv6 diagnostics.
 
+use crate::network_inventory::{self, NetworkAdapter};
+use crate::portal_auth::AuthStack;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PhysicalIdentity {
     pub(crate) interface: String,
     pub(crate) ipv4: String,
-    pub(crate) transport: &'static str,
+    pub(crate) ipv6: Vec<String>,
+    pub(crate) transport: String,
+}
+
+impl From<&NetworkAdapter> for PhysicalIdentity {
+    fn from(adapter: &NetworkAdapter) -> Self {
+        Self {
+            interface: adapter.interface_name.clone(),
+            ipv4: network_inventory::auth_ipv4(adapter),
+            ipv6: adapter.ipv6.clone(),
+            transport: adapter.transport.clone(),
+        }
+    }
 }
 
 fn select_identity(
-    wifi: Option<(String, String)>,
-    routed_wired: Option<(String, String)>,
-    campus_wired: Option<(String, String)>,
+    adapters: &[NetworkAdapter],
+    stack: AuthStack,
+    order: impl FnOnce() -> [Vec<String>; 2],
 ) -> Option<PhysicalIdentity> {
-    let is_campus = |candidate: &(String, String)| {
-        !candidate.0.is_empty()
-            && crate::usable_physical_ipv4(&candidate.1).is_some()
-            && crate::network_trust::is_campus_local_ip(&candidate.1)
-    };
-    routed_wired
-        .filter(is_campus)
-        .or_else(|| campus_wired.filter(is_campus))
-        .map(|(interface, ipv4)| PhysicalIdentity {
-            interface,
-            ipv4,
-            transport: "ethernet",
-        })
-        .or_else(|| {
-            wifi.filter(|(interface, ip)| {
-                !interface.is_empty() && crate::usable_physical_ipv4(ip).is_some()
-            })
-            .map(|(interface, ipv4)| PhysicalIdentity {
-                interface,
-                ipv4,
-                transport: "wifi",
-            })
-        })
+    let mut eligible = adapters
+        .iter()
+        .filter(|adapter| network_inventory::auth_candidate(adapter));
+    let first = eligible.next()?;
+    if eligible.next().is_none() {
+        return Some(first.into());
+    }
+    let routes = order();
+    network_inventory::select_auth_adapter(adapters, stack, |adapter, ipv6| {
+        routes[usize::from(ipv6)]
+            .iter()
+            .position(|interface| interface == &adapter.interface_name)
+            .map(|index| index as u32)
+    })
+    .map(Into::into)
 }
 
-/// This never reads SSID/BSSID. Both the periodic IP poll and full observation
-/// must use this selector, so simultaneous Wi-Fi cannot alternate the baseline.
+/// Use the same selection for the fast address poll and full observation.
 #[cfg(target_os = "macos")]
-pub(crate) fn physical_identity_for(preferred: &str) -> Option<PhysicalIdentity> {
-    use crate::network_platform::*;
-    let wifi_interface = corewlan::WiFiClient::shared()
-        .ok()
-        .and_then(|client| client.interface())
-        .and_then(|interface| interface.interface_name())
-        .unwrap_or_default();
+pub(crate) fn physical_identity_for(preferred: &str, stack: AuthStack) -> Option<PhysicalIdentity> {
+    use crate::network_platform::{macos_read_command, macos_route_interface};
+    let adapters = network_inventory::macos_link_adapters();
     if !preferred.is_empty() {
-        let wifi = corewlan::WiFiClient::shared().ok().is_some_and(|client| {
-            client
-                .interface_names()
-                .iter()
-                .any(|name| name == preferred)
-        });
-        if !wifi && !macos_is_physical_ethernet_interface(preferred) {
-            return None;
-        }
-        let ip = macos_ipv4_for_interface(preferred);
-        return crate::usable_physical_ipv4(&ip).map(|_| PhysicalIdentity {
-            interface: preferred.to_string(),
-            ipv4: ip,
-            transport: if wifi { "wifi" } else { "ethernet" },
-        });
+        return network_inventory::preferred_adapter(&adapters, preferred).map(Into::into);
     }
-    let wifi_ip = macos_ipv4_for_interface(&wifi_interface);
-    let route_interface = macos_route_interface("172.30.201.2");
-    let routed_wired = if route_interface != wifi_interface
-        && macos_is_physical_ethernet_interface(&route_interface)
-    {
-        let ip = macos_ipv4_for_interface(&route_interface);
-        Some((route_interface, ip))
-    } else {
-        None
-    };
-    let campus_wired = if routed_wired
-        .as_ref()
-        .is_some_and(|(_, ip)| is_campus_wired_ipv4(ip))
-    {
-        None
-    } else {
-        macos_campus_wired_identity(&wifi_interface)
-    };
-    select_identity(Some((wifi_interface, wifi_ip)), routed_wired, campus_wired)
+    select_identity(&adapters, stack, || {
+        let service_order =
+            macos_read_command("/usr/sbin/networksetup", &["-listnetworkserviceorder"]);
+        let devices: Vec<_> = service_order
+            .lines()
+            .filter_map(|line| line.split_once("Device: "))
+            .filter_map(|(_, device)| device.strip_suffix(')'))
+            .map(str::to_owned)
+            .collect();
+        [false, true].map(|ipv6| {
+            let default = macos_route_interface(if ipv6 { "::" } else { "default" });
+            std::iter::once(default)
+                .chain(devices.iter().cloned())
+                .collect()
+        })
+    })
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -267,20 +252,12 @@ impl LgnLinkConfiguration {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn lgn_link_configuration(interface: &str) -> LgnLinkConfiguration {
-    let read = |program: &str, args: &[&str]| {
-        std::process::Command::new(program)
-            .args(args)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_default()
-    };
+    use crate::network_platform::macos_read_command;
     parse_link_configuration(
         interface,
-        &read("/sbin/ifconfig", &[interface]),
-        &read("/usr/sbin/ipconfig", &["getpacket", interface]),
-        &read("/usr/sbin/scutil", &["--dns"]),
+        &macos_read_command("/sbin/ifconfig", &[interface]),
+        &macos_read_command("/usr/sbin/ipconfig", &["getpacket", interface]),
+        &macos_read_command("/usr/sbin/scutil", &["--dns"]),
     )
 }
 
@@ -288,8 +265,49 @@ pub(crate) fn lgn_link_configuration(interface: &str) -> LgnLinkConfiguration {
 mod tests {
     use super::*;
 
-    fn link(interface: &str, ip: &str) -> Option<(String, String)> {
-        Some((interface.to_string(), ip.to_string()))
+    fn adapter(interface: &str, transport: &str, ip: &str) -> NetworkAdapter {
+        NetworkAdapter {
+            id: interface.to_string(),
+            interface_name: interface.to_string(),
+            transport: transport.to_string(),
+            ipv4: vec![ip.to_string()],
+            connected: true,
+            selectable: transport != "vpn",
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn system_priority_and_address_family_rank_connected_campus_links() {
+        let mut wifi = adapter("en0", "wifi", "10.21.2.3");
+        wifi.ipv6.push("2001:da8:216::1".into());
+        let mut wired = adapter("en7", "ethernet", "172.26.99.10");
+        wired.ipv6.push("2001:da8:216::2".into());
+        let links = [wifi, wired, adapter("utun0", "vpn", "198.18.0.1")];
+        let order = || {
+            [
+                vec!["en7".into(), "en0".into()],
+                vec!["en0".into(), "en7".into()],
+            ]
+        };
+        assert_eq!(
+            select_identity(&links, AuthStack::Ipv4, order)
+                .unwrap()
+                .interface,
+            "en7"
+        );
+        assert_eq!(
+            select_identity(&links, AuthStack::Ipv6, order)
+                .unwrap()
+                .interface,
+            "en0"
+        );
+        assert_eq!(
+            network_inventory::preferred_adapter(&links, "en0")
+                .unwrap()
+                .transport,
+            "wifi"
+        );
     }
 
     #[test]
@@ -300,8 +318,15 @@ mod tests {
             .cycle()
             .take(20)
         {
-            let selected =
-                select_identity(link("en0", wifi_ip), None, link("en7", "172.26.99.10")).unwrap();
+            let selected = select_identity(
+                &[
+                    adapter("en0", "wifi", wifi_ip),
+                    adapter("en7", "ethernet", "172.26.99.10"),
+                ],
+                AuthStack::Auto,
+                Default::default,
+            )
+            .unwrap();
             assert_eq!(selected.interface, "en7");
             assert_eq!(selected.transport, "ethernet");
             assert!(!crate::network_ip_observation_changed(
@@ -310,7 +335,12 @@ mod tests {
             ));
             previous = Some(selected.ipv4);
         }
-        let disconnected = select_identity(link("en0", "192.168.1.10"), None, None).unwrap();
+        let disconnected = select_identity(
+            &[adapter("en0", "wifi", "192.168.1.10")],
+            AuthStack::Auto,
+            Default::default,
+        )
+        .unwrap();
         assert_eq!(disconnected.transport, "wifi");
         assert!(crate::network_ip_observation_changed(
             previous.as_deref(),
@@ -325,16 +355,23 @@ mod tests {
     #[test]
     fn routed_campus_ethernet_wins_and_a_real_lease_change_is_observed() {
         let first = select_identity(
-            link("en0", "192.168.1.10"),
-            link("en9", "172.26.88.10"),
-            link("en7", "172.26.99.10"),
+            &[
+                adapter("en0", "wifi", "192.168.1.10"),
+                adapter("en7", "ethernet", "172.26.99.10"),
+                adapter("en9", "ethernet", "172.26.88.10"),
+            ],
+            AuthStack::Auto,
+            || [vec!["en9".into()], Vec::new()],
         )
         .unwrap();
         assert_eq!(first.interface, "en9");
         let renewed = select_identity(
-            link("en0", "192.168.1.10"),
-            link("en9", "172.26.88.11"),
-            None,
+            &[
+                adapter("en0", "wifi", "192.168.1.10"),
+                adapter("en9", "ethernet", "172.26.88.11"),
+            ],
+            AuthStack::Auto,
+            Default::default,
         )
         .unwrap();
         assert!(crate::network_ip_observation_changed(
@@ -342,13 +379,48 @@ mod tests {
             &renewed.ipv4
         ));
         let tun = select_identity(
-            link("en0", "192.168.1.10"),
-            link("utun4", "198.18.0.1"),
-            link("en7", "172.26.99.10"),
+            &[
+                adapter("en0", "wifi", "192.168.1.10"),
+                adapter("utun4", "vpn", "198.18.0.1"),
+                adapter("en7", "ethernet", "172.26.99.10"),
+                adapter("en9", "ethernet", "172.26.88.10"),
+            ],
+            AuthStack::Auto,
+            || [vec!["utun4".into()], Vec::new()],
         )
         .unwrap();
         assert_eq!(tun.interface, "en7");
-        assert!(select_identity(link("en0", ""), None, link("en7", "")).is_none());
+        assert!(select_identity(
+            &[adapter("en0", "wifi", ""), adapter("en7", "ethernet", "")],
+            AuthStack::Auto,
+            Default::default,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn ethernet_lan_remains_available_with_tun_and_no_wifi_address() {
+        let links = [
+            adapter("en0", "wifi", "169.254.20.3"),
+            adapter("en5", "ethernet", "192.168.0.10"),
+            adapter("en7", "ethernet", "192.168.1.37"),
+            adapter("utun1024", "vpn", "198.18.0.1"),
+        ];
+        let selected =
+            select_identity(&links, AuthStack::Auto, || [vec!["en7".into()], Vec::new()]).unwrap();
+        assert_eq!(selected.interface, "en7");
+        assert_eq!(selected.ipv4, "192.168.1.37");
+        assert_eq!(selected.transport, "ethernet");
+
+        let mut detached = links[1].clone();
+        detached.connected = false;
+        let selected = select_identity(
+            &[detached, links[2].clone(), links[3].clone()],
+            AuthStack::Auto,
+            || panic!("a single usable physical adapter needs no route lookups"),
+        )
+        .unwrap();
+        assert_eq!(selected.interface, "en7");
     }
 
     const IFCONFIG: &str = "en7: flags=8863<UP,BROADCAST,RUNNING>\n inet6 2001:da8:216:2699::10 prefixlen 64 autoconf secured\n status: active";

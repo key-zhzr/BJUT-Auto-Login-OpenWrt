@@ -433,7 +433,7 @@ html:root[data-theme] {
 }
 
 :root[data-theme] .btn,
-:root[data-theme] input,
+:root[data-theme] input:not([type="checkbox"]):not([type="radio"]),
 :root[data-theme] textarea,
 :root[data-theme] .custom-select-trigger {
   border-radius: var(--theme-control-radius);
@@ -454,8 +454,12 @@ html:root[data-theme] {
 :root[data-theme] input[type="password"],
 :root[data-theme] input[type="number"],
 :root[data-theme] input[type="date"],
+:root[data-theme] input[type="datetime-local"],
 :root[data-theme] input[type="search"],
 :root[data-theme] textarea,
+:root[data-theme] .presentation-dialog select,
+:root[data-theme] .traffic-field select,
+:root[data-theme] .traffic-dates input,
 :root[data-theme] .billing-action-controls input,
 :root[data-theme] .billing-security-form input,
 :root[data-theme] .billing-recharge-form input,
@@ -476,8 +480,11 @@ html:root[data-theme] {
   opacity: 0.82;
 }
 
-:root[data-theme] input:focus,
+:root[data-theme] input:not([type="checkbox"]):not([type="radio"]):focus,
 :root[data-theme] textarea:focus,
+:root[data-theme] .presentation-dialog select:focus,
+:root[data-theme] .traffic-field select:focus,
+:root[data-theme] .traffic-dates input:focus,
 :root[data-theme] .billing-action-controls input:focus,
 :root[data-theme] .billing-security-form input:focus,
 :root[data-theme] .billing-recharge-form input:focus,
@@ -525,15 +532,22 @@ html:root[data-theme] {
   background: rgba(var(--accent-rgb), 0.14);
 }
 
-:root[data-theme] .nav-tree-link:hover,
-:root[data-theme] .nav-item:hover,
-:root[data-theme] .billing-section-nav-button:hover:not(:disabled),
-:root[data-theme] .custom-option:hover,
-:root[data-theme] .custom-select-trigger:hover,
-:root[data-theme] .btn-icon:hover {
-  color: var(--theme-text);
-  border-color: var(--theme-border-strong);
-  background: var(--theme-hover-bg);
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body:not(.is-android) :is(
+    .nav-tree-link,
+    .nav-item,
+    .billing-section-nav-button:not(:disabled),
+    .custom-option,
+    .custom-select-trigger,
+    .btn-icon,
+    .settings-nav-item,
+    .settings-back-button,
+    .billing-back-button
+  ):hover {
+    color: var(--theme-text);
+    border-color: var(--theme-border-strong);
+    background: var(--theme-hover-bg);
+  }
 }
 
 :root[data-theme] .btn-secondary {
@@ -542,19 +556,10 @@ html:root[data-theme] {
   background: var(--theme-button-bg);
 }
 
-:root[data-theme] .btn-secondary:hover:not(:disabled) {
-  color: var(--theme-text);
-  background: var(--theme-hover-bg);
-}
-
 :root[data-theme] .btn-primary {
   color: var(--accent-contrast);
   background: var(--accent-color);
   box-shadow: 0 8px 24px rgba(var(--accent-rgb), 0.26);
-}
-
-:root[data-theme] .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
 }
 
 :root[data-theme] .btn.btn-danger {
@@ -564,10 +569,36 @@ html:root[data-theme] {
   box-shadow: none;
 }
 
-:root[data-theme] .btn.btn-danger:hover:not(:disabled) {
+:root[data-theme] .btn.btn-danger-solid {
   color: #ffffff;
-  border-color: var(--theme-danger-hover);
-  background: var(--theme-danger-hover);
+  border-color: var(--error);
+  background: var(--error);
+}
+
+:root[data-theme] .btn.btn-warning-outline {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 48%, var(--theme-border));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body:not(.is-android) .btn-secondary:hover:not(:disabled) {
+    color: var(--theme-text);
+    background: var(--theme-hover-bg);
+  }
+
+  :root[data-theme] body:not(.is-android) .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  :root[data-theme] body:not(.is-android) .btn.btn-danger:hover:not(:disabled) {
+    color: #ffffff;
+    border-color: var(--theme-danger-hover);
+    background: var(--theme-danger-hover);
+  }
+
+  :root[data-theme] body:not(.is-android) .btn.btn-danger-solid:hover:not(:disabled) {
+    filter: brightness(0.92);
+  }
 }
 
 :root[data-theme] .btn:disabled {
@@ -656,10 +687,15 @@ html:root[data-theme] {
     linear-gradient(90deg, var(--accent-hover), var(--accent-color));
 }
 
-:root[data-theme] .markdown-body,
+:root[data-theme] .markdown-body {
+  background: var(--theme-subtle-bg);
+  border-color: var(--theme-border);
+}
+
 :root[data-theme] .markdown-body code,
 :root[data-theme] .markdown-body pre {
   background: var(--theme-code-bg);
+  border-color: var(--theme-border);
 }
 
 :root[data-theme] .update-progress-track,
@@ -667,20 +703,61 @@ html:root[data-theme] {
   background: var(--theme-border);
 }
 
-:root[data-theme] ::-webkit-scrollbar-track {
+:root[data-theme] ::-webkit-scrollbar {
   background: transparent;
 }
 
+:root[data-theme] ::-webkit-scrollbar-track,
+:root[data-theme] ::-webkit-scrollbar-track-piece,
+:root[data-theme] ::-webkit-scrollbar-corner,
+:root[data-theme] ::-webkit-scrollbar-button {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 :root[data-theme] ::-webkit-scrollbar-thumb {
+  border-radius: 999px;
   background: var(--theme-scrollbar);
 }
 
-:root[data-theme] ::-webkit-scrollbar-thumb:hover {
-  background: var(--theme-scrollbar-hover);
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body:not(.is-android) ::-webkit-scrollbar-thumb:hover {
+    background: var(--theme-scrollbar-hover);
+  }
 }
 
 :root[data-theme="apple27"] ::-webkit-scrollbar-thumb {
   border-radius: 999px;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  :root[data-theme] .custom-select-options {
+    scrollbar-width: thin;
+    scrollbar-color: var(--theme-scrollbar) transparent;
+  }
+}
+
+:root[data-theme] .custom-select-options::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+  background: transparent;
+}
+
+:root[data-theme] .custom-select-options::-webkit-scrollbar-track,
+:root[data-theme] .custom-select-options::-webkit-scrollbar-track-piece,
+:root[data-theme] .custom-select-options::-webkit-scrollbar-corner,
+:root[data-theme] .custom-select-options::-webkit-scrollbar-button {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme] .custom-select-options::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: var(--theme-scrollbar);
 }
 
 :root[data-color-scheme="light"] .billing-record-date-filter input {
@@ -752,13 +829,13 @@ html:root[data-theme] {
     0 5px 16px rgba(0, 0, 0, 0.12);
 }
 
-:root[data-theme="apple27"] .page.active {
-  animation: applePageEnter 260ms cubic-bezier(0.22, 0.8, 0.24, 1);
+:root[data-theme="apple27"] .page.active:not(.page-slide-from-right):not(.page-slide-from-left) {
+  animation: applePageEnter 220ms cubic-bezier(0.22, 0.8, 0.24, 1);
 }
 
 @keyframes applePageEnter {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 :root[data-theme="apple27"] .glass-card,
@@ -837,13 +914,16 @@ html:root[data-theme] {
   border-radius: 50%;
 }
 
-:root[data-theme="apple27"] .btn-icon:hover {
-  background: var(--theme-hover-bg);
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="apple27"] body:not(.is-android) .btn-icon:hover {
+    background: var(--theme-hover-bg);
+  }
 }
 
-:root[data-theme="apple27"] .billing-back-button,
 :root[data-theme="apple27"] .titlebar-button {
-  border-radius: 6px;
+  width: 46px;
+  height: 30px;
+  border-radius: 0;
 }
 
 :root[data-theme="apple27"] .btn-secondary {
@@ -900,12 +980,16 @@ html:root[data-theme] {
   box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.2);
 }
 
-:root[data-theme="apple27"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active,
-:root[data-theme="apple27"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active {
-  color: var(--theme-text);
-  border-color: transparent;
-  background: var(--theme-hover-bg);
-  box-shadow: none;
+@media (min-width: 769px) {
+  :root[data-theme="apple27"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active,
+  :root[data-theme="apple27"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active,
+  :root[data-theme="apple27"] body.is-android #nav.dashboard-expanded .nav-dashboard-parent.active,
+  :root[data-theme="apple27"] body.is-android #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active {
+    color: var(--theme-text);
+    border-color: transparent;
+    background: var(--theme-hover-bg);
+    box-shadow: none;
+  }
 }
 
 :root[data-theme="apple27"] .custom-option.selected,
@@ -917,7 +1001,7 @@ html:root[data-theme] {
 }
 
 :root[data-theme="apple27"] .custom-select-trigger,
-:root[data-theme="apple27"] input,
+:root[data-theme="apple27"] input:not([type="checkbox"]):not([type="radio"]),
 :root[data-theme="apple27"] textarea {
   min-height: var(--theme-control-height);
   border-color: var(--theme-border-strong);
@@ -925,14 +1009,20 @@ html:root[data-theme] {
 
 :root[data-theme="apple27"] .custom-select-trigger,
 :root[data-theme="apple27"] input:not([type="checkbox"]):not([type="radio"]),
+:root[data-theme="apple27"] .presentation-dialog select,
+:root[data-theme="apple27"] .traffic-field select,
+:root[data-theme="apple27"] .traffic-dates input,
 :root[data-theme="apple27"] .custom-select.form-select .custom-select-trigger {
   height: var(--theme-control-height);
   padding-block: 0;
   font-size: 0.82rem;
 }
 
-:root[data-theme="apple27"] input:focus,
+:root[data-theme="apple27"] input:not([type="checkbox"]):not([type="radio"]):focus,
 :root[data-theme="apple27"] textarea:focus,
+:root[data-theme="apple27"] .presentation-dialog select:focus,
+:root[data-theme="apple27"] .traffic-field select:focus,
+:root[data-theme="apple27"] .traffic-dates input:focus,
 :root[data-theme="apple27"] .custom-select.open .custom-select-trigger {
   border-color: rgba(var(--accent-rgb), 0.7);
   box-shadow:
@@ -972,21 +1062,23 @@ html:root[data-theme] {
   transform: translateX(14px);
 }
 
-:root[data-theme="apple27"] body.is-android #nav,
-:root[data-theme="apple27"] body.is-android .billing-mobile-nav {
-  border-radius: 13px;
+@media (max-width: 768px) {
+  :root[data-theme="apple27"] body.is-android #nav,
+  :root[data-theme="apple27"] body.is-android .billing-mobile-nav {
+    border-radius: 999px;
+  }
+
+  :root[data-theme="apple27"] body.is-android #nav .nav-item.active,
+  :root[data-theme="apple27"] body.is-android .billing-mobile-nav .billing-section-nav-button.active {
+    color: var(--accent-color);
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
 }
 
-:root[data-theme="apple27"] body.is-android #nav .nav-item.active,
-:root[data-theme="apple27"] body.is-android .billing-mobile-nav .billing-section-nav-button.active {
-  color: var(--accent-color);
-  border-color: transparent;
-  background: rgba(var(--accent-rgb), 0.16);
-  box-shadow: none;
-}
-
-@media (hover: hover) {
-  :root[data-theme="apple27"] .btn:hover:not(:disabled) {
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="apple27"] body:not(.is-android) .btn:hover:not(:disabled) {
     filter: brightness(1.04);
   }
 }
@@ -1027,21 +1119,32 @@ html:root[data-theme] {
   width: 46px;
   height: 32px;
   border-radius: 0;
+  color: #1b1b1b;
+}
+
+:root[data-theme="winui"][data-color-scheme="dark"] .titlebar-button {
   color: var(--theme-text-muted);
 }
 
-:root[data-theme="winui"] .titlebar-button:hover {
-  color: var(--theme-text);
-  background: var(--theme-hover-bg);
-}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="winui"] body:not(.is-android) .titlebar-button:not(.titlebar-close):hover {
+    color: #000000;
+    background: rgba(0, 0, 0, 0.065);
+  }
 
-:root[data-theme="winui"] .titlebar-button.titlebar-close:hover {
-  color: #ffffff;
-  background: #c42b1c;
+  :root[data-theme="winui"][data-color-scheme="dark"] body:not(.is-android) .titlebar-button:not(.titlebar-close):hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  :root[data-theme="winui"] body:not(.is-android) .titlebar-button.titlebar-close:hover {
+    color: #ffffff;
+    background: #c42b1c;
+  }
 }
 
 @media (min-width: 769px) {
-  :root[data-theme="winui"] .app-container {
+  :root[data-theme="winui"] body.is-desktop .app-container {
     padding-top: 32px;
   }
 }
@@ -1062,13 +1165,13 @@ html:root[data-theme] {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
-:root[data-theme="winui"] .page.active {
+:root[data-theme="winui"] .page.active:not(.page-slide-from-right):not(.page-slide-from-left) {
   animation: winuiPageEnter 167ms cubic-bezier(0.1, 0.9, 0.2, 1);
 }
 
 @keyframes winuiPageEnter {
-  from { opacity: 0; transform: translateX(6px); }
-  to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 :root[data-theme="winui"] .glass-card,
@@ -1138,12 +1241,14 @@ html:root[data-theme] {
   background: var(--theme-button-bg);
 }
 
-:root[data-theme="winui"] .btn-secondary:hover:not(:disabled) {
-  background-color: var(--theme-hover-bg);
-}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="winui"] body:not(.is-android) .btn-secondary:hover:not(:disabled) {
+    background-color: var(--theme-hover-bg);
+  }
 
-:root[data-theme="winui"] .btn-primary:hover:not(:disabled) {
-  background-color: var(--accent-hover);
+  :root[data-theme="winui"] body:not(.is-android) .btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+  }
 }
 
 :root[data-theme="winui"] .btn:active:not(:disabled) {
@@ -1165,8 +1270,10 @@ html:root[data-theme] {
   border-radius: 3px;
 }
 
-:root[data-theme="winui"] .btn-icon:hover {
-  background: var(--theme-hover-bg);
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="winui"] body:not(.is-android) .btn-icon:hover {
+    background: var(--theme-hover-bg);
+  }
 }
 
 :root[data-theme="winui"] .nav-item,
@@ -1218,20 +1325,26 @@ html:root[data-theme] {
   content: "";
 }
 
-:root[data-theme="winui"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active,
-:root[data-theme="winui"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active {
-  color: var(--theme-text);
-  background: transparent;
-}
+@media (min-width: 769px) {
+  :root[data-theme="winui"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active,
+  :root[data-theme="winui"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active,
+  :root[data-theme="winui"] body.is-android #nav.dashboard-expanded .nav-dashboard-parent.active,
+  :root[data-theme="winui"] body.is-android #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active {
+    color: var(--theme-text);
+    background: transparent;
+  }
 
-:root[data-theme="winui"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active::before,
-:root[data-theme="winui"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active::before,
-:root[data-theme="winui"] #nav:not(.billing-active) .nav-billing-link.active::before {
-  display: none;
+  :root[data-theme="winui"] body.is-desktop #nav.dashboard-expanded .nav-dashboard-parent.active::before,
+  :root[data-theme="winui"] body.is-desktop #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active::before,
+  :root[data-theme="winui"] #nav:not(.billing-active) .nav-billing-link.active::before,
+  :root[data-theme="winui"] body.is-android #nav.dashboard-expanded .nav-dashboard-parent.active::before,
+  :root[data-theme="winui"] body.is-android #nav.billing-active .nav-page-link[data-nav-page-target="billing-center"].active::before {
+    display: none;
+  }
 }
 
 :root[data-theme="winui"] .custom-select-trigger,
-:root[data-theme="winui"] input,
+:root[data-theme="winui"] input:not([type="checkbox"]):not([type="radio"]),
 :root[data-theme="winui"] textarea {
   min-height: var(--theme-control-height);
   border-bottom-color: var(--theme-border-strong);
@@ -1239,6 +1352,9 @@ html:root[data-theme] {
 
 :root[data-theme="winui"] .custom-select-trigger,
 :root[data-theme="winui"] input:not([type="checkbox"]):not([type="radio"]),
+:root[data-theme="winui"] .presentation-dialog select,
+:root[data-theme="winui"] .traffic-field select,
+:root[data-theme="winui"] .traffic-dates input,
 :root[data-theme="winui"] .custom-select.form-select .custom-select-trigger {
   height: var(--theme-control-height);
   padding-block: 0;
@@ -1268,8 +1384,11 @@ html:root[data-theme] {
   content: "";
 }
 
-:root[data-theme="winui"] input:focus,
+:root[data-theme="winui"] input:not([type="checkbox"]):not([type="radio"]):focus,
 :root[data-theme="winui"] textarea:focus,
+:root[data-theme="winui"] .presentation-dialog select:focus,
+:root[data-theme="winui"] .traffic-field select:focus,
+:root[data-theme="winui"] .traffic-dates input:focus,
 :root[data-theme="winui"] .custom-select.open .custom-select-trigger {
   border-color: rgba(var(--accent-rgb), 0.72);
   box-shadow:
@@ -1314,22 +1433,24 @@ html:root[data-theme] {
   box-shadow: none;
 }
 
-:root[data-theme="winui"] body.is-android #nav,
-:root[data-theme="winui"] body.is-android .billing-mobile-nav {
-  border-radius: 8px;
+@media (max-width: 768px) {
+  :root[data-theme="winui"] body.is-android #nav,
+  :root[data-theme="winui"] body.is-android .billing-mobile-nav {
+    border-radius: 8px;
+  }
+
+  :root[data-theme="winui"] body.is-android #nav .nav-item.active::before,
+  :root[data-theme="winui"] body.is-android .billing-mobile-nav .billing-section-nav-button.active::before {
+    top: 2px;
+    left: 50%;
+    width: 16px;
+    height: 3px;
+    transform: translateX(-50%);
+  }
 }
 
 :root[data-theme="winui"] body:not(.is-macos) {
   border-radius: 8px;
-}
-
-:root[data-theme="winui"] body.is-android #nav .nav-item.active::before,
-:root[data-theme="winui"] body.is-android .billing-mobile-nav .billing-section-nav-button.active::before {
-  top: 2px;
-  left: 50%;
-  width: 16px;
-  height: 3px;
-  transform: translateX(-50%);
 }
 
 /*
@@ -1339,6 +1460,10 @@ html:root[data-theme] {
 :root[data-theme] body.is-android {
   --card-bg: var(--theme-card-solid);
   border-radius: 0;
+}
+
+:root[data-theme] body.is-android .titlebar {
+  display: none !important;
 }
 
 :root[data-theme] body.is-android nav,
@@ -1384,23 +1509,31 @@ html:root[data-theme] {
     0 2px 8px rgba(0, 0, 0, 0.12);
 }
 
-:root[data-theme="apple27"] body.is-android #nav,
-:root[data-theme="apple27"] body.is-android .billing-mobile-nav {
-  border-radius: 13px;
-  box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.14),
-    0 8px 22px rgba(0, 0, 0, 0.18);
-}
+@media (max-width: 768px) {
+  :root[data-theme="apple27"] body.is-android #nav,
+  :root[data-theme="apple27"] body.is-android .billing-mobile-nav {
+    border-radius: 13px;
+    box-shadow:
+      inset 0 0.5px 0 rgba(255, 255, 255, 0.14),
+      0 8px 22px rgba(0, 0, 0, 0.18);
+  }
 
-:root[data-theme="apple27"] body.is-android #nav .nav-item,
-:root[data-theme="winui"] body.is-android #nav .nav-item {
-  min-height: 0;
-  height: 100%;
-  gap: 0.16rem;
-  padding: 0.34rem 0.06rem;
-  font-size: 0.64rem;
-  line-height: 1.05;
-  letter-spacing: -0.01em;
+  :root[data-theme="apple27"] body.is-android #nav .nav-item,
+  :root[data-theme="winui"] body.is-android #nav .nav-item {
+    min-height: 0;
+    height: 100%;
+    gap: 0.16rem;
+    padding: 0.34rem 0.06rem;
+    font-size: 0.64rem;
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+  }
+
+  :root[data-theme="winui"] body.is-android #nav,
+  :root[data-theme="winui"] body.is-android .billing-mobile-nav {
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+  }
 }
 
 :root[data-theme="winui"] body.is-android .glass-card,
@@ -1411,30 +1544,9 @@ html:root[data-theme] {
   box-shadow: none;
 }
 
-:root[data-theme="winui"] body.is-android #nav,
-:root[data-theme="winui"] body.is-android .billing-mobile-nav {
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
-}
-
-/* Android WebView can leave :hover latched after a tap. Keep pressed feedback,
-   but never run desktop lift/scale/filter transitions for that synthetic hover. */
-:root[data-theme] body.is-android :is(
-  .btn,
-  .btn-icon,
-  .nav-item,
-  .nav-tree-link,
-  .billing-section-nav-button,
-  .custom-option,
-  .custom-select-trigger,
-  .billing-package-option,
-  .billing-payment-method,
-  .account-avatar
-):hover {
-  filter: none;
-  transform: none;
-  transition: none !important;
-}
+/* Desktop hover styles are gated behind body:not(.is-android) and
+   @media (hover: hover) and (pointer: fine), so Android keeps clean
+   :active press feedback without synthetic hover interference. */
 
 @media (prefers-reduced-transparency: reduce) {
   :root[data-theme] body nav,
@@ -1462,7 +1574,10 @@ html:root[data-theme] {
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme="apple27"] .page.active,
-  :root[data-theme="winui"] .page.active {
+  :root[data-theme="winui"] .page.active,
+  :root[data-theme] .settings-home-enter,
+  :root[data-theme] .settings-subpage-enter,
+  :root[data-theme] .diagnostic-step-enter {
     animation: none;
   }
 
@@ -1484,7 +1599,8 @@ html:root[data-theme] {
 :root[data-theme="basic"] :is(
   button, [role="button"], .nav-item, .nav-tree-link,
   .custom-select-trigger, .custom-option, .billing-section-nav-button,
-  .billing-package-option, .billing-payment-method, summary
+  .billing-package-option, .billing-payment-method,
+  .settings-nav-item, .settings-back-button, .billing-back-button, summary
 ) {
   transition: transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1),
     background-color 160ms ease, border-color 160ms ease,
@@ -1494,21 +1610,22 @@ html:root[data-theme] {
 :root[data-theme="basic"] :is(
   button, [role="button"], .nav-item, .nav-tree-link,
   .custom-select-trigger, .custom-option, .billing-section-nav-button,
-  .billing-package-option, .billing-payment-method, summary
+  .billing-package-option, .billing-payment-method,
+  .settings-nav-item, .settings-back-button, .billing-back-button, summary
 ):not(:disabled):not([aria-disabled="true"]):active {
-  transform: none;
-  filter: brightness(0.90);
+  transform: scale(0.978);
+  filter: brightness(0.92);
   transition-duration: 70ms;
 }
 
 :root[data-theme="basic"] .btn:not(:disabled):not([aria-disabled="true"]):active {
-  transform: translateY(1px);
-  filter: brightness(0.94);
+  transform: scale(0.975) translateY(1px);
+  filter: brightness(0.93);
 }
 
 :root[data-theme="basic"] .custom-option:not([aria-disabled="true"]):active {
   background-color: color-mix(in srgb, var(--primary-color) 18%, var(--theme-raised-bg));
-  transform: none;
+  transform: scale(0.988);
 }
 
 :root[data-theme="basic"] .switch:active input:not(:disabled) + .slider {
@@ -1520,9 +1637,10 @@ html:root[data-theme] {
   :root[data-theme="basic"] body.is-android :is(
     button, [role="button"], .nav-item, .nav-tree-link,
     .custom-select-trigger, .custom-option, .billing-section-nav-button,
-    .billing-package-option, .billing-payment-method, summary
+    .billing-package-option, .billing-payment-method,
+    .settings-nav-item, .settings-back-button, .billing-back-button, summary
   ):not(:disabled):not([aria-disabled="true"]):active {
-    transition: transform 70ms ease, filter 70ms ease !important;
+    transition: transform 80ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 80ms ease !important;
   }
 }
 
@@ -1530,7 +1648,8 @@ html:root[data-theme] {
   :root[data-theme="basic"] :is(
     button, [role="button"], .nav-item, .nav-tree-link,
     .custom-select-trigger, .custom-option, .billing-section-nav-button,
-    .billing-package-option, .billing-payment-method, summary
+    .billing-package-option, .billing-payment-method,
+    .settings-nav-item, .settings-back-button, .billing-back-button, summary
   ):not(:disabled):not([aria-disabled="true"]):active,
   :root[data-theme="basic"] .switch:active input:not(:disabled) + .slider {
     transform: none;

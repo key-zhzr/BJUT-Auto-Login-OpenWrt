@@ -85,25 +85,67 @@ export class NetworkExperience {
     disconnected.addEventListener('toggle', () => { this.showDisconnected = disconnected.open; });
     const disconnectedList = document.createElement('div'); disconnectedList.className = 'network-adapter-list'; disconnected.append(disconnectedList);
     let rowParent: HTMLElement = this.list;
-    const addRow = (id: string, title: string, detail: string, chosen: boolean, available: boolean, active = false) => {
+    const addRow = (
+      id: string,
+      title: string,
+      chips: string[] | string,
+      chosen: boolean,
+      available: boolean,
+      active = false,
+    ) => {
       const row = document.createElement('button'); row.type = 'button';
       row.className = `network-adapter-row${chosen ? ' chosen' : ''}${active ? ' in-use' : ''}`;
       row.dataset.adapterId = id; row.dataset.unavailable = String(!available);
       row.setAttribute('role', 'radio'); row.setAttribute('aria-checked', String(chosen)); row.tabIndex = chosen ? 0 : -1;
       const marker = document.createElement('span'); marker.className = 'adapter-radio-marker'; marker.setAttribute('aria-hidden', 'true');
-      const text = document.createElement('span'); text.className = 'network-adapter-text'; const label = document.createElement('strong'); label.textContent = title;
-      const description = document.createElement('small'); description.textContent = detail;
-      text.append(label, description); row.append(marker, text); rowParent.append(row);
+      const text = document.createElement('span'); text.className = 'network-adapter-text';
+      const head = document.createElement('span'); head.className = 'network-adapter-head';
+      const label = document.createElement('strong'); label.textContent = title;
+      head.append(label);
+      if (active) {
+        const badge = document.createElement('span');
+        badge.className = 'health-badge success';
+        badge.textContent = '用于认证';
+        head.append(badge);
+      }
+      text.append(head);
+      if (Array.isArray(chips)) {
+        const chipRow = document.createElement('span');
+        chipRow.className = 'meta-chip-row';
+        for (const item of chips) {
+          const chip = document.createElement('span');
+          chip.className = 'meta-chip';
+          chip.textContent = item;
+          chipRow.append(chip);
+        }
+        text.append(chipRow);
+      } else {
+        const description = document.createElement('small');
+        description.textContent = chips;
+        text.append(description);
+      }
+      row.append(marker, text); rowParent.append(row);
     };
-    if (inventory.selectionSupported) addRow('', '自动选择', '优先校园有线，随当前连接自动识别', !inventory.preferredInterface, true);
+    if (inventory.selectionSupported) addRow('', '自动选择', '按系统路由优先级选择可用认证网卡', !inventory.preferredInterface, true);
     const adapters = [...inventory.adapters].sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.connected) - Number(a.connected));
     for (const adapter of adapters) {
       rowParent = !adapter.connected && adapter.id !== inventory.preferredInterface ? disconnectedList : this.list;
       const kind = ({ wifi: 'Wi-Fi', ethernet: '有线', vpn: '虚拟 / VPN', cellular: '移动数据' } as Record<string, string>)[adapter.transport] || adapter.transport;
       const title = adapter.name === kind ? adapter.name : `${adapter.name} · ${kind}`;
-      addRow(adapter.id, `${title}${adapter.selected ? ' · 用于认证' : ''}`,
-        `${adapter.interfaceName} · ${adapter.connected ? '已启用' : '已断开'} · IPv4 ${adapter.ipv4.join(' / ') || '--'} · IPv6 ${adapter.ipv6.length ? '已取得地址' : '--'}`,
-        inventory.preferredInterface === adapter.id, adapter.selectable && adapter.connected && adapter.ipv4.length > 0, adapter.selected);
+      addRow(
+        adapter.id,
+        title,
+        [
+          adapter.interfaceName,
+          adapter.connected ? '已启用' : '已断开',
+          `IPv4 ${adapter.ipv4.join(' / ') || '--'}`,
+          `IPv6 ${adapter.ipv6.length ? '已取得地址' : '--'}`,
+        ],
+        inventory.preferredInterface === adapter.id,
+        adapter.selectable && adapter.connected && (adapter.ipv4.length > 0
+          || adapter.ipv6.some(address => /^2001:0?da8:0?216:/i.test(address))),
+        adapter.selected,
+      );
     }
     if (disconnectedList.childElementCount) this.list.append(disconnected);
     rowParent = this.list;
@@ -113,7 +155,7 @@ export class NetworkExperience {
     const selected = inventory.adapters.find(adapter => adapter.selected);
     element('network-selection-caption').textContent = selected ? `当前认证网卡：${selected.name}${selected.name === selected.interfaceName ? '' : `（${selected.interfaceName}）`}`
       : inventory.preferredInterface ? '指定网卡不可用，认证已暂停' : '尚未取得可用于认证的网卡';
-    if (!inventory.selectionSupported) this.showMessage('Android 由系统选择校园 Wi-Fi；下方同时展示其他网络。');
+    if (!inventory.selectionSupported) this.showMessage('Android 按系统网络优先级选择校园 Wi-Fi 或有线接口。');
     this.updateBusy();
     if (focused !== undefined) Array.from(this.list.querySelectorAll<HTMLButtonElement>('button')).find(button => button.dataset.adapterId === focused && !button.disabled)?.focus({preventScroll:true});
   }
@@ -144,7 +186,6 @@ export class NetworkExperience {
     if (this.health && generation === this.health.generation && probeId === this.health.probeId && Date.parse(health.checkedAt) < Date.parse(this.health.checkedAt)) return;
     this.generation = generation; this.probeId = probeId;
     this.health = health;
-    window.dispatchEvent(new CustomEvent('network-quality-sample',{detail:health}));
     for (const [id, family] of [['ipv4-health', health.ipv4], ['ipv6-health', health.ipv6]] as const) {
       const node = element(id); node.className = `family-status ${family.status}`;
       node.querySelector('strong')!.textContent = compactFamilyLabel(family);
@@ -154,6 +195,23 @@ export class NetworkExperience {
   }
 
   renderSchedule(plan: NetworkSchedule) {
-    element('network-schedule-summary').textContent = `${plan.reason}。当前每 ${plan.intervalSeconds} 秒检测连通性，每 ${plan.interfacePollSeconds} 秒核对接口；网络变化事件仍会立即响应。`;
+    const container = element('network-schedule-summary');
+    container.replaceChildren();
+    const reason = document.createElement('div');
+    reason.className = 'schedule-summary-reason';
+    reason.textContent = plan.reason;
+    const chips = document.createElement('div');
+    chips.className = 'meta-chip-row';
+    for (const text of [
+      `连通性检测：每 ${plan.intervalSeconds} 秒`,
+      `接口核对：每 ${plan.interfacePollSeconds} 秒`,
+      '网络变化即时响应',
+    ]) {
+      const chip = document.createElement('span');
+      chip.className = 'meta-chip';
+      chip.textContent = text;
+      chips.append(chip);
+    }
+    container.append(reason, chips);
   }
 }
