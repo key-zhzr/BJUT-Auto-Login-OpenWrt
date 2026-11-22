@@ -75,7 +75,8 @@ jobs:
 
   build-ipk:
     needs: [plan, build-apk]
-    if: always() && needs.plan.result == 'success' && (needs.build-apk.result == 'success' || needs.build-apk.result == 'skipped') && needs.plan.outputs.has_ipk == 'true'
+    # Wait for the APK stage before using the runners for IPK targets.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has_ipk == 'true' }}
     uses: ./.github/workflows/openwrt-sdk.yml
     with:
       matrix: ${{ needs.plan.outputs.ipk_matrix }}

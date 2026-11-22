@@ -121,7 +121,12 @@ static int family_route_current(J *facts,J *status,const char *state,const char 
 static int routes_current(int argc,char **argv) {
     if(argc!=6 || !*argv[1] || strlen(argv[1])>64 || strspn(argv[1],"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")!=strlen(argv[1]))return 2;
     char *lines[2]={NULL,NULL};size_t capacities[2]={0,0};J *status[2]={NULL,NULL},*facts=NULL;int ok=0;
-    for(int i=0;i<2;i++){ssize_t n=getline(&lines[i],&capacities[i],stdin);if(n<0 || n>JSON_LIMIT)goto done;status[i]=json_tokener_parse(lines[i]);}
+    for (int i = 0; i < 2; i++) {
+        ssize_t length = getline(&lines[i], &capacities[i], stdin);
+        if (length < 0 || (size_t)length > JSON_LIMIT)
+            goto done;
+        status[i] = json_tokener_parse(lines[i]);
+    }
     facts=route_facts();if(!facts || !json_object_is_type(get(facts,"routes"),json_type_array) || !json_object_is_type(get(facts,"rules"),json_type_array))goto done;
     ok=family_route_current(facts,status[0],argv[0],argv[1],4,argv[2],argv[3]) && family_route_current(facts,status[1],argv[0],argv[1],6,argv[4],argv[5]);
     if(ok)printf("%s %s\n",*argv[3]?"managed":"not_configured",*argv[5]?"managed":"not_configured");
