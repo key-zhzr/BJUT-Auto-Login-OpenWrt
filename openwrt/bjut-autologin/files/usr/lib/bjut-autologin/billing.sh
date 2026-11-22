@@ -32,29 +32,84 @@ billing_valid_path() {
 	[ "${#1}" -le 2048 ]
 }
 
+billing_curl() {
+	[ "${BILLING_AJAX:-0}" != 1 ] || set -- --header 'X-Requested-With: XMLHttpRequest' --header 'Accept: application/json,text/plain,*/*;q=0.8' "$@"
+	bound_curl ipv4 --silent --show-error --noproxy '*' --proxy '' --ipv4 --no-location \
+		--proto '=https' --connect-timeout "$CFG_TIMEOUT" --max-time "$CFG_TIMEOUT" \
+		--max-filesize 1048576 --resolve 'jfself.bjut.edu.cn:443:172.21.0.16' \
+		--cookie "$BILLING_CACHE/cookies" --cookie-jar "$BILLING_CACHE/cookies" \
+		--referer "${BILLING_REFERER:-https://jfself.bjut.edu.cn/Self/login/}" --user-agent "BJUT-Auto-Login-OpenWrt/$VERSION" "$@"
+}
+
+billing_body_valid() {
+	local size
+	[ -f "$1" ] || return 1
+	size="$(wc -c <"$1" | tr -d ' \011\012\015')"
+	is_uint "$size" && [ "$size" -le 1048576 ]
+}
+
+# Module reads are GETs to a fixed origin. One curl process performs the
+# transfers sequentially, keeping the TLS connection and cookie jar alive.
+billing_prefetch() {
+	local folder url index=0 code rc
+	[ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ "$CURL_IFHOST" = 1 ] || return 0
+	folder="$(mktemp -d "$WORK_DIR/module-pages.XXXXXX")" || return 0
+	case "$folder" in *'"'*|*'\'*|*'
+'*) return 0;; esac
+	for url in "$@"; do billing_valid_path "$url" || return 0; done
+	printf '%s\n' "$@" >"$folder/paths"
+	{
+		for url in "$@"; do
+			index=$((index + 1))
+			printf 'url = "https://jfself.bjut.edu.cn%s"\noutput = "%s/body-%s"\n' "$url" "$folder" "$index"
+		done
+	} | billing_curl --no-parallel --write-out '%{http_code} %{exitcode}\n' --config - >"$folder/status" 2>"$WORK_DIR/curl-error"
+	index=0
+	while IFS=' ' read -r code rc; do
+		index=$((index + 1))
+		case "$code:$rc" in
+			2[0-9][0-9]:0)
+				if billing_body_valid "$folder/body-$index"; then : >"$folder/ok-$index"; fi ;;
+			30[123]:0) ;; # Follow only individually validated redirects.
+			*) if is_uint "$rc"; then : >"$folder/error-$index"; fi ;;
+		esac
+	done <"$folder/status"
+	BILLING_PREFETCH="$folder"
+}
+
+billing_prefetched() {
+	local known index=0
+	while IFS= read -r known; do
+		index=$((index + 1))
+		[ "$known" = "$1" ] || continue
+		[ ! -f "$BILLING_PREFETCH/error-$index" ] || return 2
+		[ -f "$BILLING_PREFETCH/ok-$index" ] || return 1
+		cp "$BILLING_PREFETCH/body-$index" "$WORK_DIR/billing-body"
+		return $?
+	done <"$BILLING_PREFETCH/paths"
+	return 1
+}
+
 billing_request() {
-	local path="$1" data="${2:-}" url code location size rc method=GET count=0
-	path="$(billing_normalize_path "$path")"
+	local path="$1" data="${2:-}" url code location rc method=GET count=0
+	case "$path" in /Self/*) ;; *) path="$(billing_normalize_path "$path")";; esac
 	billing_valid_path "$path" || return 1
 	case "$path" in https://*) url="$path" ;; *) url="https://jfself.bjut.edu.cn$path" ;; esac
 	[ -z "$data" ] || method=POST
+	if [ "$method" = GET ] && [ -n "${BILLING_PREFETCH:-}" ]; then
+		billing_prefetched "$path"
+		case "$?" in 0) return 0;; 2) return 1;; esac
+	fi
 	while [ "$count" -lt 6 ]; do
-		set -- --silent --show-error --noproxy '*' --proxy '' --ipv4 \
-			--proto '=https' --connect-timeout "$CFG_TIMEOUT" --max-time "$CFG_TIMEOUT" \
-			--max-filesize 1048576 --resolve 'jfself.bjut.edu.cn:443:172.21.0.16' \
-			--cookie "$BILLING_CACHE/cookies" --cookie-jar "$BILLING_CACHE/cookies" \
-			--dump-header "$WORK_DIR/headers" --output "$WORK_DIR/billing-body" --write-out '%{http_code}' \
-			--referer "${BILLING_REFERER:-https://jfself.bjut.edu.cn/Self/login/}" --user-agent "BJUT-Auto-Login-OpenWrt/$VERSION"
+		set -- --dump-header "$WORK_DIR/headers" --output "$WORK_DIR/billing-body" --write-out '%{http_code}'
 		if [ "$method" = POST ]; then
 			set -- "$@" --header 'Content-Type: application/x-www-form-urlencoded' --header 'Origin: https://jfself.bjut.edu.cn'
 		fi
-		[ "${BILLING_AJAX:-0}" != 1 ] || set -- "$@" --header 'X-Requested-With: XMLHttpRequest' --header 'Accept: application/json,text/plain,*/*;q=0.8'
 		code="$( { printf 'url = "%s"\n' "$url"; [ "$method" != POST ] || printf 'data = "%s"\n' "$data"; } |
-			bound_curl ipv4 "$@" --config - 2>"$WORK_DIR/curl-error")"
+			billing_curl "$@" --config - 2>"$WORK_DIR/curl-error")"
 		rc=$?
 		[ "$rc" = 0 ] || return 1
-		size="$(wc -c <"$WORK_DIR/billing-body" | tr -d ' \011\012\015')"
-		is_uint "$size" && [ "$size" -le 1048576 ] || return 1
+		billing_body_valid "$WORK_DIR/billing-body" || return 1
 		case "$code" in
 			2[0-9][0-9]) return 0 ;;
 			301|302|303)
@@ -167,9 +222,12 @@ billing_publish_overview() {
 	json_add_string accountStatus "$status"; json_add_string package "$package"
 	json_add_int updatedAt "$(date +%s)"
 	json_dump >"$BILLING_JOB/overview.json"
+	if [ "${BILLING_MODULE:-}" = center ]; then
+		billing_center_modules
+		return $?
+	fi
 	# The UI can show the verified overview while the optional session module
 	# is still loading; one unavailable endpoint cannot hide the balance.
-	[ "${BILLING_MODULE:-}" != center ] || percent=44
 	sed 's/"state"[[:space:]]*:[[:space:]]*"ready"/"state":"loading"/;s/"percent"[[:space:]]*:[[:space:]]*100/"percent":'"$percent"'/;s/"message"[[:space:]]*:[[:space:]]*"计费数据已更新"/"message":"正在读取在线设备"/' "$BILLING_JOB/overview.json" >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
 	# The traffic worker prepares routes/session/dashboard ahead of the shared
 	# minute boundary. Only the counter request waits; interactive jobs do not.
@@ -180,26 +238,22 @@ billing_publish_overview() {
 			sleep "$sample_delay" & SLEEP_PID="$!";wait "$SLEEP_PID";SLEEP_PID=''
 		fi
 	fi
-	rm -f "$BILLING_JOB/online.json"
-	# The observation time is the actual start of the successful counter
-	# request, not the scheduled boundary or response/parser completion time.
-	local online_started="$(date +%s)" online_finished
-	if billing_request /Self/dashboard/getOnlineList; then
-		# An HTTP-200 login page/error object is not an empty session list.
-		# Some portal versions return a literal null for an empty list, which
-		# jsonfilter builds differ on accepting as a root value.
-		if billing_capture_online;then
-			printf '%s' "$online_started" >"$BILLING_JOB/online-at"
-			online_finished="$(date +%s)";printf '%s' "$online_finished" >"$BILLING_JOB/online-finished-at"
-		fi
+	if ! billing_read_online && [ "${BJUT_NETWORK_ADDRESSES_ONLY:-0}" = 1 ]; then
+		billing_progress error 100 '在线设备查询未通过，等待切换可用出口'
+		return 1
 	fi
-	if [ "${BJUT_NETWORK_ADDRESSES_ONLY:-0}" = 1 ] && [ ! -s "$BILLING_JOB/online.json" ];then
-		billing_progress error 100 '在线设备查询未通过，等待切换可用出口';return 1
-	fi
-	if [ "${BILLING_MODULE:-}" = center ]; then billing_center_modules; else
-	 cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
-	fi
+	cp "$BILLING_JOB/overview.json" "$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+}
 
+billing_read_online() {
+	local online_started
+	rm -f "$BILLING_JOB/online.json"
+	# Use the actual start of the successful request for traffic sampling.
+	online_started="$(date +%s)"
+	billing_request /Self/dashboard/getOnlineList && billing_capture_online || return 1
+	[ -z "${BILLING_PREFETCH:-}" ] || return 0
+	printf '%s' "$online_started" >"$BILLING_JOB/online-at"
+	date +%s >"$BILLING_JOB/online-finished-at"
 }
 
 billing_current_session() {
@@ -240,11 +294,13 @@ billing_collect_expired() (
 
 billing_worker() {
 	local ticket="$1" uplink account_id action code checkcode needs action_path password signature current cache_pid section enabled order saved_account observed_account candidate_account
+	local cache_account
 	BILLING_JOB="$STATE_DIR/billing/$ticket"
 	[ -s "$BILLING_JOB/request.json" ] || return 1
 	json_fields "$BILLING_JOB/request.json" uplink=@.uplink account_id=@.account action=@.action BILLING_RECORD_KIND=@.kind BILLING_MODULE=@.module BILLING_OPERATION=@.operation code=@.code
 	load_configuration && select_uplink "$uplink" || return 1
 	BILLING_CURRENT=0; BILLING_VERIFIED=0; BILLING_ACCESS="已保存账号"; BILLING_ACCOUNT=""; password=""
+	cache_account="$account_id"
 	if [ "$account_id" = current ]; then
 		BILLING_CURRENT=1
 		# A failed SSO must not silently query the first enabled account. Only
@@ -255,6 +311,7 @@ billing_worker() {
 			[ -n "$observed_account" ] && [ "${candidate_account%@campus}" = "${observed_account%@campus}" ] || continue
 			BILLING_ACCOUNT="$candidate_account"
 			credential_get password "$section" || return 1
+			cache_account="$section"
 			[ -z "$BILLING_ACCOUNT" ] || [ -z "$password" ] || break
 		done
 	else
@@ -265,9 +322,13 @@ billing_worker() {
 	saved_account="$BILLING_ACCOUNT"
 	read_network_identity || { billing_progress error 100 "所选上游尚未取得校园网地址"; return 1; }
 	prepare_work_dir || return 1
+	curl_supports_ifhost || true
 	ensure_uplink_routes || { billing_progress error 100 '出口路由正在被其他上游更新，请稍后刷新'; return 1; }
 	sync_mwan_rules || true
-	signature="$(printf '%s\n' "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$account_id" "$BILLING_ACCOUNT" "$password" | sha256sum | awk '{print $1}')"
+	if [ "$CFG_MWAN3" = 1 ] && [ -r "$MWAN_WRAPPER" ]; then MWAN_MASK_CACHED="$(mwan_mask)" || return 1; fi
+	# The same owner can open account details from a current-account overview
+	# using its verified cookie jar. Current-account jobs still confirm via SSO.
+	signature="$(printf '%s\n' "$UPLINK_ID" "$DEVICE" "$LOCAL_IPV4" "$cache_account" "$BILLING_ACCOUNT" "$password" | sha256sum | awk '{print $1}')"
 	[ "${#signature}" = 64 ] || { billing_progress error 100 "请重新安装路由端以补齐所需组件"; return 1; }
 	BILLING_CACHE="$STATE_DIR/billing-cache/$(cat "$BILLING_JOB/owner")-$signature"
 	mkdir -p "$BILLING_CACHE"
@@ -494,6 +555,7 @@ billing_summary_collect() {
 
 billing_publish_records() {
  local actual="$1" start end year page first last cursor stop from to offset=0 total=0 page_from page_to page_index global index key value column row_position list row_bytes window_count formatted mac nas_ip nas_port access_method label
+ local page_offset slice_first slice_last
  start="$(json_file_value "$BILLING_JOB/request.json" '@.start_date')"; end="$(json_file_value "$BILLING_JOB/request.json" '@.end_date')"; year="$(json_file_value "$BILLING_JOB/request.json" '@.year')"; page="$(json_file_value "$BILLING_JOB/request.json" '@.page')"
  billing_validate_records "$BILLING_RECORD_KIND" "$start" "$end" "$year" "$page" && billing_record_spec "$BILLING_RECORD_KIND" || { billing_progress error 100 '记录查询内容无效'; return 1; }
  BILLING_REFERER="https://jfself.bjut.edu.cn$RECORD_PAGE"
@@ -518,6 +580,15 @@ billing_publish_records() {
   while [ "$page_index" -le "$page_to" ]; do
    [ "$page_index" = 1 ] || billing_record_fetch "$page_index" "$start" "$end" "$year" || { billing_progress error 100 '部分记录暂时无法查询'; return 1; }
    [ "$RECORD_COUNT" = "$window_count" ] || { billing_progress error 100 '查询期间记录发生变化，请重新查询'; return 1; }
+   if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ]; then
+    page_offset=$((offset+(page_index-1)*100))
+    slice_first=$((from-page_offset)); [ "$slice_first" -ge 0 ] || slice_first=0
+    slice_last=$((to-page_offset)); [ "$slice_last" -le 99 ] || slice_last=99
+    "$RUNTIME_BIN" billing-record-rows "$RECORD_SOURCE" "$BILLING_RECORD_KIND" "$slice_first" "$slice_last" $RECORD_FIELDS >>"$list" ||
+     { billing_progress error 100 '记录包含无法识别的条目'; return 1; }
+    page_index=$((page_index+1))
+    continue
+   fi
    index=0
  while [ "$index" -lt 100 ]; do
     row_position="$RECORD_PREFIX[$index]"; row_bytes="$(json_file_value "$RECORD_SOURCE" "$row_position")"; [ -n "$row_bytes" ] || break

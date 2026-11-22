@@ -5,6 +5,28 @@ if [ "$1" = --version ]; then printf 'curl %s mock\n' "${MOCK_CURL_VERSION:-8.19
 state_dir="${MOCK_STATE_DIR:?}"
 mkdir -p "$state_dir"
 config="$(cat)"
+case "$config" in
+ *'
+output = "'*)
+    printf 'BATCH billing GET\n' >>"$state_dir/requests.log"
+    entry=''
+    while IFS= read -r line; do
+        case "$line" in
+            'url = "'*) entry="$line";;
+            'output = "'*)
+                destination="${line#output = \"}"
+                destination="${destination%\"}"
+                code="$(printf '%s\n' "$entry" | "$0" "$@" --output "$destination")"
+                rc=$?
+                printf '%s %s\n' "${code:-000}" "$rc"
+                ;;
+        esac
+    done <<EOF
+$config
+EOF
+    exit 0
+    ;;
+esac
 url="$(printf '%s\n' "$config" | sed -n 's/^url = "\(.*\)"$/\1/p')"
 output=""
 pinned=0

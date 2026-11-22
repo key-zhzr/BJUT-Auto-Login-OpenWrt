@@ -21,10 +21,11 @@ function requireUsageReport(report) {
         throw new Error('路由器未返回流量统计状态');
     }
 }
-function routerUsageWindows(query) {
+function routerUsageWindows(query, compact) {
     const windows = [];
     const add = (start, end, resolution) => {
-        const span = resolution === 60 ? 86400 : resolution === 3600 ? 7 * 86400 : 90 * 86400;
+        const days = resolution === 60 ? (compact ? 3 : 1) : resolution === 3600 ? 7 : 90;
+        const span = days * 86400;
         while (start <= end) {
             const boundary = (Math.floor((start + 28800) / span) + 1) * span - 28800;
             const last = Math.min(end, boundary - 1);
@@ -46,14 +47,31 @@ function routerUsageWindows(query) {
 class RouterUsageReader {
     constructor() {
         this.pages = new Map();
+        this.cachedPoints = 0;
+        this.generation = 0;
     }
-    clear() { this.pages.clear(); }
-    async read(request, query, current = () => true) {
+    clear() { this.generation++; this.pages.clear(); this.cachedPoints = 0; }
+    remember(key, expires, rows) {
+        this.cachedPoints -= this.pages.get(key)?.rows.length ?? 0;
+        this.pages.delete(key);
+        this.pages.set(key, { expires, rows });
+        this.cachedPoints += rows.length;
+        for (const [oldKey, old] of this.pages) {
+            if (this.pages.size <= 48 && this.cachedPoints <= 240000)
+                break;
+            this.cachedPoints -= old.rows.length;
+            this.pages.delete(oldKey);
+        }
+    }
+    async read(request, query, current = () => true, progress) {
         const now = Date.now();
+        const generation = this.generation;
+        let stopped = false;
+        const active = () => !stopped && generation === this.generation && current();
         // A short range also works on routers that ignore the optional part.
         const at = Math.floor(now / 1000);
         const summary = await request({ part: 'summary', start: at, end: at, resolution: 86400, monthly: false });
-        if (!current())
+        if (!active())
             return null;
         requireUsageReport(summary);
         if (!summary.enabled) {
@@ -61,11 +79,13 @@ class RouterUsageReader {
             return summary;
         }
         const paged = summary.part === 'summary';
+        const compact = paged && summary.seriesEncoding === 'compact-v1';
+        const part = compact ? 'compact' : paged ? 'series' : undefined;
         const load = async (window) => {
-            if (!current())
+            if (!active())
                 return null;
-            const page = await request(paged ? { ...window, part: 'series' } : window);
-            if (!current())
+            const page = await request(part ? { ...window, part } : window);
+            if (!active())
                 return null;
             if (page?.state === 'split') {
                 const steps = Math.floor((window.end - window.start) / window.resolution);
@@ -81,42 +101,95 @@ class RouterUsageReader {
             requireUsageReport(page);
             if (!page.enabled || page.scope !== summary.scope)
                 return null;
+            if (compact && (page.part !== 'compact' || typeof page.timeline?.rows !== 'string'
+                || page.timeline.resolution !== window.resolution || !Number.isSafeInteger(page.timeline.base)
+                || !Array.isArray(page.timeline.channels)))
+                throw new Error('路由器返回的流量分段不完整');
             return normalizeUsageReport(page).series.filter(row => row.resolution === window.resolution && row.at >= window.start && row.at <= window.end);
         };
-        const next = new Map();
-        const series = [];
-        for (const window of routerUsageWindows(query)) {
-            const key = JSON.stringify([paged, summary.scope, window.start, window.end, window.resolution]);
-            let entry = this.pages.get(key);
-            if (!entry || entry.expires <= now) {
-                const rows = await load(window);
-                if (!rows)
-                    return null;
-                entry = { expires: now + 5 * 60000, rows };
-            }
-            if (window.end < at - 180)
-                next.set(key, entry);
-            for (const row of entry.rows)
-                series.push(row);
+        const windows = routerUsageWindows(query, compact);
+        const rows = new Array(windows.length);
+        const pending = [];
+        for (const [index, window] of windows.entries()) {
+            const key = JSON.stringify([part, summary.scope, window.start, window.end, window.resolution]);
+            const cached = this.pages.get(key);
+            if (cached && cached.expires > now)
+                rows[index] = cached.rows;
+            else
+                pending.push({ index, key, window });
         }
-        if (!current())
+        let completed = windows.length - pending.length, cursor = 0;
+        // Periodic refreshes of a single tail segment do not flash the bar.
+        const reportProgress = () => {
+            if (pending.length > 1)
+                progress?.({ completed, total: windows.length });
+        };
+        reportProgress();
+        const worker = async () => {
+            try {
+                while (active() && cursor < pending.length) {
+                    const { index, key, window } = pending[cursor++];
+                    const page = await load(window);
+                    if (!page) {
+                        stopped = true;
+                        return;
+                    }
+                    if (window.end < at - 180)
+                        this.remember(key, now + 5 * 60000, page);
+                    rows[index] = page;
+                    completed++;
+                    reportProgress();
+                }
+            }
+            catch (error) {
+                stopped = true;
+                throw error;
+            }
+        };
+        // Bound peak work on the router and drain in-flight pages on a range change.
+        const results = await Promise.allSettled(Array.from({ length: Math.min(2, pending.length) }, worker));
+        for (const result of results)
+            if (result.status === 'rejected')
+                throw result.reason;
+        if (!active())
             return null;
-        this.pages = next;
+        const series = [];
+        for (const page of rows)
+            for (const point of page)
+                series.push(point);
         return { ...summary, timeline: undefined, series };
     }
 }
 function normalizeUsageReport(report) {
-    const series = [...(report.series || [])];
-    for (const row of report.timeline?.buckets || []) {
-        const channel = report.timeline?.channels[row[0]];
+    const timeline = report.timeline;
+    const series = timeline ? [...(report.series || [])] : report.series || [];
+    for (const row of timeline?.buckets || []) {
+        const channel = timeline?.channels[row[0]];
         if (!channel || ![5, 7].includes(row.length) || !row.every(Number.isFinite) || ![60, 3600, 86400].includes(row[1]) || row[3] < 0 || row[4] <= 0)
             continue;
         series.push({ ...channel, resolution: row[1], at: row[2], usedMb: row[3], sampledSeconds: row[4], ...(row.length === 7 ? { startedAt: row[5], endedAt: row[6] } : {}) });
     }
+    if (timeline && typeof timeline.rows === 'string' && timeline.base !== undefined && timeline.resolution !== undefined) {
+        const { base, resolution, channels, rows } = timeline;
+        if (Number.isSafeInteger(base) && [60, 3600, 86400].includes(resolution))
+            for (const line of rows.split('\n')) {
+                if (!line)
+                    continue;
+                const point = line.split(',').map(Number);
+                const [index, offset, usedMb, sampledSeconds, start, end] = point;
+                const channel = channels[index];
+                if (!channel || (point.length !== 4 && point.length !== 6) || !point.every(Number.isFinite)
+                    || !Number.isSafeInteger(offset) || offset < 0 || usedMb < 0 || sampledSeconds <= 0)
+                    continue;
+                const at = base + offset;
+                series.push({ ...channel, at, resolution, usedMb, sampledSeconds,
+                    ...(point.length === 6 ? { startedAt: at + start, endedAt: at + end } : {}) });
+            }
+    }
     // Scope is enforced by the sampler/API and again here for cached data from
     // an earlier all-device session. Unclassified legacy rows are not local.
     const all = report.scope === 'all';
-    return { ...report, timeline: undefined, accounts: (report.accounts || []).map(account => ({ ...account, devices: (account.devices || []).filter(device => all || device.local === true) })), history: (report.history || []).filter(row => all || row.local === true), series: series.filter(row => all || row.local === true) };
+    return { ...report, timeline: undefined, accounts: (report.accounts || []).map(account => ({ ...account, devices: (account.devices || []).filter(device => all || device.local === true) })), history: (report.history || []).filter(row => all || row.local === true), series: !all && series.some(row => row.local !== true) ? series.filter(row => row.local === true) : series };
 }
 const usageScales = [
     { value: 'minute', text: '每分钟', seconds: 60, ranges: [3600, 21600, 86400, 172800] },
@@ -299,6 +372,12 @@ function usageNativeSelect(label, options, change) {
     element.onchange = () => change(element.value);
     return control;
 }
+function sameUsagePoint(a, b) {
+    return a === b || (a.at === b.at && a.resolution === b.resolution && a.account === b.account && a.device === b.device
+        && a.interfaceId === b.interfaceId && a.interfaceName === b.interfaceName && a.local === b.local
+        && a.usedMb === b.usedMb && a.sampledSeconds === b.sampledSeconds
+        && a.startedAt === b.startedAt && a.endedAt === b.endedAt);
+}
 /** Shared DOM renderer: the App supplies its existing menus/motion; LuCI supplies its own controls. */
 class UsageChart {
     constructor(root, environment) {
@@ -308,6 +387,9 @@ class UsageChart {
         this.options = { scale: 'minute', range: 21600, mode: 'delta', presentation: 'sum', interfaces: null, account: '' };
         this.title = usageElement('h3', '', '流量趋势');
         this.status = usageElement('p', 'traffic-note');
+        this.loading = usageElement('div', 'traffic-loading');
+        this.loadingText = usageElement('p', 'traffic-note');
+        this.loadingFill = usageElement('div', 'traffic-loading-fill');
         this.enabled = usageElement('button', 'btn btn-secondary btn-sm', '开启统计');
         this.content = usageElement('div', 'traffic-content');
         this.scopeLocal = usageElement('button', 'btn btn-secondary btn-sm', '仅本机设备');
@@ -337,6 +419,14 @@ class UsageChart {
         this.scopeLocal.textContent = environment.localLabel || '仅本机设备';
         const header = usageElement('div', 'traffic-heading'), intro = usageElement('div');
         intro.append(this.title, this.status);
+        const loadingBody = usageElement('div', 'traffic-loading-body'), track = usageElement('div', 'traffic-loading-track');
+        track.append(this.loadingFill);
+        loadingBody.append(this.loadingText, track);
+        this.loading.append(loadingBody);
+        this.loading.setAttribute('role', 'progressbar');
+        this.loading.setAttribute('aria-label', '正在加载流量历史');
+        this.loading.setAttribute('aria-valuemin', '0');
+        this.loading.setAttribute('aria-hidden', 'true');
         this.enabled.type = 'button';
         this.enabled.onclick = () => { void this.configure(!this.data.enabled, this.data.scope); };
         header.append(intro, this.enabled);
@@ -441,7 +531,7 @@ class UsageChart {
         const note = usageElement('p', 'traffic-note', '下载计费量 · 滚轮缩放时间 · 虚线连接采样中断 · 当月累计仅含已采集记录');
         this.content.append(scope, controls, this.dates, this.interfaceChoices, this.legend, this.plot, this.summary, note, details);
         this.content.hidden = true;
-        root.replaceChildren(header, this.content);
+        root.replaceChildren(header, this.loading, this.content);
         if (typeof ResizeObserver !== 'undefined') {
             this.observer = new ResizeObserver(() => {
                 const width = Math.max(300, Math.round(this.plot.clientWidth));
@@ -494,8 +584,9 @@ class UsageChart {
         const scoped = normalizeUsageReport(data);
         const next = { ...scoped, enabled: data.enabled === true, scope: data.scope === 'all' ? 'all' : 'local', accounts: scoped.accounts, history: scoped.history, series: scoped.series };
         this.status.textContent = message || (next.enabled ? `计费下载量 · 每分钟更新 · 采集${next.scope === 'local' ? this.scopeLocal.textContent : '全部在线设备'}` : '流量统计未开启，可手动开启。');
-        const stamp = JSON.stringify([next, message]);
-        if (stamp === this.stamp)
+        const stamp = JSON.stringify([next.enabled, next.scope, next.accounts, next.history, next.switches, message]);
+        if (stamp === this.stamp && next.series.length === this.data.series.length &&
+            next.series.every((row, index) => sameUsagePoint(row, this.data.series[index])))
             return;
         this.stamp = stamp;
         this.data = next;
@@ -519,6 +610,17 @@ class UsageChart {
             this.drawDevices();
         });
     }
+    showLoading(progress) {
+        this.loading.classList.toggle('is-loading', progress !== null);
+        this.loading.setAttribute('aria-hidden', String(progress === null));
+        this.plot.setAttribute('aria-busy', String(progress !== null));
+        if (!progress)
+            return;
+        this.loadingText.textContent = `正在加载流量历史 · ${progress.completed} / ${progress.total} 段`;
+        this.loading.setAttribute('aria-valuemax', String(progress.total));
+        this.loading.setAttribute('aria-valuenow', String(progress.completed));
+        this.loadingFill.style.transform = `scaleX(${progress.completed / progress.total})`;
+    }
     showError(message) { this.status.textContent = message; }
     query() {
         const now = Date.now() / 1000;
@@ -528,8 +630,8 @@ class UsageChart {
     }
     destroy() { this.observer?.disconnect(); if (this.wheelFrame)
         cancelAnimationFrame(this.wheelFrame); }
-    updateInterfaces() {
-        const choices = usageInterfaces(this.viewed().series, this.options.account), stamp = JSON.stringify([choices, this.options.interfaces]);
+    updateInterfaces(series) {
+        const choices = usageInterfaces(series, this.options.account), stamp = JSON.stringify([choices, this.options.interfaces]);
         if (stamp === this.interfacesStamp)
             return;
         this.interfacesStamp = stamp;
@@ -559,8 +661,9 @@ class UsageChart {
         this.interfaceChoices.hidden = this.options.presentation !== 'interfaces';
         this.scopeLocal.setAttribute('aria-pressed', String(this.viewScope === 'local'));
         this.scopeAll.setAttribute('aria-pressed', String(this.viewScope === 'all'));
-        this.updateInterfaces();
-        this.chart = buildUsageChart(this.viewed().series, this.options);
+        const series = this.viewed().series;
+        this.updateInterfaces(series);
+        this.chart = buildUsageChart(series, this.options);
         this.width = Math.max(300, this.plot.clientWidth || 1000);
         this.legend.replaceChildren(...this.chart.curves.map((curve, index) => {
             const item = usageElement('span'), dot = usageElement('i');

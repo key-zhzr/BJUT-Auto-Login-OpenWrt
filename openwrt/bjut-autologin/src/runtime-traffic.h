@@ -79,11 +79,11 @@ static J *traffic_array(J *o) {
     return json_object_is_type(o,json_type_array)?o:NULL;
 }
 static int private_write(const char *file,const char *value);
-static int online_capture(const char *input,const char *output) {
-    FILE *f=tio_file(input);if(!f)return 1;
-    char *buffer=malloc(JSON_LIMIT+1);if(!buffer){fclose(f);return 1;}
+static int billing_read_json(const char *input, J **value) {
+    FILE *f=tio_file(input);if(!f)return 0;
+    char *buffer=malloc(JSON_LIMIT+1);if(!buffer){fclose(f);return 0;}
     size_t n=fread(buffer,1,JSON_LIMIT+1,f);int ok=n<=JSON_LIMIT && !ferror(f);fclose(f);
-    J *o=NULL,*rows=NULL;enum json_tokener_error error=json_tokener_error_parse_unexpected;
+    J *o=NULL;enum json_tokener_error error=json_tokener_error_parse_unexpected;
     if(ok) {
         buffer[n]=0;const char *p=buffer;
         if(n>=3 && !memcmp(p,"\xef\xbb\xbf",3))p+=3;
@@ -92,6 +92,14 @@ static int online_capture(const char *input,const char *output) {
             J *nested=json_tokener_parse_verbose(json_object_get_string(o),&error);json_object_put(o);o=nested;ok=error==json_tokener_success;
         }
     }
+    free(buffer);
+    if(!ok){json_object_put(o);return 0;}
+    *value=o;
+    return 1;
+}
+static int online_capture(const char *input,const char *output) {
+    J *o=NULL,*rows=NULL;
+    int ok=billing_read_json(input,&o);
     if(ok && !o) {o=json_object_new_array();rows=o;}
     else if(ok && json_object_is_type(o,json_type_array))rows=o;
     else if(ok) {
@@ -103,7 +111,7 @@ static int online_capture(const char *input,const char *output) {
         if(!s || !*s || !strcmp(s,"null") || strlen(s)>256 || strpbrk(s,"\r\n") || json_object_is_type(id,json_type_object) || json_object_is_type(id,json_type_array)){ok=0;break;}
     }
     if(ok)ok=private_write(output,json_object_to_json_string_ext(rows,JSON_C_TO_STRING_PLAIN));
-    json_object_put(o);free(buffer);return ok?0:1;
+    json_object_put(o);return ok?0:1;
 }
 static int private_write(const char *file,const char *value) {
     char tmp[PATH_MAX];size_t n=strlen(file);

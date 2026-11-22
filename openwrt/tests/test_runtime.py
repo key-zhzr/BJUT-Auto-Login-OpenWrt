@@ -114,6 +114,7 @@ class RuntimeTests(unittest.TestCase):
         summary = self.response('traffic', env, {'part': 'summary'})
         self.assertIs(summary['enabled'], True)
         self.assertEqual(summary['part'], 'summary')
+        self.assertEqual(summary['seriesEncoding'], 'compact-v1')
         self.assertNotIn('timeline', summary)
         self.assertIn(cutoff, [row['day'] for row in summary['history']])
         self.assertEqual(len(summary['switches']), 1)
@@ -136,6 +137,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([row[2] for row in buckets],
                          [start + 60 * offset for offset in range(count) for _ in devices])
         self.assertTrue(all(row[3:] == [1.234, 60, row[2]-59, row[2]+1] for row in buckets))
+
+        compact = self.response('traffic', env, {**request, 'part': 'compact'})
+        self.assertEqual(compact['part'], 'compact')
+        timeline = compact['timeline']
+        self.assertEqual(timeline['resolution'], 60)
+        self.assertEqual(timeline['channels'], pages[0]['timeline']['channels'])
+        decoded = []
+        for line in timeline['rows'].splitlines():
+            channel, offset, amount, seconds, start_offset, end_offset = line.split(',')
+            at = timeline['base'] + int(offset)
+            decoded.append([int(channel), 60, at, float(amount), int(seconds),
+                            at + int(start_offset), at + int(end_offset)])
+        self.assertEqual(decoded, buckets)
+        self.assertLess(len(json.dumps(compact)), len(json.dumps(pages)) * 0.65)
 
     def test_same_second_configuration_and_pending_delta_edits_invalidate_the_cache(self):
         env = self.fixture()

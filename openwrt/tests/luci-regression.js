@@ -26,7 +26,8 @@ const accounts = { accounts: [{ id: 'account1', user: '25000001', enabled: 1, ha
 const ports = { ports: status.uplinks.map((item, i) => ({ uplink: item.id, device: item.device, linkUp: 1, speedMbps: i === 3 ? '2500' : '1000', txBytes: String(50000000000 + i * 1000000000), rxBytes: String(70000000000 + i * 3000000000) })) };
 let revision = 0, failNext = false, sequence = 0, pushplusSeq = 0, pushplusMode = 'HoldQueued';
 let pushplusState = { state: 'idle', enabled: 1, configured: 1, sequence: 0, updatedAt: 0, httpStatus: '', apiCode: '', pending: 0, cooldownRemaining: 0, delivered: 0, deliverySemantics: 'accepted_not_delivered', message: '尚未发送测试消息；点击发送测试消息后可查看排队、HTTP/业务码或受理状态。' };
-let trafficEnabled=false,trafficScope='local';
+const trafficMonth = new URLSearchParams(location.search).has('traffic-month');
+let trafficEnabled=trafficMonth,trafficScope='local';
 const calls = [];
 const tickets = new Map();
 async function server(method, args = {}) {
@@ -50,6 +51,23 @@ async function server(method, args = {}) {
     if(method==='save_settings') {if(args.traffic_monitor!==undefined)trafficEnabled=args.traffic_monitor==='1';if(args.traffic_scope)trafficScope=args.traffic_scope;return {state:'ready'};}
     if (method === 'traffic') {
         const at=Math.floor(Date.now()/60000)*60;
+        if (trafficMonth) {
+            const summary = {enabled:trafficEnabled,scope:trafficScope,accounts:[],history:[],series:[]};
+            if (args.part === 'summary') return {...summary,part:'summary',seriesEncoding:'compact-v1'};
+            if (args.part === 'compact') {
+                await new Promise(resolve => setTimeout(resolve, 220));
+                const channels = status.uplinks.map(({device}) => ({
+                    account:'25000001',device,interfaceId:device,interfaceName:device,local:true,
+                }));
+                const rows = [];
+                for (let time = args.start; time <= args.end; time += args.resolution) {
+                    for (let index = 0; index < channels.length; index++) {
+                        rows.push(`${index},${time - args.start},0.5,60,-60,0`);
+                    }
+                }
+                return {...summary,part:'compact',timeline:{channels,base:args.start,resolution:args.resolution,rows:rows.join('\n')}};
+            }
+        }
         const channels=[{account:'25000001',device:'a',interfaceId:'lan3',interfaceName:'lan3',local:true},{account:'25000001',device:'b',interfaceId:'lan4',interfaceName:'lan4',local:true}];
         return {enabled:trafficEnabled,scope:trafficScope,accounts:[{account:'25000001',updatedAt:at,devices:[{interfaceName:'lan3',local:true,ip:'10.126.19.139',usedFlowMb:'512.5'}]}],history:[],series:[],timeline:{channels,buckets:channels.flatMap((_,channel)=>Array.from({length:60},(_,i)=>[channel,60,at-(59-i)*60,(channel+1)*(i%7+1),60]).concat([[channel,86400,at-at%86400,1024*(channel+1),3600]]))}};
     }

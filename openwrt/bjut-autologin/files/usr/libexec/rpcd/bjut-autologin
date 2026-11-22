@@ -217,6 +217,8 @@ session_rows() {
 	local index=0 comma="" value key row source prefix item
 	source="$BILLING_JOB/online.json"
 	[ -s "$source" ] || { printf '[]'; return; }
+	if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ] &&
+		"$RUNTIME_BIN" billing-project sessions "$source"; then return; fi
 	prefix='@'
 	[ -z "$(json_file_value "$source" '@.rows')" ] || prefix='@.rows'
 	[ -z "$(json_file_value "$source" '@.data')" ] || prefix='@.data'
@@ -248,7 +250,7 @@ case "$2" in
 	billing_cached) billing_cached ;;
 	traffic)
         case "$(request_value part)" in
-            summary|series)
+            summary|series|compact)
                 traffic_history_prepare && view_snapshot traffic || reply error "暂时无法读取流量历史"
                 ;;
             *) traffic_cached ;;
@@ -279,11 +281,24 @@ case "$2" in
     uplink_delete) workbench_uplink_delete ;;
 	billing_poll)
 		ticket_job || { reply error "查询已过期，请刷新"; exit 0; }
-        if [ "$(json_file_value "$BILLING_JOB/result.json" '@.state')" = loading ];then
+        result_state="$(json_file_value "$BILLING_JOB/result.json" '@.state')"
+        if [ "$result_state" = loading ];then
           worker="$(cat "$BILLING_JOB/worker-pid" 2>/dev/null)";launched="$(cat "$BILLING_JOB/launched" 2>/dev/null)"
-          if { is_uint "$worker" && ! kill -0 "$worker" 2>/dev/null; } || { [ -z "$worker" ] && is_uint "$launched" && [ "$(($(date +%s)-launched))" -gt 10 ]; };then billing_progress error 100 '计费查询已中断，请刷新后重试';fi
+          if { is_uint "$worker" && ! kill -0 "$worker" 2>/dev/null; } || { [ -z "$worker" ] && is_uint "$launched" && [ "$(($(date +%s)-launched))" -gt 10 ]; };then
+            result_state="$(json_file_value "$BILLING_JOB/result.json" '@.state')"
+            if [ "$result_state" = loading ]; then
+              billing_progress error 100 '计费查询已中断，请刷新后重试'
+              result_state=error
+            fi
+          fi
         fi
-		printf '{"result":'; cat "$BILLING_JOB/result.json"
+		printf '{"result":'
+		if [ "$result_state" = loading ] && [ -f "$BILLING_JOB/center-loading" ] &&
+			IFS= read -r center_account <"$BILLING_JOB/center-loading"; then
+			billing_center_result loading "$center_account"
+		else
+			cat "$BILLING_JOB/result.json"
+		fi
 		printf ',"sessionsAvailable":'; if [ -s "$BILLING_JOB/online.json" ]; then printf true; else printf false; fi
 		printf ',"sessions":'; session_rows; printf '}\n' ;;
 	billing_captcha)

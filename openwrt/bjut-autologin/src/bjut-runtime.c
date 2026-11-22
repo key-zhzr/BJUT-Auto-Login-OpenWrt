@@ -702,7 +702,7 @@ static int traffic_daily(J *out, J *ctx, int all, int recent_only) {
     return 1;
 }
 
-static int traffic_timeline(J *out, J *ctx, J *request, int all) {
+static int traffic_timeline(J *out, J *ctx, J *request, int all, int compact) {
     char line[4096], *v[12], key[1024];
     int64_t first = digits(str(request, "start")) ? num(request, "start") : 0,
             last = digits(str(request, "end")) ? num(request, "end") : INT64_C(41024448000),
@@ -718,20 +718,29 @@ static int traffic_timeline(J *out, J *ctx, J *request, int all) {
     if (resolution != 60 && resolution != 3600 && resolution != 86400)
         resolution = 0;
     int monthly = !strcmp(str(request, "monthly"), "true") || !strcmp(str(request, "monthly"), "1");
+    if (compact && (!resolution || monthly))
+        return 0;
     int64_t day = (first + 28800) / 86400 * 86400 - 28800,
             hour = (first + 28800) / 3600 * 3600 - 28800;
     TioReader reader;
     if (!tio_open_state(&reader, state_dir, "curves"))
         return 0;
-    int64_t seek_first = monthly && first > 2764800 ? first - 2764800 :
-                         resolution ? (first + 28800) / resolution * resolution - 28800 : first;
+    int64_t base = resolution ? (first + 28800) / resolution * resolution - 28800 : first;
+    int64_t seek_first = monthly && first > 2764800 ? first - 2764800 : base;
     if (!tio_seek(&reader, seek_first, last)) {
         tio_close(&reader);
         return 0;
     }
-    J *channels = json_object_new_array(), *buckets = json_object_new_array(),
+    /* Keep dense samples in one blob attribute to avoid the per-number ubus
+     * overhead and a JSON allocation for every sample component. */
+    char *packed = compact ? malloc(TRAFFIC_RPC_BUDGET) : NULL;
+    if (compact && !packed) {
+        tio_close(&reader);
+        return 0;
+    }
+    J *channels = json_object_new_array(), *buckets = compact ? NULL : json_object_new_array(),
       *short_map = account_map(ctx, 1), *ids = json_object_new_object();
-    size_t bytes = 0;
+    size_t bytes = 0, packed_length = 0;
     int read_code;
     while ((read_code = tio_next(&reader, line, sizeof(line))) > 0) {
         int n = fields(line, v, 12);
@@ -744,9 +753,7 @@ static int traffic_timeline(J *out, J *ctx, J *request, int all) {
         int64_t r = strtoll(v[0], NULL, 10), at = strtoll(v[1], NULL, 10);
         if (r != 60 && r != 3600 && r != 86400)
             continue;
-        int selected = !resolution ||
-                       (r == resolution &&
-                        at >= (first + 28800) / resolution * resolution - 28800 && at <= last),
+        int selected = !resolution || (r == resolution && at >= base && at <= last),
             prefix = monthly && at < first && at >= first - 2764800 &&
                      ((r == 86400 && at < day) || (r == 3600 && at >= day && at < hour) ||
                       (r == 60 && at >= hour));
@@ -768,16 +775,46 @@ static int traffic_timeline(J *out, J *ctx, J *request, int all) {
             bytes += traffic_wire_size(c, "");
         } else
             index = json_object_get_int(id);
+        int64_t duration = strtoll(v[8], NULL, 10), started = 0, ended = 0;
+        if (n == 11 && digits(v[9]) && digits(v[10])) {
+            started = strtoll(v[9], NULL, 10);
+            ended = strtoll(v[10], NULL, 10);
+        }
+        if (compact) {
+            size_t space = TRAFFIC_RPC_BUDGET - packed_length;
+            int written = snprintf(packed + packed_length, space, "%d,%" PRId64 ",%s,%" PRId64,
+                                   index, at - base, v[7], duration);
+            if (written < 0 || (size_t)written >= space) {
+                read_code = -2;
+                break;
+            }
+            packed_length += (size_t)written;
+            if (started && ended) {
+                space = TRAFFIC_RPC_BUDGET - packed_length;
+                written = snprintf(packed + packed_length, space, ",%" PRId64 ",%" PRId64,
+                                   started - at, ended - at);
+                if (written < 0 || (size_t)written >= space) {
+                    read_code = -2;
+                    break;
+                }
+                packed_length += (size_t)written;
+            }
+            packed[packed_length++] = '\n';
+            if (bytes + packed_length > TRAFFIC_RPC_BUDGET - 512) {
+                read_code = -2;
+                break;
+            }
+            continue;
+        }
         J *b = json_object_new_array();
         json_object_array_add(b, json_object_new_int(index));
         json_object_array_add(b, json_object_new_int64(r));
         json_object_array_add(b, json_object_new_int64(at));
         json_object_array_add(b, json_object_new_double(strtod(v[7], NULL)));
-        json_object_array_add(b, json_object_new_int64(strtoll(v[8], NULL, 10)));
-        if (n == 11 && digits(v[9]) && digits(v[10]) && strtoll(v[9], NULL, 10) > 0 &&
-            strtoll(v[10], NULL, 10) > 0) {
-            json_object_array_add(b, json_object_new_int64(strtoll(v[9], NULL, 10)));
-            json_object_array_add(b, json_object_new_int64(strtoll(v[10], NULL, 10)));
+        json_object_array_add(b, json_object_new_int64(duration));
+        if (started && ended) {
+            json_object_array_add(b, json_object_new_int64(started));
+            json_object_array_add(b, json_object_new_int64(ended));
         }
         json_object_array_add(buckets, b);
         bytes += traffic_wire_size(b, "");
@@ -792,11 +829,18 @@ static int traffic_timeline(J *out, J *ctx, J *request, int all) {
     if (read_code < 0) {
         json_object_put(channels);
         json_object_put(buckets);
+        free(packed);
         return read_code == -2 ? -1 : 0;
     }
     J *timeline = json_object_new_object();
     json_object_object_add(timeline, "channels", channels);
-    json_object_object_add(timeline, "buckets", buckets);
+    if (compact) {
+        number(timeline, "base", base);
+        number(timeline, "resolution", resolution);
+        json_object_object_add(timeline, "rows", json_object_new_string_len(packed, (int)packed_length));
+        free(packed);
+    } else
+        json_object_object_add(timeline, "buckets", buckets);
     json_object_object_add(out, "timeline", timeline);
     return 1;
 }
@@ -813,19 +857,22 @@ static J *traffic(J *ctx, J *status, J *request) {
     J *out = json_object_new_object(), *rows = json_object_new_array();
     int enabled = (int)num(ctx, "trafficEnabled"), all = !strcmp(str(ctx, "scope"), "all");
     const char *part = str(request, "part");
-    int summary = !strcmp(part, "summary"), series = !strcmp(part, "series");
+    int summary = !strcmp(part, "summary"), compact = !strcmp(part, "compact");
+    int series = compact || !strcmp(part, "series");
     boolean(out, "enabled", enabled);
     text(out, "scope", str(ctx, "scope"));
     json_object_object_add(out, "accounts", rows);
     json_object_object_add(out, "series", json_object_new_array());
     if (summary || series)
         text(out, "part", part);
+    if (summary)
+        text(out, "seriesEncoding", "compact-v1");
     if (!enabled || series)
         json_object_object_add(out, "history", json_object_new_array());
     if (!enabled)
         return out;
     if (!summary) {
-        int read = traffic_timeline(out, ctx, request, all);
+        int read = traffic_timeline(out, ctx, request, all, compact);
         if (read < 0)
             return traffic_limit_reply(out, series);
         if (!read) {
@@ -940,7 +987,16 @@ static int snapshot(int argc, char **argv) {
     J *out = NULL, *status = NULL, *request = NULL;
     if (!strcmp(method, "billing_cached"))
         out = billing_cached(ctx);
-    else {
+    else if (!strcmp(method, "traffic")) {
+        request = load(argv[1]);
+        const char *part = str(request, "part");
+        int series = !strcmp(part, "series") || !strcmp(part, "compact");
+        if (!series)
+            status = statuses(ctx);
+        out = traffic(ctx, status, request);
+        if (out && traffic_wire_size(out, "") > TRAFFIC_RPC_BUDGET)
+            out = traffic_limit_reply(out, series);
+    } else {
         status = statuses(ctx);
         if (!strcmp(method, "status"))
             out = json_object_get(status);
@@ -953,11 +1009,6 @@ static int snapshot(int argc, char **argv) {
             json_object_object_add(out, "status", json_object_get(status));
             json_object_object_add(out, "ports", ports(ctx, status));
             json_object_object_add(out, "accounts", accounts(ctx, status));
-        } else if (!strcmp(method, "traffic")) {
-            request = load(argv[1]);
-            out = traffic(ctx, status, request);
-            if (out && traffic_wire_size(out, "") > TRAFFIC_RPC_BUDGET)
-                out = traffic_limit_reply(out, !strcmp(str(request, "part"), "series"));
         }
     }
     int rc = 75;
@@ -976,6 +1027,7 @@ static int snapshot(int argc, char **argv) {
 }
 #include "runtime-batch.h"
 #include "runtime-traffic.h"
+#include "runtime-billing.h"
 #include "runtime-prepared.h"
 #include "runtime-network.h"
 #include "runtime-routes.h"
@@ -992,6 +1044,10 @@ int main(int argc, char **argv) {
         return traffic_process(argc - 2, argv + 2, 1);
     if (!strcmp(argv[1], "online-capture") && argc == 4)
         return online_capture(argv[2], argv[3]);
+    if (!strcmp(argv[1], "billing-project") && argc == 4)
+        return billing_project(argv[2], argv[3]);
+    if (!strcmp(argv[1], "billing-record-rows"))
+        return billing_record_rows(argc - 2, argv + 2);
     if (!strcmp(argv[1], "prepare-config"))
         return prepare_config(argc - 2, argv + 2);
     if (!strcmp(argv[1], "prepared-config"))

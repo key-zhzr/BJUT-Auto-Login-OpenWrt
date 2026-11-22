@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # Named, account-scoped billing modules. Never accept an endpoint from a caller.
+BILLING_PACKAGE_LOG='/Self/service/packageLog?pageSize=10&pageNumber=1&sortName=fldchangedate&sortOrder=DESC'
 billing_saved_extract() { "${BJUT_HTML:-/usr/libexec/bjut-html}" "$2" "${3:-}" <"$BILLING_JOB/$1.html"; }
 billing_page() {
  local key="$1" path="$2"
@@ -48,11 +49,14 @@ billing_table() {
 }
 billing_module() {
  local module="$1" user value key can_stop=0 can_reopen=0 can_cancel=0 mauth='' policy flag reason current_id current_name current_detail tab id label description
+ local table='' table_file="$WORK_DIR/display-table.json" result_file="${BILLING_OUTPUT:-$BILLING_JOB/result.json}"
+ local BILLING_PREFETCH='' mac_list='/Self/service/getMacList?pageSize=100&pageNumber=1&sortName=2&sortOrder=DESC'
  user="$(billing_saved_extract dashboard user-json)"
  billing_progress loading 60 '正在读取计费模块'
  BILLING_REFERER=https://jfself.bjut.edu.cn/Self/dashboard; BILLING_AJAX=1
  case "$module" in
   services)
+   billing_prefetch /Self/service/goStop /Self/service/goReopen /Self/service/package /Self/service/consumeProtect "$BILLING_PACKAGE_LOG"
    billing_page stop /Self/service/goStop || true
    billing_page reopen /Self/service/goReopen || true
    billing_page package /Self/service/package || true
@@ -89,14 +93,19 @@ billing_module() {
    json_close_array
    ;;
   devices)
+   billing_prefetch /Self/dashboard/getOnlineList /Self/service/myMac "$mac_list" /Self/dashboard/refreshMauthType
+   billing_read_online || true
    billing_page mac /Self/service/myMac || true
-   billing_request '/Self/service/getMacList?pageSize=100&pageNumber=1&sortName=2&sortOrder=DESC' && cp "$WORK_DIR/billing-body" "$BILLING_JOB/macs.json" || { billing_progress error 100 '设备列表暂时无法读取';return 1; }
-   if billing_request /Self/dashboard/getOnlineList; then billing_capture_online || true; fi
+   billing_request "$mac_list" && cp "$WORK_DIR/billing-body" "$BILLING_JOB/macs.json" || { billing_progress error 100 '设备列表暂时无法读取';return 1; }
    if billing_request /Self/dashboard/refreshMauthType; then mauth="$(billing_extract mauth)"; fi
    json_init;json_add_string mauth "$mauth"
-   billing_table macs "$BILLING_JOB/macs.json" 'online mac device lastLoginAt lastIp'
+   if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ]; then
+    "$RUNTIME_BIN" billing-project devices "$BILLING_JOB/macs.json" >"$table_file" || return 1
+    table=macs
+   else billing_table macs "$BILLING_JOB/macs.json" 'online mac device lastLoginAt lastIp'; fi
    ;;
   security)
+   billing_prefetch /Self/setting/changePassword /Self/setting/passwordQuestion
    billing_page password /Self/setting/changePassword || true
    billing_page questions /Self/setting/passwordQuestion || true
    json_init; billing_choices questions questions questions
@@ -108,12 +117,19 @@ billing_module() {
    ;;
   history)
    billing_request /Self/dashboard/getLoginHistory && cp "$WORK_DIR/billing-body" "$BILLING_JOB/history.json" || { billing_progress error 100 '最近上网记录暂时无法读取';return 1; }
-   json_init;billing_table history "$BILLING_JOB/history.json" 'loginTime logoutTime ip ipv6 mac durationMinutes flowMb billingMode amount'
+   json_init
+   if [ "${BJUT_BATCH_DISABLE:-0}" != 1 ] && [ -x "$RUNTIME_BIN" ]; then
+    "$RUNTIME_BIN" billing-project history "$BILLING_JOB/history.json" >"$table_file" || return 1
+    table=history
+   else billing_table history "$BILLING_JOB/history.json" 'loginTime logoutTime ip ipv6 mac durationMinutes flowMb billingMode amount'; fi
    ;;
   *) return 1;;
  esac
  json_add_string state ready;json_add_string account "$BILLING_ACCOUNT";json_add_string module "$module";json_add_int percent 100;json_add_string message '计费数据已更新'
- json_dump >"${BILLING_OUTPUT:-$BILLING_JOB/result.json}.$$" && mv -f "${BILLING_OUTPUT:-$BILLING_JOB/result.json}.$$" "${BILLING_OUTPUT:-$BILLING_JOB/result.json}"
+ if [ -n "$table" ]; then
+  value="$(json_dump)"
+  { printf '%s,"%s":' "${value%?}" "$table"; cat "$table_file"; printf '}\n'; } >"$result_file.$$"
+ else json_dump >"$result_file.$$"; fi && mv -f "$result_file.$$" "$result_file"
 }
 billing_ajax_token() {
  local token path
@@ -314,7 +330,7 @@ billing_validate_payload() {
 billing_reservation() {
  local page="$1" prefix row state current scheduled
  BILLING_SCHEDULED=''
- if billing_request '/Self/service/packageLog?pageSize=10&pageNumber=1&sortName=fldchangedate&sortOrder=DESC';then
+ if billing_request "$BILLING_PACKAGE_LOG";then
   cp "$WORK_DIR/billing-body" "$WORK_DIR/reservation.json";prefix="$(billing_rows_prefix "$WORK_DIR/reservation.json")"
   row="$(json_file_value "$WORK_DIR/reservation.json" "$prefix[0]")"
   state="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@.fldstate')";[ -n "$state" ] || state="$(printf '%s' "$row" | "$JSONFILTER_BIN" -e '@[4]')"
@@ -333,27 +349,40 @@ billing_reservation() {
 }
 
 
-billing_center_publish() {
- local percent="$1" message="$2" state="${3:-loading}" header module comma=''
- json_init;json_add_string state "$state";json_add_int percent "$percent";json_add_string message "$message";json_add_string account "$BILLING_ACCOUNT"
+billing_center_result() {
+ local state="$1" account="$2" header module comma='' completed=0
+ for module in services devices security history; do
+  [ ! -s "$BILLING_JOB/module-$module.json" ] || completed=$((completed + 1))
+ done
+ json_init
+ json_add_string state "$state"
+ if [ "$state" = ready ]; then
+  json_add_int percent 100
+  json_add_string message '计费数据已更新'
+ else
+  json_add_int percent "$((45 + completed * 13))"
+  json_add_string message "账户概览已更新，正在读取计费模块（$completed/4）"
+ fi
+ json_add_string account "$account"
  header="$(json_dump)"
- { printf '%s,"overview":' "${header%?}";cat "$BILLING_JOB/overview.json";printf ',"modules":{'
-  for module in services devices security history;do
-   [ -s "$BILLING_JOB/module-$module.json" ] || continue
-   printf '%s"%s":' "$comma" "$module";comma=,;cat "$BILLING_JOB/module-$module.json"
-  done
-  printf '}}\n'
- } >"$BILLING_JOB/result.json.$$" && mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
+ printf '%s,"overview":' "${header%?}"; cat "$BILLING_JOB/overview.json"; printf ',"modules":{'
+ for module in services devices security history; do
+  [ -s "$BILLING_JOB/module-$module.json" ] || continue
+  printf '%s"%s":' "$comma" "$module"; comma=,; cat "$BILLING_JOB/module-$module.json"
+ done
+ printf '}}\n'
 }
 billing_center_modules() {
- local module percent label
- billing_center_publish 45 '账户概览已更新，正在读取账户服务'
- for module in services devices security history;do
-  BILLING_OUTPUT="$BILLING_JOB/module-$module.json"
+ local module BILLING_OUTPUT
+ billing_center_result loading "$BILLING_ACCOUNT" >"$BILLING_JOB/result.json.$$" &&
+  mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json" || return 1
+ printf '%s\n' "$BILLING_ACCOUNT" >"$BILLING_JOB/center-loading"
+ # Dr.COM can stall on concurrent requests that share one session.
+ for module in history devices services security; do
+  BILLING_OUTPUT="$WORK_DIR/$module.json"
   billing_module "$module" || billing_progress error 100 '此模块暂时无法读取，请稍后刷新'
-  BILLING_OUTPUT=''
-  case "$module" in services) percent=72;label='账户服务已更新，正在读取设备';;devices)percent=85;label='设备已更新，正在读取安全设置';;security)percent=94;label='安全设置已更新，正在读取近期记录';;history)percent=99;label='正在汇总计费数据';;esac
-  billing_center_publish "$percent" "$label"
+  mv -f "$BILLING_OUTPUT" "$BILLING_JOB/module-$module.json" || return 1
  done
- billing_center_publish 100 '计费数据已更新' ready
+ billing_center_result ready "$BILLING_ACCOUNT" >"$BILLING_JOB/result.json.$$" &&
+  mv -f "$BILLING_JOB/result.json.$$" "$BILLING_JOB/result.json"
 }

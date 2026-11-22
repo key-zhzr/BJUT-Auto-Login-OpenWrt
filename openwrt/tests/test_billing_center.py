@@ -21,6 +21,9 @@ class BillingCenterTests(revision.RouterRevision10Tests):
         self.assertNotIn('userPassword',json.dumps(value))
         self.assertNotIn('fixture-session',json.dumps(value))
         self.assertEqual(self.requests().count('URL https://jfself.bjut.edu.cn/Self/login/verify\n'),1)
+        self.assertEqual(self.requests().count('URL https://jfself.bjut.edu.cn/Self/dashboard/getOnlineList\n'),1)
+        self.assertEqual(self.requests().count('BATCH billing GET\n'),3)
+        self.assertEqual(value['sessions'][0]['mac'],'AA-BB-CC-DD-EE-FF')
         package = result['modules']['services']['packages'][0]
         self.assertEqual(package,{'id':'2','name':'新套餐','description':'测试'})
 
@@ -46,6 +49,20 @@ class BillingCenterTests(revision.RouterRevision10Tests):
         value,ticket=self.worker('billing_details',{'uplink':'dorm_a','account':'account1','owner':'1'*32,'module':'center'},env)
         denied=self.rpc('billing_poll',{'ticket':ticket,'owner':'2'*32},**env)
         self.assertEqual(json.loads(denied.stdout)['state'],'error')
+
+    def test_luci_details_reuse_the_verified_current_account_cookie(self):
+        env = dict(self.config(), MOCK_SSO_USER='25000001')
+        (self.state / 'uplink-dorm_a.json').write_text(json.dumps({'account':'25000001'}))
+        overview, _ = self.worker('billing_start', {'uplink':'dorm_a','account':'current','owner':'1'*32}, env, 'billing_sso')
+        self.assertEqual(overview['result']['account'], '25000001')
+        before = self.requests()
+        details, _ = self.worker('billing_details', {'uplink':'dorm_a','account':'account1','owner':'1'*32,'module':'history'}, env, 'billing_sso')
+        self.assertEqual(details['result']['state'], 'ready', details)
+        self.assertEqual(details['result']['account'], '25000001')
+        following = self.requests()[len(before):]
+        self.assertIn('URL https://jfself.bjut.edu.cn/Self/dashboard\n', following)
+        self.assertNotIn('/eportal/portal/self?', following)
+        self.assertNotIn('/Self/login/verify', following)
 
 
 # Inherited tests run in their original suite.

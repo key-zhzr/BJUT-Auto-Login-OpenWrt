@@ -24,9 +24,10 @@ return baseclass.extend({render:function() {
   const requested=revision;
   const current=()=>requested===revision && root.isConnected;
   try{
-   const report=await history.read(query=>client.call('traffic',query),chart.query(),current);
+   const report=await history.read(query=>client.call('traffic',query),chart.query(),current,progress=>chart.showLoading(progress));
    if(report && current())chart.update(report);
   }catch(error){if(current())chart.showError(_('流量统计暂未更新，将自动重试。'));}
+  finally{chart.showLoading(null);}
  },15,function(){history.clear();chart.destroy();});
  return root;
 }});

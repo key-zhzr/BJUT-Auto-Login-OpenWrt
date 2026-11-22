@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "runtime-calendar.h"
 
 #define MAX_INPUT 16384U
 #define EPORTAL_XOR_KEY 0x16U
@@ -236,12 +237,6 @@ static int normalize_ip(const unsigned char *data, size_t length)
     if (inet_pton(family, text, address) != 1 || !inet_ntop(family, address, output, sizeof(output))) return -1;
     return fputs(output, stdout) < 0 ? -1 : 0;
 }
-static int leap(int y) { return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0); }
-static int month_days(int y, int m)
-{
-    static const int days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    return days[m-1] + (m == 2 && leap(y));
-}
 static int date_codec(const unsigned char *data, size_t length, int to_days)
 {
     char text[32], extra, *end;
@@ -251,40 +246,23 @@ static int date_codec(const unsigned char *data, size_t length, int to_days)
     if (to_days) {
         if (length != 10 || text[4] != '-' || text[7] != '-') return -1;
         for (i=0;i<10;i++) if (i != 4 && i != 7 && (text[i] < '0' || text[i] > '9')) return -1;
-        if (sscanf(text, "%d-%d-%d%c", &y, &m, &d, &extra) != 3 || y < 1970 || y > 2199 || m < 1 || m > 12 || d < 1 || d > month_days(y,m)) return -1;
-        for (i=1970;i<y;i++) total += 365 + leap(i);
-        for (i=1;i<m;i++) total += month_days(y,i);
+        if (sscanf(text, "%d-%d-%d%c", &y, &m, &d, &extra) != 3 || y < 1970 || y > 2199 || m < 1 || m > 12 || d < 1 || d > bjut_month_days(y,m)) return -1;
+        for (i=1970;i<y;i++) total += 365 + bjut_leap_year(i);
+        for (i=1;i<m;i++) total += bjut_month_days(y,i);
         return printf("%d", total+d-1) < 0 ? -1 : 0;
     }
     errno=0; long number=strtol(text,&end,10);
     if (errno || *end || number < 0 || number > 84005) return -1;
     d=(int)number; y=1970;
-    while (d >= 365+leap(y)) { d -= 365+leap(y); y++; }
-    m=1; while (d >= month_days(y,m)) { d-=month_days(y,m); m++; }
+    while (d >= 365+bjut_leap_year(y)) { d -= 365+bjut_leap_year(y); y++; }
+    m=1; while (d >= bjut_month_days(y,m)) { d-=bjut_month_days(y,m); m++; }
     return printf("%04d-%02d-%02d",y,m,d+1) < 0 ? -1 : 0;
 }
 
-/* jfself dates are epoch milliseconds. Avoid time_t's 2038 limit on 32-bit
- * routers and use the campus timezone even when the router runs in UTC. */
 static int timestamp_date(const unsigned char *data, size_t length)
 {
-    uint64_t number = 0, seconds;
-    size_t i;
-    int y = 1970, m = 1, d, clock;
-    if (length != 10 && length != 13) return -1;
-    for (i = 0; i < length; i++) {
-        if (data[i] < '0' || data[i] > '9') return -1;
-        number = number * 10 + data[i] - '0';
-    }
-    if (!number) return -1;
-    seconds = (length == 13 ? number / 1000 : number) + 8 * 3600;
-    if (seconds / 86400 > 84005) return -1;
-    d = (int)(seconds / 86400);
-    clock = (int)(seconds % 86400);
-    while (d >= 365 + leap(y)) { d -= 365 + leap(y); y++; }
-    while (d >= month_days(y, m)) { d -= month_days(y, m); m++; }
-    return printf("%04d-%02d-%02d %02d:%02d:%02d", y, m, d + 1,
-                  clock / 3600, clock / 60 % 60, clock % 60) < 0 ? -1 : 0;
+    char output[20];
+    return bjut_timestamp_date((const char *)data, length, output) && fputs(output, stdout) >= 0 ? 0 : -1;
 }
 
 static void usage(const char *program)
