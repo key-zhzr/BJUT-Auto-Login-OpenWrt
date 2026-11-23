@@ -1,8 +1,98 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {usageDelta,usageIdentity,forecastUsage,usageCsv} from '../src/device-usage-model.ts';
-import {qualitySummary,diagnosticAdvice} from '../src/network-quality-model.ts';
+import {diagnosticAdvice} from '../src/diagnostic-advice.ts';
 import {usageTooltipPosition} from '../src/device-usage-model.ts';
+import {RouterUsageReader} from '../src/device-usage-model.ts';
+
+test('router history splits oversized days and preserves every minute and its observation interval', async () => {
+    const first = Date.parse('2026-10-25T00:00:00+08:00') / 1000;
+    const end = first + 3 * 86400 - 1;
+    const metadata = {enabled: true, scope: 'local', history: [], accounts: [], series: []};
+    const channels = ['lan3', 'lan4', 'lan5'].map(device =>
+        ({device, account:'test', interfaceId:device, interfaceName:device, local:true}));
+    let requests = 0, splits = 0;
+    const request = async query => {
+        requests++;
+        if (query.part === 'summary') return {...metadata, part:'summary'};
+        if (query.end - query.start >= 43200) {
+            splits++;
+            return {state:'split'};
+        }
+        const buckets = [];
+        for (let at = query.start; at <= query.end; at += 60) {
+            channels.forEach((_, i) => buckets.push([i, 60, at, 1, 60, at - 59, at + 1]));
+        }
+        return {...metadata, part:'series', timeline:{channels, buckets}};
+    };
+    const reader = new RouterUsageReader(), query = {start:first, end, resolution:60, monthly:false};
+    const data = await reader.read(request, query);
+    assert.equal(splits, 3);
+    assert.equal(data.series.length, 3 * 3 * 1440);
+    assert.equal(new Set(data.series.map(row => `${row.at}/${row.interfaceId}`)).size, data.series.length);
+    assert.ok(data.series.every(row => row.startedAt === row.at - 59 && row.endedAt === row.at + 1));
+    requests = 0;
+    assert.deepEqual(await reader.read(request, query), data);
+    assert.equal(requests, 1);
+});
+
+test('router history rejects missing status, stops superseded reads and keeps legacy responses usable', async () => {
+    const reader = new RouterUsageReader();
+    const start = Date.parse('2026-10-25T03:15:00+08:00') / 1000;
+    const query = {start, end:start + 3600, resolution:60, monthly:true};
+    await assert.rejects(reader.read(async () => ({}), query), /未返回/);
+    const report = {enabled:true, scope:'local', accounts:[], history:[], series:[]};
+    assert.equal(await reader.read(async () => report, query, () => false), null);
+    const windows = [];
+    const data = await reader.read(async request => {
+        if (request.part !== 'summary') windows.push(request);
+        return report;
+    }, query);
+    assert.equal(data.enabled, true);
+    assert.deepEqual(windows.map(window => window.resolution), [86400, 3600, 60, 60]);
+    assert.equal(windows.at(-2).end + 1, start);
+    assert.equal(windows.at(-1).end, query.end);
+    assert.ok(windows.every(window => !window.monthly && !window.part));
+});
+
+test('a month of compact minute data loads in bounded parallel segments with real progress', async () => {
+    const start = Date.parse('2025-01-01T00:00:00+08:00') / 1000;
+    const end = start + 31 * 86400 - 1;
+    const summary = {enabled:true, scope:'local', accounts:[], history:[], series:[], part:'summary', seriesEncoding:'compact-v1'};
+    const channels = ['lan3', 'lan4', 'lan5', 'eth1.41'].map(device =>
+        ({device, account:'fixture', interfaceId:device, interfaceName:device, local:true}));
+    let requests = 0, inFlight = 0, peak = 0;
+    const request = async page => {
+        if (page.part === 'summary') return summary;
+        assert.equal(page.part, 'compact');
+        assert.equal(page.resolution, 60);
+        assert.ok(page.end - page.start < 3 * 86400);
+        requests++;
+        peak = Math.max(peak, ++inFlight);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        const lines = [];
+        for (let at = page.start; at <= page.end; at += 60) {
+            for (let i = 0; i < channels.length; i++) lines.push(`${i},${at - page.start},1.5,61,-60,1`);
+        }
+        inFlight--;
+        return {...summary, part:'compact', timeline:{channels, base: page.start, resolution:60, rows:lines.join('\n')}};
+    };
+    const reader = new RouterUsageReader(), progress = [];
+    const query = {start, end, resolution:60, monthly:false};
+    const report = await reader.read(request, query, () => true, value => progress.push(value));
+    assert.equal(report.series.length, 31 * 1440 * channels.length);
+    assert.ok(requests <= 12);
+    assert.equal(peak, 2);
+    assert.deepEqual(progress.map(step => step.completed), Array.from({length:requests+1}, (_,index)=>index));
+    assert.ok(progress.every(step => step.total === requests));
+    assert.equal(report.series[0].startedAt, start - 60);
+    assert.equal(report.series.at(-1).endedAt, end - 58);
+    const previousRequests = requests;
+    const cached = await reader.read(request, query);
+    assert.equal(requests, previousRequests);
+    assert.deepEqual(cached.series, report.series);
+});
+
 test('chart tooltips leave space around the pointer and stay in the plot',()=>{
  for(const [width,height,bw,bh,x,y] of [[1000,270,220,110,500,200],[1000,270,220,110,980,40],[310,270,280,130,160,230]]){
   const p=usageTooltipPosition(width,height,bw,bh,x,y);
@@ -27,9 +117,7 @@ test('predictions require enough observed days, ignore missing data and use Chin
  assert.equal(forecastUsage(rows,'无限'),null);
  assert.match(usageCsv([{...rows[0],label:'=malicious()'}]),/"'=malicious\(\)"/);
 });
-test('quality summaries distinguish checks from packet loss and advice follows evidence',()=>{
- const rows=[{ok:true,ms:50},{ok:true,ms:150},{ok:false,ms:3000}];
- assert.deepEqual(qualitySummary(rows),{count:3,failure:1/3,p50:50,p95:150});
+test('local diagnostic advice follows the reported evidence',()=>{
  const report={stale:true,steps:[],overall:'changed'};
  assert.deepEqual(diagnosticAdvice(report),['网络在诊断期间发生变化，请重新检测。']);
  assert.match(diagnosticAdvice({steps:[{id:'campus_route',status:'warning'}],overall:'partial'}).join(' '),/放行校园网段/);
