@@ -1,5 +1,34 @@
 {
-  "upstream": "8ee928588bf5632389295061601ddf8b2000cc87",
-  "reviewRequired": [],
-  "retainedWorkflows": []
+  "upstream": "314435143803050b813d0aa1314bac99f81c33ee",
+  "reviewRequired": [
+    ".github/workflows/release.yml",
+    "scripts/build-router-usage-ui.mjs",
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/billing.rs",
+    "src-tauri/src/config_model.rs",
+    "src-tauri/src/connectivity.rs",
+    "src-tauri/src/dual_stack.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/macos_liquid_glass.rs",
+    "src-tauri/src/macos_network.rs",
+    "src-tauri/src/network_diagnostics.rs",
+    "src-tauri/src/network_inventory.rs",
+    "src-tauri/src/network_inventory/windows_inventory.rs",
+    "src-tauri/src/network_platform.rs",
+    "src-tauri/src/network_schedule.rs",
+    "src-tauri/src/network_trust.rs",
+    "src-tauri/src/portal_auth.rs",
+    "src-tauri/src/portal_auth/lgn_ipv6_windows.rs",
+    "src-tauri/src/router_control.rs",
+    "src-tauri/src/update_metadata.rs",
+    "src-tauri/src/window_geometry.rs",
+    "src-tauri/src/windows_backdrop.rs",
+    "src/device-usage-model.ts",
+    "src/usage-chart.css",
+    "src/usage-chart.ts"
+  ],
+  "retainedWorkflows": [
+    ".github/workflows/release.yml"
+  ]
 }

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { CustomSelect } from './custom-select';
 import { animateResize } from './layout-motion';
-import { type AccountUsage, type DailyUsage, type UsageReport, type UsageScope } from './device-usage-model';
+import { type AccountUsage, type DailyUsage, type UsageLoadProgress, type UsageReport, type UsageScope } from './device-usage-model';
 import { UsageChart, type UsageSelect } from './usage-chart';
 import { presentationDialog } from './presentation-dialog';
 import './usage-chart.css';
@@ -26,7 +26,7 @@ export class DeviceUsageView {
             windowChanged,
             select: (label, choices, change): UsageSelect => {
                 const wrapper = document.createElement('div'); wrapper.className = 'custom-select'; wrapper.id = `usage-select-${++sequence}`; wrapper.setAttribute('aria-label', label);
-                wrapper.innerHTML = '<div class="custom-select-trigger"><span></span><span aria-hidden="true">⌄</span></div><div class="custom-select-options"></div>';
+                wrapper.innerHTML = '<div class="custom-select-trigger"><span></span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></div><div class="custom-select-options"></div>';
                 // Attach before the existing menu constructor resolves its ID.
                 root.append(wrapper);
                 const select = new CustomSelect(wrapper.id); select.setOptions(choices); select.addEventListener('change', event => change(event.target.value));
@@ -46,6 +46,7 @@ export class DeviceUsageView {
         });
     }
     update(data: UsageReport) {this.chart.update(data);}
+    showLoading(progress: UsageLoadProgress | null) {this.chart.showLoading(progress);}
     query(){return this.chart.query();}
     render(accounts: AccountUsage[], message = '', history: DailyUsage[] = []) {this.chart.update({enabled: false, scope: 'local', accounts, history, series: []}, message);}
     showError(message: string) {this.chart.showError(message);}
