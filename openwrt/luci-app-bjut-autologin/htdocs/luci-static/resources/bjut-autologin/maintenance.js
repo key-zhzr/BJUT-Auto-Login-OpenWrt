@@ -6,15 +6,26 @@
 
 async function show() {
  let info=null,prepared='',busy=false,closed=false;
- const description=E('p'),message=E('p',{'role':'status'}),progress=E('progress',{max:100,value:0,hidden:true}),buttons=E('div',{'class':'bj-actions'}),backups=E('div');
+ const description=E('div',{'class':'bj-account-meta',style:'margin-bottom:10px'}),message=E('p',{'class':'bj-status-banner','role':'status'}),progress=E('progress',{max:100,value:0,hidden:true}),buttons=E('div',{'class':'bj-actions'}),backups=E('div');
  const root=E('div',{'class':'bjut-workbench'},[bjut.style(),description,buttons,progress,message,backups]);
- function button(label,fn){return E('button',{type:'button','class':'btn',click:fn},_(label));}
+ function button(label,fn,cls){return E('button',{type:'button','class':cls || 'btn',click:fn},_(label));}
  const controls=[];
  function update(){controls.forEach(function(item){item.button.disabled=busy || item.action==='upgrade' && !prepared || item.action==='rollback' && !(info && info.platform.rollback);});}
  async function read(){
   info=await client.call('maintenance_info');if(closed)return;
-  description.textContent=info.platform.version+' · '+info.platform.target+' · '+info.platform.arch+' · '+info.platform.format.toUpperCase();
-  backups.replaceChildren.apply(backups,(info.backups || []).slice().reverse().map(function(item){return E('div',{'class':'bj-card bj-header'},[E('span',{},item.createdAt+' · '+item.version),button('恢复配置',function(){void run('restore',item.id);})]);}));update();
+  description.replaceChildren(
+   E('span',{'class':'bj-badge info'},info.platform.version),
+   E('span',{'class':'bj-badge'},info.platform.target),
+   E('span',{'class':'bj-badge'},info.platform.arch),
+   E('span',{'class':'bj-badge ok'},info.platform.format.toUpperCase())
+  );
+  const items=(info.backups || []).slice().reverse();
+  if(items.length){
+   backups.replaceChildren.apply(backups,items.map(function(item){return E('div',{'class':'bj-card bj-header'},[E('span',{},item.createdAt+' · '+item.version),button('恢复配置',function(){void run('restore',item.id);},'btn btn-sm')]);}));
+  }else{
+   backups.replaceChildren(E('div',{'class':'bj-card bj-empty-card'},[E('p',{},_('暂无路由器配置备份。'))]));
+  }
+  update();
  }
  async function wait(ticket){
   const deadline=Date.now()+900000;

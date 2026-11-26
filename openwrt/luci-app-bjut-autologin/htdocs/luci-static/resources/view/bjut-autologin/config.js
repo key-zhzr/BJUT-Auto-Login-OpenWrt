@@ -179,6 +179,7 @@ return view.extend({
 		o.description = _('短暂断网不提醒；账号被拒绝等明确错误会立即提醒。');
 		o = s.option(form.Value, 'pushplus_interval', _('重复提醒间隔（秒）'));
 		o.depends('pushplus_enabled', '1'); o.default = '3600'; o.datatype = 'range(60,86400)'; o.rmempty = false; o.retain = true;
+		const pushplusStatusPill = E('span', { 'class': 'bj-badge' }, _('待测试'));
 		const pushplusSummary = E('strong', { 'class': 'bj-pushplus-summary' });
 		const pushplusDetail = E('p', { 'class': 'bj-pushplus-detail' });
 		let pushplusPolling = false, pushplusTimer = null;
@@ -197,7 +198,7 @@ return view.extend({
 			}
 		}
 		const pushplusRefreshBtn = E('button', {
-			'class': 'btn cbi-button',
+			'class': 'btn btn-sm cbi-button',
 			type: 'button',
 			click: function() { void refreshPushPlusStatus(); }
 		}, _('刷新测试状态'));
@@ -206,7 +207,10 @@ return view.extend({
 			'role': 'status',
 			'data-state': 'idle'
 		}, [
-			E('div', { 'class': 'bj-actions' }, [pushplusSummary, pushplusRefreshBtn]),
+			E('div', { 'class': 'bj-header' }, [
+				E('div', { 'class': 'bj-actions', style: 'margin:0' }, [pushplusStatusPill, pushplusSummary]),
+				pushplusRefreshBtn
+			]),
 			pushplusDetail
 		]);
 		function renderPushPlusStatus(info) {
@@ -216,17 +220,25 @@ return view.extend({
 			const code = data.apiCode || (state === 'accepted' ? '200' : '');
 			pushplusBox.setAttribute('data-state', state);
 			if (state === 'queued') {
+				pushplusStatusPill.className = 'bj-badge info';
+				pushplusStatusPill.textContent = _('排队中');
 				pushplusSummary.textContent = _('排队中');
-				pushplusDetail.textContent = data.message || _('测试消息排队发送中，等待后台连接 PushPlus。');
+				pushplusDetail.textContent = data.message || _('测试消息正在排队发送。');
 			} else if (state === 'accepted') {
+				pushplusStatusPill.className = 'bj-badge ok';
+				pushplusStatusPill.textContent = _('平台已受理');
 				pushplusSummary.textContent = _('已受理（HTTP ') + http + _(' / 业务码 ') + code + _(' · 已受理不等于已送达）');
-				pushplusDetail.textContent = data.message || _('PushPlus 已受理（HTTP 200 / 业务码 200）；平台异步投递，已受理不等于已送达。');
+				pushplusDetail.textContent = data.message || _('PushPlus 已受理（HTTP 200 / 业务码 200），微信消息由平台异步投递。');
 			} else if (state === 'error') {
+				pushplusStatusPill.className = 'bj-badge error';
+				pushplusStatusPill.textContent = _('发送失败');
 				pushplusSummary.textContent = _('请求失败（HTTP ') + http + _(' / 业务码 ') + (code || _('未知')) + _('）');
-				pushplusDetail.textContent = data.message || _('推送请求失败，将在冷却后重试。');
+				pushplusDetail.textContent = data.message || _('推送失败，稍后将重试。');
 			} else {
+				pushplusStatusPill.className = 'bj-badge';
+				pushplusStatusPill.textContent = _('未测试');
 				pushplusSummary.textContent = _('未发送测试');
-				pushplusDetail.textContent = data.message || _('尚未发送测试消息；点击发送测试消息后可查看排队、HTTP/业务码或受理状态。');
+				pushplusDetail.textContent = data.message || _('点击“发送测试消息”可检查配置是否可用。');
 			}
 		}
 		function pollPushPlusUntilSettled(remaining) {
@@ -261,7 +273,7 @@ return view.extend({
 		});
 		o = s.option(PushPlusStatusControl, '_pushplus_status', _('测试推送状态'));
 		o.depends('pushplus_enabled', '1');
-		o.description = _('显示排队、请求失败的 HTTP 与业务码、或平台已受理状态（异步投递，已受理不等于最终送达）。');
+		o.description = _('显示排队状态、请求结果与平台受理详情。');
 
 		o = s.option(form.Flag, 'prefer_remaining_flow', _('优先使用余量充足的账号'));
 		o.default='0';o.rmempty=false;o.description=_('仅在未指定独立顺序时使用新鲜计费数据排序。');

@@ -15,7 +15,7 @@ return baseclass.extend({
   const kind=E('select',{'class':'cbi-input-select'},kinds.map(function(item){return E('option',{value:item[0]},_(item[1]));}));
   const now=new Date(),date=function(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
   const start=E('input',{'class':'cbi-input-text',type:'date',value:date(new Date(now.getFullYear(),now.getMonth(),1))}),end=E('input',{'class':'cbi-input-text',type:'date',value:date(now)}),year=E('input',{'class':'cbi-input-text',type:'number',min:2000,max:2199,value:now.getFullYear()});
-  const message=E('p',{'class':'bj-record-message','role':'status'},_('选择类型和日期后查询。'));
+  const message=E('p',{'class':'bj-record-message bj-status-banner','role':'status'},_('选择类型和日期后查询。'));
   const rows=E('div',{'class':'bj-record-results'});
   const query=button('查询',function(){void load();},'btn bj-primary');
   const range=E('div',{'class':'bj-record-range'},[field('开始日期',start),E('span',{'class':'bj-range-sep','aria-hidden':'true'},_('至')),field('结束日期',end)]);

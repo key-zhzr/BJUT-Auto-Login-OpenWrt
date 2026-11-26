@@ -126,7 +126,7 @@ async function server(method, args = {}) {
         return { state: 'loading', message: '操作已完成' };
     }
     if (method === 'logs')
-        return { text: `[2026-10-18 12:00:00] [info] [dorm_0/lan3] 开始检测\n[2026-10-18 12:00:00] [info] [dorm_0/lan3] 认证会话有效，IPv4 / IPv6 可用\n[2026-10-18 12:00:01] [info] [dorm_1/lan4] 账号 25000002 认证成功\n[2026-10-18 12:00:01] [info] [service] 本地模拟刷新 ${revision}` };
+        return { text: `[2026-10-18 12:00:00] [info] [dorm_0/lan3] 开始检测\n[2026-10-18 12:00:00] [info] [dorm_0/lan3] 认证会话有效，IPv4 / IPv6 可用\n[2026-10-18 12:00:01] [info] [dorm_1/lan4] 账号 25000002 认证成功\n[2026-10-18 12:00:01] [info] [service] 本地模拟刷新 ${revision}\nSun Oct 18 12:00:02 2026 daemon.err bjut-autologin[231]: 模拟系统错误` };
     if (['billing_start', 'billing_details', 'billing_records', 'billing_action'].includes(method)) {
         const ticket = String(++sequence).padStart(32, '0');
         const index = Number(args.uplink?.split('_')[1] || 0);
@@ -421,6 +421,11 @@ document.getElementById('run-router-qa').onclick = async () => {
         note('通过：网络诊断双栈状态与诊断包导出');
         await open('logs');
         assert(document.querySelector('.bj-log').textContent.includes('[info]'), '日志没有显示');
+        const level = document.querySelector('.bj-log-filters select');
+        level.value = 'error';
+        level.dispatchEvent(new Event('change', { bubbles: true }));
+        assert(document.querySelector('.bj-log').textContent.includes('模拟系统错误'), '日志筛选漏掉未带方括号级别的系统错误');
+        assert(!document.querySelector('.bj-log').textContent.includes('[info]'), '日志筛选仍然显示信息级日志');
         note('通过：信息级日志展示');
         await open('config');
         assert(document.querySelectorAll('.bj-account-order').length >= 2, '设置页缺少按接口账号顺序控件');
