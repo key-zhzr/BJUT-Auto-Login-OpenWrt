@@ -40,7 +40,13 @@ impl DualStackReport {
         }
     }
     pub(crate) fn online(&self) -> bool {
-        self.ipv4.status == "reachable" || self.ipv6.status == "reachable"
+        self.online_for(crate::portal_auth::AuthStack::Auto)
+    }
+    pub(crate) fn online_for(&self, stack: crate::portal_auth::AuthStack) -> bool {
+        stack.matches(
+            self.ipv4.status == "reachable",
+            self.ipv6.status == "reachable",
+        )
     }
     pub(crate) fn invalidate(&mut self, reason: &str) {
         for family in [&mut self.ipv4, &mut self.ipv6] {
@@ -202,14 +208,11 @@ async fn probe_family(
     FamilyConnectivity {
         addresses,
         status: status.into(),
-        detail: format!(
-            "{}。探测未通过不等于该地址族不可用。",
-            errors
-                .iter()
-                .map(|error| error.detail.as_str())
-                .collect::<Vec<_>>()
-                .join("；")
-        ),
+        detail: errors
+            .iter()
+            .map(|error| error.detail.as_str())
+            .collect::<Vec<_>>()
+            .join("；"),
         duration_ms: started.elapsed().as_millis(),
     }
 }
@@ -324,7 +327,9 @@ pub(crate) async fn probe_route_with_updates(
     mut update: impl FnMut(&DualStackReport),
 ) -> DualStackReport {
     let interface = network["interfaceName"].as_str().unwrap_or("");
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "macos")]
+    let adapters = crate::network_inventory::macos_link_adapters();
+    #[cfg(not(any(target_os = "android", target_os = "macos")))]
     let adapters = crate::network_inventory::adapters();
     #[cfg(target_os = "android")]
     let adapters = if direct {
@@ -352,9 +357,8 @@ pub(crate) async fn probe_route_with_updates(
                 .as_array()
                 .is_none_or(Vec::is_empty)
         {
-            // Wired snapshots already include scoped DNS. Read Wi-Fi DHCP and
-            // scoped resolver data once per manual diagnostic, not every poll.
-            servers.extend(crate::macos_network::lgn_link_configuration(interface).dns_servers);
+            // Wired snapshots already include scoped DNS.
+            servers.extend(crate::macos_network::scoped_dns_servers(interface));
         }
         servers.extend(
             network["dnsServers"]

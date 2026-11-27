@@ -1,6 +1,6 @@
 import { CustomSelect } from '../src/custom-select';
 import { AnimatedVisibility } from '../src/animated-visibility';
-import { setExpanded } from '../src/layout-motion';
+import { animateResize, setExpanded } from '../src/layout-motion';
 
 export async function checkRouterDropdownLayout(note:(text:string)=>void){
   const assert=(value:boolean,text:string)=>{if(!value)throw new Error(text);};
@@ -10,6 +10,7 @@ export async function checkRouterDropdownLayout(note:(text:string)=>void){
   const trigger=document.querySelector<HTMLElement>('#router-service-more [aria-label="认证方式"] .custom-select-trigger')!;
   const theme=document.documentElement.dataset.theme,scroll=main.scrollTop;
   document.querySelector<HTMLElement>('[data-target="settings"]')!.click();
+  document.querySelector<HTMLElement>('[data-settings-target="router"]')?.click();
   setExpanded(details,true);
   while(details.getAnimations().length)await frame();
   try{
@@ -32,6 +33,7 @@ export async function checkRouterDropdownLayout(note:(text:string)=>void){
     note('通过：三种主题展开路由设置菜单时顶栏可见、页面不跳动、选项无白边，窗口无侧边留白');
   }finally{
     if(trigger.getAttribute('aria-expanded')==='true')trigger.click();
+    document.getElementById('btn-settings-back')?.click();
     document.documentElement.dataset.theme=theme;main.scrollTop=scroll;
   }
 }
@@ -49,13 +51,30 @@ export async function runMotionRegression(note:(text:string)=>void){
   try{
     for(const value of ['basic','apple27','winui']){
       document.documentElement.dataset.theme=value;
-      trigger.click();assert(wrapper.classList.contains('opens-up'),`${value} 空间不足时没有预先向上定位`);
-      for(let i=0;i<12;i++){await frame();assert(menu.getBoundingClientRect().bottom<=trigger.getBoundingClientRect().top+12,`${value} 展开时改变了方向`);}
-      select.close();assert(wrapper.classList.contains('opens-up'),`${value} 收起时丢失方向`);
-      await frame();assert(menu.getBoundingClientRect().bottom<=trigger.getBoundingClientRect().top+12,`${value} 收起时跳到了下方`);
-      trigger.click();await frame();assert(!menu.hidden,`${value} 快速重开被旧计时器隐藏`);
-      select.close();await until(()=>menu.hidden);
-      box.style.bottom='';box.style.top='56px';trigger.click();assert(!wrapper.classList.contains('opens-up'),`${value} 充足空间时未向下展开`);select.close();await until(()=>menu.hidden);box.style.top='';box.style.bottom='36px';
+      trigger.click();
+      if(value==='basic'){
+        assert(wrapper.classList.contains('covers-anchor'),'basic 未采用原位覆盖定位');
+        await until(()=>!wrapper.classList.contains('is-morphing'));
+        const tRect=trigger.getBoundingClientRect(),mRect=menu.getBoundingClientRect();
+        assert(mRect.top<tRect.top && mRect.bottom>=tRect.top-4 && mRect.top>=0 && mRect.bottom<=window.innerHeight+1,'basic 靠近底部时覆盖位置越界');
+        select.close();assert(wrapper.classList.contains('closing'),'basic 收起时未进入关闭过渡');
+        await frame();assert(!menu.hidden && getComputedStyle(menu).display!=='none','basic 收起在首帧即瞬灭');
+        trigger.click();await frame();assert(!menu.hidden && wrapper.classList.contains('open'),'basic 快速重开被旧计时器隐藏');
+        select.close();await until(()=>menu.hidden);
+        box.style.bottom='';box.style.top='42%';trigger.click();
+        await until(()=>!wrapper.classList.contains('is-morphing'));
+        const midTrigger=trigger.getBoundingClientRect(),midMenu=menu.getBoundingClientRect();
+        assert(midMenu.top<midTrigger.top-8 && midMenu.bottom>midTrigger.bottom+8,'basic 在屏幕中部未同时向上下覆盖展开');
+        select.close();await until(()=>menu.hidden);box.style.top='';box.style.bottom='36px';
+      }else{
+        assert(wrapper.classList.contains('opens-up'),`${value} 空间不足时没有预先向上定位`);
+        for(let i=0;i<12;i++){await frame();assert(menu.getBoundingClientRect().bottom<=trigger.getBoundingClientRect().top+12,`${value} 展开时改变了方向`);}
+        select.close();assert(wrapper.classList.contains('opens-up'),`${value} 收起时丢失方向`);
+        await frame();assert(menu.getBoundingClientRect().bottom<=trigger.getBoundingClientRect().top+12,`${value} 收起时跳到了下方`);
+        trigger.click();await frame();assert(!menu.hidden,`${value} 快速重开被旧计时器隐藏`);
+        select.close();await until(()=>menu.hidden);
+        box.style.bottom='';box.style.top='56px';trigger.click();assert(!wrapper.classList.contains('opens-up'),`${value} 充足空间时未向下展开`);select.close();await until(()=>menu.hidden);box.style.top='';box.style.bottom='36px';
+      }
     }
     note('通过：三种主题的下拉方向在打开、收起和快速重开时保持稳定');
     box.style.bottom='';box.style.top='56px';trigger.click();await frame();
@@ -102,6 +121,29 @@ export async function runMotionRegression(note:(text:string)=>void){
             assert(Math.abs((inner.left-outer.left)-(outer.right-inner.right))<1.5,`${value} 弹窗左右内边距不等宽`);
           }
         } finally {overlay.remove();}
+      }
+      const spacer = document.createElement('div');
+      const resizing = document.createElement('div');
+      const follower = document.createElement('div');
+      spacer.style.height = '600px';
+      resizing.style.height = '24px';
+      follower.style.height = '1600px';
+      page.replaceChildren(spacer, resizing, follower);
+      const previousOverflowAnchor = main.style.overflowAnchor;
+      main.style.overflowAnchor = 'none';
+      try {
+        main.scrollTop = 500;
+        animateResize(resizing, () => { resizing.style.height = '124px'; });
+        await frame();
+        animateResize(resizing, () => { resizing.style.height = '48px'; });
+        await until(() => resizing.getAnimations().length === 0);
+        const settledScrollTop = main.scrollTop;
+        spacer.style.height = '700px';
+        await frame();
+        await frame();
+        assert(main.scrollTop === settledScrollTop, '中断的动画仍在调整滚动位置');
+      } finally {
+        main.style.overflowAnchor = previousOverflowAnchor;
       }
     } finally {page.remove();previous?.classList.add('active');}
     note('通过：三种主题长短页面宽度一致、内容居中，弹窗有无滚动条时边距等宽');

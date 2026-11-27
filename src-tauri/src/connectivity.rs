@@ -1,6 +1,6 @@
 //! Share one read-only probe run across diagnostics, polling and login verification.
 //! Results are scoped to the network and invalidated before authentication changes.
-use crate::{dual_stack, internet_probe, AppState};
+use crate::{dual_stack, internet_probe, portal_auth::AuthStack, AppState};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -11,6 +11,7 @@ pub(crate) struct Snapshot {
     pub(crate) health: Option<dual_stack::DualStackReport>,
     pub(crate) physical: Option<dual_stack::DualStackReport>,
     pub(crate) require_physical: bool,
+    pub(crate) auth_stack: AuthStack,
     pub(crate) internet: Vec<internet_probe::InternetProbeOutcome>,
     pub(crate) internet_duration_ms: u128,
     pub(crate) complete: bool,
@@ -21,6 +22,18 @@ pub(crate) struct Snapshot {
     pub(crate) session_duration_ms: u128,
 }
 impl Snapshot {
+    fn usable_physical_health(&self) -> Option<&dual_stack::DualStackReport> {
+        self.physical.as_ref().filter(|health| {
+            health.ipv4.status != "unavailable" || health.ipv6.status != "unavailable"
+        })
+    }
+
+    pub(crate) fn preferred_health(&self) -> Option<&dual_stack::DualStackReport> {
+        self.usable_physical_health()
+            .or(self.health.as_ref())
+            .or(self.physical.as_ref())
+    }
+
     /// Internet availability on the default route, including VPN/cellular.
     pub(crate) fn online(&self) -> bool {
         !self.cancelled
@@ -32,7 +45,9 @@ impl Snapshot {
     pub(crate) fn access_online(&self) -> bool {
         !self.cancelled
             && if self.require_physical {
-                self.physical.as_ref().is_some_and(|health| health.online())
+                self.physical
+                    .as_ref()
+                    .is_some_and(|health| health.online_for(self.auth_stack))
             } else {
                 self.online()
             }
@@ -43,14 +58,18 @@ impl Snapshot {
 }
 
 pub(crate) fn requires_physical_probe(network: &serde_json::Value) -> bool {
-    cfg!(target_os = "android")
-        && matches!(network["transport"].as_str(), Some("wifi" | "ethernet"))
+    matches!(network["transport"].as_str(), Some("wifi" | "ethernet"))
+        && (cfg!(target_os = "android")
+            || AuthStack::from_network(network) != AuthStack::Auto
+            || (network["ip"].as_str() == Some("")
+                && !crate::network_campus_ipv6(network).is_empty()))
 }
 
 pub(crate) fn same_network(left: &serde_json::Value, right: &serde_json::Value) -> bool {
     [
         "interfaceName",
         "ip",
+        "authStack",
         "transport",
         "networkId",
         "physicalNetworkHandle",
@@ -59,6 +78,7 @@ pub(crate) fn same_network(left: &serde_json::Value, right: &serde_json::Value) 
     ]
     .iter()
     .all(|key| left[*key] == right[*key])
+        && crate::network_campus_ipv6(left) == crate::network_campus_ipv6(right)
 }
 
 struct Run {
@@ -215,21 +235,19 @@ pub(crate) fn observe(
     use std::sync::atomic::Ordering;
     let generation = state.network_change_generation.load(Ordering::SeqCst);
     let compatibility = crate::effective_vpn_compatibility(&state.config.read().unwrap());
+    let auth_stack = AuthStack::from_network(network);
     let require_physical = requires_physical_probe(network);
-    let adapters = crate::network_inventory::adapters();
-    let require_session = network["lgnWiredHint"].as_bool().unwrap_or(false)
-        && (!crate::preferred_interface_for_app(app).is_empty()
-            || adapters
-                .iter()
-                .filter(|adapter| {
-                    adapter.selectable && adapter.connected && !adapter.ipv4.is_empty()
-                })
-                .count()
-                > 1);
+    let probe_physical = matches!(network["transport"].as_str(), Some("wifi" | "ethernet"));
+    let check_wired_session =
+        auth_stack != AuthStack::Ipv6 && network["lgnWiredHint"].as_bool().unwrap_or(false);
+    let explicit_interface =
+        check_wired_session && !crate::preferred_interface_for_app(app).is_empty();
     let key = serde_json::json!([
         generation,
         network["interfaceName"],
         network["ip"],
+        crate::network_campus_ipv6(network),
+        auth_stack,
         network["routeIp"],
         network["transport"],
         network["networkId"],
@@ -240,14 +258,15 @@ pub(crate) fn observe(
         network["validated"],
         compatibility.as_str(),
         require_physical,
-        require_session
+        check_wired_session,
+        explicit_interface
     ])
     .to_string();
     let (id, receiver, start) = state.connectivity.subscribe(key);
     if start {
         state.connectivity.update(id, |value| {
-            value.require_session = require_session;
             value.require_physical = require_physical;
+            value.auth_stack = auth_stack;
         });
         let app = app.clone();
         let state = state.clone();
@@ -255,11 +274,32 @@ pub(crate) fn observe(
         let mut cancellation = receiver.clone();
         tauri::async_runtime::spawn(async move {
             let work = async {
+                let require_session = if explicit_interface {
+                    true
+                } else if check_wired_session {
+                    tokio::task::spawn_blocking(|| {
+                        crate::network_inventory::adapters()
+                            .iter()
+                            .filter(|adapter| {
+                                adapter.selectable && adapter.connected && !adapter.ipv4.is_empty()
+                            })
+                            .take(2)
+                            .count()
+                            == 2
+                    })
+                    .await
+                    .unwrap_or(false)
+                } else {
+                    false
+                };
+                state
+                    .connectivity
+                    .update(id, |value| value.require_session = require_session);
                 let public = async {
                     // Android Wi-Fi authentication can bind the process while
                     // default-route probes must still use their explicit Network
                     // handles. Only the per-socket family probes are authoritative.
-                    if require_physical {
+                    if cfg!(target_os = "android") && require_physical {
                         return;
                     }
                     let started = Instant::now();
@@ -302,17 +342,18 @@ pub(crate) fn observe(
                         health.probe_id = id;
                         state.connectivity.update(id, |value| {
                             value.health = Some(health.clone());
-                            *state.link_health.lock().unwrap() = Some(health.clone());
                             if health.online() {
                                 state.system_online.store(true, Ordering::SeqCst);
                             }
-                            let _ = app.emit("link-health", health);
+                            if value.usable_physical_health().is_none() {
+                                publish_preferred_health(&app, &state, value);
+                            }
                         });
                     })
                     .await;
                 };
                 let physical = async {
-                    if !require_physical {
+                    if !probe_physical {
                         return;
                     }
                     dual_stack::probe_route_with_updates(&network, true, |health| {
@@ -328,9 +369,10 @@ pub(crate) fn observe(
                         let mut health = health.clone();
                         health.generation = generation;
                         health.probe_id = id;
-                        state
-                            .connectivity
-                            .update(id, |value| value.physical = Some(health));
+                        state.connectivity.update(id, |value| {
+                            value.physical = Some(health);
+                            publish_preferred_health(&app, &state, value);
+                        });
                     })
                     .await;
                 };
@@ -396,6 +438,13 @@ pub(crate) fn observe(
     Observation { receiver }
 }
 
+fn publish_preferred_health(app: &tauri::AppHandle, state: &AppState, snapshot: &Snapshot) {
+    if let Some(health) = snapshot.preferred_health() {
+        *state.link_health.lock().unwrap() = Some(health.clone());
+        let _ = app.emit("link-health", health);
+    }
+}
+
 pub(crate) fn for_app(app: &tauri::AppHandle, network: &serde_json::Value) -> Observation {
     let state = app.state::<Arc<AppState>>();
     observe(app, state.inner(), network)
@@ -404,6 +453,25 @@ pub(crate) fn for_app(app: &tauri::AppHandle, network: &serde_json::Value) -> Ob
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dashboard_prefers_physical_results_even_when_system_is_online() {
+        let mut system = dual_stack::unavailable("system");
+        system.ipv4.status = "reachable".into();
+        let mut direct = dual_stack::unavailable("direct");
+        direct.scope = "physical".into();
+        direct.ipv4.status = "timeout".into();
+        let mut value = Snapshot {
+            health: Some(system),
+            physical: Some(direct),
+            ..Default::default()
+        };
+        assert_eq!(value.preferred_health().unwrap().ipv4.status, "timeout");
+        assert!(value.online());
+        let direct = value.physical.as_mut().unwrap();
+        direct.ipv4.status = "unavailable".into();
+        direct.ipv6.status = "unavailable".into();
+        assert_eq!(value.preferred_health().unwrap().scope, "system");
+    }
     #[test]
     fn vpn_cellular_success_cannot_authenticate_the_selected_wifi() {
         let mut system = dual_stack::unavailable("fixture");

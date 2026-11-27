@@ -8,6 +8,7 @@ import { RouterMaintenance } from './router-maintenance';
 export interface RouterConfiguration { service: Record<string,string>; uplinks: Record<string,string>[]; networks?: {id:string}[]; }
 type Field = {key:string; label:string; hint?:string; default?:string; min?:number; max?:number; flag?:boolean; secret?:boolean; choices?:[string,string][]};
 const protocols: [string,string][] = [['auto','自动'],['bjut-sushe','bjut-sushe'],['bjut_wifi','bjut_wifi'],['lgn','lgn']];
+const authStacks: [string,string][] = [['auto','自动'],['ipv4','IPv4 单栈'],['ipv6','IPv6 单栈'],['dual','IPv4 + IPv6 双栈']];
 const transport: [string,string][] = [['auto','自动'],['ethernet','有线'],['wifi','Wi-Fi']];
 const fields: Field[] = [
   {key:'enabled',label:'自动登录',hint:'检测到校园网断开时自动登录',flag:true,default:'0'},
@@ -20,6 +21,7 @@ const fields: Field[] = [
   {key:'credential_cooldown',label:'账号拒绝后等待（秒）',hint:'账号被明确拒绝后暂停尝试的时长',default:'600',min:30,max:86400},
   {key:'post_login_delay',label:'登录后复核延迟（秒）',hint:'登录成功后再次核对状态的延迟',default:'2',min:0,max:15},
   {key:'login_type',label:'认证方式',hint:'自动会按当前网络选择协议',default:'auto',choices:protocols},
+  {key:'auth_stack',label:'认证地址族',hint:'IPv6 单栈会话需等待校园网清理',default:'auto',choices:authStacks},
   {key:'transport',label:'上游类型',hint:'上游接口的物理连接类型',default:'auto',choices:transport},
   {key:'compatibility',label:'连接方式',hint:'HTTPS 为推荐的安全连接方式',default:'secure',choices:[['secure','HTTPS'],['legacy_http','旧式 HTTP']]},
   {key:'strict_network',label:'核对校园网身份',hint:'校验 SSID/BSSID 与校园网身份',flag:true,default:'1'},
@@ -45,7 +47,7 @@ const fields: Field[] = [
   {key:'traffic_hour_days',label:'小时汇总保留（天）',default:'90',min:1,max:3660},
   {key:'traffic_day_days',label:'每日汇总保留（天）',default:'366',min:1,max:36600},
   {key:'traffic_storage_mb',label:'统计存储上限（MB）',default:'2',min:1,max:128,hint:'按闪存中的实际压缩大小计算，内存临时数据不计入'},
-  {key:'prefer_remaining_flow',label:'优先使用余量充足的账号',hint:'依据已开启统计取得的新鲜计费数据排序，独立账号顺序优先',flag:true,default:'0'},
+  {key:'prefer_remaining_flow',label:'优先使用余量充足的账号',hint:'开启流量统计后优先使用剩余流量多的账号；已单独指定的顺序优先',flag:true,default:'0'},
   {key:'billing_interval',label:'计费检查间隔（秒）',min:900,max:86400,default:'21600'},
   {key:'billing_alerts',label:'用量不足时推送',hint:'通过已配置的 PushPlus 提醒，每个账号每天最多一次',flag:true,default:'1'},
   {key:'balance_threshold',label:'余额提醒线（元）',min:0,max:999999,default:'5'},
@@ -62,7 +64,7 @@ interface FieldControl extends Control { element: HTMLElement; attach?: () => vo
 function createFieldControl(definition:Field, value:string, id?:string): FieldControl {
   if (definition.choices) {
     const wrapper=element('div','','custom-select');wrapper.id=id || `router-editor-select-${++sequence}`;wrapper.setAttribute('aria-label',definition.label);
-    wrapper.innerHTML='<div class="custom-select-trigger"><span></span><span aria-hidden="true">⌄</span></div><div class="custom-select-options"></div>';
+    wrapper.innerHTML='<div class="custom-select-trigger"><span></span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></div><div class="custom-select-options"></div>';
     let select: CustomSelect | null=null;
     return {
       element:wrapper,
@@ -142,6 +144,7 @@ export class RouterAdmin {
     const common=document.getElementById('router-service-common')!, more=document.getElementById('router-service-more')!;
     this.maintenance.close();this.controls.forEach(c=>c.close());this.controls.clear();common.replaceChildren();more.replaceChildren();
     for (const definition of fields) {
+      if(definition.key==='auth_stack'&&!this.supports('auth_stack'))continue;
       if(definition.key==='traffic_scope'&&!this.supports('traffic_charts'))continue;
       if (definition.key.startsWith('pushplus_') && !this.supports('pushplus')) continue;
       if(['traffic_monitor','traffic_scope','prefer_remaining_flow'].includes(definition.key)&&!this.supports('device_usage'))continue;
@@ -290,7 +293,8 @@ export class RouterAdmin {
   private editUplink(uplink?:Record<string,string>) {
     const editor=this.createEditor(uplink?'编辑路由上游':'添加路由上游');
     const body=element('div','','router-editor-grid');editor.form.insertBefore(body,editor.fields);
-    const defs:Field[]=[{key:'enabled',label:'启用上游',flag:true,default:'1'}, {key:'network',label:'IPv4 接口'}, {key:'network6',label:'IPv6 接口（留空跟随）'}, {key:'device',label:'IPv4 设备（可选）'}, {key:'device6',label:'IPv6 设备（可选）'}, {key:'source4',label:'IPv4 地址（可选）'}, {key:'source6',label:'IPv6 地址（可选）'}, {key:'transport',label:'上游类型',choices:transport,default:'auto'}, {key:'login_type',label:'认证方式',choices:protocols,default:'auto'}, {key:'expected_ssid',label:'指定 Wi-Fi 名称'}, {key:'expected_bssid',label:'指定 Wi-Fi 地址'}];
+    const defs:Field[]=[{key:'enabled',label:'启用上游',flag:true,default:'1'}, {key:'network',label:'上游网络接口'}, {key:'network6',label:'IPv6 接口（留空跟随）'}, {key:'device',label:'IPv4 设备（可选）'}, {key:'device6',label:'IPv6 设备（可选）'}, {key:'source4',label:'IPv4 地址（可选）'}, {key:'source6',label:'IPv6 地址（可选）'}, {key:'transport',label:'上游类型',choices:transport,default:'auto'}, {key:'login_type',label:'认证方式',choices:protocols,default:'auto'}, {key:'expected_ssid',label:'指定 Wi-Fi 名称'}, {key:'expected_bssid',label:'指定 Wi-Fi 地址'}];
+    if(this.supports('auth_stack'))defs.push({key:'auth_stack',label:'认证地址族',choices:[['','跟随服务设置'],...authStacks]});
     const controls=new Map(defs.map(def=>[def.key,field(body,def,uplink?.[def.key] || def.default || '')]));
     const group=element('fieldset','','router-sync-accounts');group.append(element('legend','自动登录顺序'),element('p','勾选账号并用箭头调整此接口的顺序；不选则跟随账号管理。'));
     const selectedIds=(uplink?.accounts || '').split(/\s+/).filter(Boolean),selected=new Set(selectedIds);

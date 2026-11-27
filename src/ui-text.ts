@@ -1,5 +1,5 @@
-import { BILLING_COPY } from './ui-copy/billing';
-import { SETTINGS_COPY, type SettingItemCopy } from './ui-copy/settings';
+import { BILLING_COPY } from './ui-copy/billing.ts';
+import { SETTINGS_COPY, type SettingItemCopy } from './ui-copy/settings.ts';
 
 export { BILLING_COPY, SETTINGS_COPY };
 
@@ -13,20 +13,20 @@ export { BILLING_COPY, SETTINGS_COPY };
 export const UI_TEXT = {
   networkStatus: {
     checkingTitle: '正在检测网络…',
-    checkingDetail: '正在检查互联网连通性与校园认证网关',
+    checkingDetail: '正在检查网络连接与认证网关',
     onlineTitle: '互联网已连接',
-    onlineDetail: '网络畅通无阻',
+    onlineDetail: '网络正常',
     campusTitle: '检测到校园网',
     campusIncompleteTitle: '校园网登录未完成',
     offlineTitle: '网络断开或非校园网',
-    offlineDetail: '无法访问互联网和校园网登录页',
+    offlineDetail: '无法访问互联网或校园网登录页',
   },
   accountDiscovery: {
     title: '发现当前校园网账号',
     importDescription: (user: string) =>
-      `计费系统识别到当前登录账号 ${user}，该账号尚未加入 App。可以直接保存到安全凭据存储。`,
+      `检测到当前在线账号 ${user} 还未保存，可直接加入本机账号列表。`,
     passwordDescription: (user: string) =>
-      `计费系统识别到当前登录账号 ${user}，但学校页面只返回了临时密码字段。请手动补录密码。`,
+      `检测到当前在线账号 ${user}，补充密码后即可用于自动登录。`,
     importAction: '保存此账号',
     passwordAction: '补充密码',
     dismissAction: '本次忽略',
@@ -35,11 +35,46 @@ export const UI_TEXT = {
     whitelistTitle: '信任的 Wi-Fi（白名单）',
     blacklistTitle: '拒绝的 Wi-Fi（黑名单）',
     whitelistDescription:
-      '白名单 Wi-Fi 可用于明确授权自动登录。每条记录同时匹配 SSID 与 BSSID。',
+      '白名单用于授权自动登录，每条规则同时校验 SSID 和 BSSID。',
     blacklistDescription:
-      '黑名单优先于白名单；匹配后不会向该 Wi-Fi 发送校园网账号密码。',
+      '黑名单优先级高于白名单，匹配的 Wi-Fi 绝不会自动或手动发送账号密码。',
   },
 } as const;
+
+export function formatLocalDateTime(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+export function formatDashboardTimestamp(
+  raw: string | undefined | null,
+  now = new Date(),
+): string {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed || trimmed === '--') return '--';
+  const match = trimmed.match(
+    /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/,
+  );
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const timePart = `${match[4].padStart(2, '0')}:${match[5]}:${match[6]}`;
+    if (
+      year === now.getFullYear()
+      && month === now.getMonth() + 1
+      && day === now.getDate()
+    ) {
+      return timePart;
+    }
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')} ${timePart}`;
+  }
+  const timeOnly = trimmed.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (timeOnly) {
+    return `${timeOnly[1].padStart(2, '0')}:${timeOnly[2]}:${timeOnly[3]}`;
+  }
+  return trimmed;
+}
 
 function setText(root: ParentNode, selector: string, value: string): void {
   const element = root.querySelector<HTMLElement>(selector);
@@ -88,15 +123,16 @@ function setBillingAction(
 
 /** Apply user-editable page copy before controls copy their initial labels. */
 export function applyConfiguredUiText(root: ParentNode = document): void {
-  setText(root, '#settings > .page-header h1', SETTINGS_COPY.pageTitle);
-  setText(root, '#settings > .page-header p', SETTINGS_COPY.pageDescription);
+  setText(root, '#settings-page-title', SETTINGS_COPY.pageTitle);
 
   setSettingsGroupTitle(root, 'setting-theme', SETTINGS_COPY.groups.appearance);
+  setSettingsGroupTitle(root, 'setting-more-options', SETTINGS_COPY.groups.interface);
   setSettingsGroupTitle(root, 'setting-auto-login', SETTINGS_COPY.groups.automation);
   setSettingsGroupTitle(root, 'setting-vpn-compatibility', SETTINGS_COPY.groups.networkSecurity);
   setSettingsGroupTitle(root, 'setting-android-notification-mode', SETTINGS_COPY.groups.androidNotifications);
   setSettingsGroupTitle(root, 'setting-usage-alerts', SETTINGS_COPY.groups.usage);
-  setSettingsGroupTitle(root, 'setting-more-options', SETTINGS_COPY.groups.advanced);
+  setSettingsGroupTitle(root, 'setting-traffic-monitor', SETTINGS_COPY.groups.trafficStats);
+  setSettingsGroupTitle(root, 'setting-log-level', SETTINGS_COPY.groups.advanced);
   setText(root, '#permission-health-group .setting-group-heading h3', SETTINGS_COPY.groups.permissions.title);
   setText(root, '#permission-health-group .setting-group-heading p', SETTINGS_COPY.groups.permissions.description);
   const profileGroup = root.querySelector<HTMLElement>('#btn-add-network-profile')?.closest<HTMLElement>('.settings-group');
@@ -112,7 +148,6 @@ export function applyConfiguredUiText(root: ParentNode = document): void {
   setText(root, '#settings-about .settings-about-note', SETTINGS_COPY.about.note);
 
   setText(root, '#billing-center .billing-center-heading h1', BILLING_COPY.pageTitle);
-  setText(root, '#billing-center-subtitle', BILLING_COPY.pageDescription);
   setText(root, '#billing-center .billing-account-picker > span', BILLING_COPY.accountPicker);
   Object.entries(BILLING_COPY.nav).forEach(([section, label]) => {
     root.querySelectorAll<HTMLElement>(`[data-billing-section-target="${section}"] span`).forEach(element => {
